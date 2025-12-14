@@ -365,11 +365,14 @@ impl Structure {
         get_slid(self.functions[func_id][domain_sort_slid])
     }
 
-    /// Get the sort-local index for an element.
-    /// Note: roaring's rank(x) returns count of elements ≤ x, so we subtract 1.
+    /// Get the sort-local index for an element (0-based position within its carrier).
+    ///
+    /// # Roaring bitmap rank() semantics
+    /// `rank(x)` returns the count of elements ≤ x in the bitmap.
+    /// For a bitmap containing {4}: rank(3)=0, rank(4)=1, rank(5)=1.
+    /// So 0-based index = rank(x) - 1.
     pub fn sort_local_id(&self, slid: Slid) -> SortSlid {
         let sort_id = self.sorts[slid];
-        // rank returns count of elements ≤ slid; subtract 1 for 0-based index
         (self.carriers[sort_id].rank(slid as u64) - 1) as SortSlid
     }
 
@@ -399,8 +402,8 @@ impl Structure {
     }
 
     /// Get carrier size for a sort
-    pub fn carrier_size(&self, sort_id: SortId) -> u64 {
-        self.carriers[sort_id].len()
+    pub fn carrier_size(&self, sort_id: SortId) -> usize {
+        self.carriers[sort_id].len() as usize
     }
 
     /// Get the number of sorts in this structure
@@ -416,30 +419,7 @@ impl Structure {
 
 // ============ Display implementations for debugging ============
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_roaring_rank() {
-        let mut bm = RoaringTreemap::new();
-        bm.insert(4);
-
-        println!("bitmap: {:?}", bm.iter().collect::<Vec<_>>());
-        println!("rank(4) = {}", bm.rank(4));
-        println!("rank(5) = {}", bm.rank(5));
-        println!("rank(3) = {}", bm.rank(3));
-        println!("len = {}", bm.len());
-
-        // rank(x) returns number of elements LESS THAN OR EQUAL to x
-        assert_eq!(bm.rank(4), 1, "rank(4) on {{4}} should be 1 (one element ≤ 4)");
-        assert_eq!(bm.rank(5), 1, "rank(5) on {{4}} should be 1 (one element ≤ 5)");
-        assert_eq!(bm.rank(3), 0, "rank(3) on {{4}} should be 0 (no elements ≤ 3)");
-
-        // So 0-based index of x in bitmap = rank(x) - 1
-        assert_eq!(bm.rank(4) - 1, 0, "0-based index of 4 should be 0");
-    }
-}
+// Unit tests moved to tests/proptest_structure.rs
 
 impl std::fmt::Display for DerivedSort {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

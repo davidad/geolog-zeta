@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 3a0157c22c0fb9016c677f4a6e7765c1e0294d6e50ff98b0f608c276d432927a # shrinks to (old, mut universe) = (Structure { theory_luid: None, luids: [0], luid_to_slid: {0: 0}, sorts: [1], carriers: [RoaringTreemap<[]>, RoaringTreemap<[0]>], functions: [], nested: {} }, Universe { index: {019b1e9d-0b71-7471-94d9-cef7c2d2959d}, path: None, dirty: true }), (new, mut universe2) = (Structure { theory_luid: None, luids: [0], luid_to_slid: {0: 0}, sorts: [1], carriers: [RoaringTreemap<[]>, RoaringTreemap<[0]>], functions: [], nested: {} }, Universe { index: {019b1e9d-0b71-7471-94d9-cf28a3b61209}, path: None, dirty: true })

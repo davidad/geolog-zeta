@@ -18,7 +18,9 @@ toml = "0.8"      # workspace.toml parsing
 serde = { version = "1", features = ["derive"] }  # for toml
 
 [dev-dependencies]
-insta = "1.40"  # snapshot testing
+insta = "1.40"    # snapshot testing
+proptest = "1.4"  # property-based testing
+tempfile = "3.10" # temp dirs for persistence tests
 
 [[bin]]
 name = "geolog"
