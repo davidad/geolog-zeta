@@ -27,6 +27,20 @@ pub enum ElabError {
         func_name: String,
         missing_elements: Vec<String>,
     },
+    /// Type error in function application: element's sort doesn't match function's domain
+    DomainMismatch {
+        func_name: String,
+        element_name: String,
+        expected_sort: String,
+        actual_sort: String,
+    },
+    /// Type error in equation: RHS sort doesn't match function's codomain
+    CodomainMismatch {
+        func_name: String,
+        element_name: String,
+        expected_sort: String,
+        actual_sort: String,
+    },
 }
 
 impl std::fmt::Display for ElabError {
@@ -47,6 +61,14 @@ impl std::fmt::Display for ElabError {
             ElabError::UnsupportedFeature(s) => write!(f, "unsupported feature: {}", s),
             ElabError::PartialFunction { func_name, missing_elements } => {
                 write!(f, "partial function '{}': missing definitions for {:?}", func_name, missing_elements)
+            }
+            ElabError::DomainMismatch { func_name, element_name, expected_sort, actual_sort } => {
+                write!(f, "type error: '{}' has sort '{}', but function '{}' expects domain sort '{}'",
+                    element_name, actual_sort, func_name, expected_sort)
+            }
+            ElabError::CodomainMismatch { func_name, element_name, expected_sort, actual_sort } => {
+                write!(f, "type error: '{}' has sort '{}', but function '{}' has codomain sort '{}'",
+                    element_name, actual_sort, func_name, expected_sort)
             }
         }
     }
@@ -421,7 +443,7 @@ pub fn elaborate_instance(
         .collect();
     structure.init_functions(&domain_sort_ids);
 
-    // 4. Second pass: process equations (define function values)
+    // 4. Second pass: process equations (define function values) with type checking
     for item in &instance.body {
         if let ast::InstanceItem::Equation(lhs, rhs) = &item.node {
             // Decompose lhs: should be `element func_path`
@@ -434,6 +456,33 @@ pub fn elaborate_instance(
 
             // Resolve rhs to an element
             let value_slid = resolve_instance_element(rhs, &name_to_slid)?;
+
+            // Type checking: verify element sort matches function domain
+            let func = &theory.theory.signature.functions[func_id];
+            let elem_sort_id = structure.sorts[elem_slid];
+            if let DerivedSort::Base(expected_domain) = &func.domain {
+                if elem_sort_id != *expected_domain {
+                    return Err(ElabError::DomainMismatch {
+                        func_name: func.name.clone(),
+                        element_name: structure.names[elem_slid].clone(),
+                        expected_sort: theory.theory.signature.sorts[*expected_domain].clone(),
+                        actual_sort: theory.theory.signature.sorts[elem_sort_id].clone(),
+                    });
+                }
+            }
+
+            // Type checking: verify value sort matches function codomain
+            let value_sort_id = structure.sorts[value_slid];
+            if let DerivedSort::Base(expected_codomain) = &func.codomain {
+                if value_sort_id != *expected_codomain {
+                    return Err(ElabError::CodomainMismatch {
+                        func_name: func.name.clone(),
+                        element_name: structure.names[value_slid].clone(),
+                        expected_sort: theory.theory.signature.sorts[*expected_codomain].clone(),
+                        actual_sort: theory.theory.signature.sorts[value_sort_id].clone(),
+                    });
+                }
+            }
 
             // Define the function value
             structure.define_function(func_id, elem_slid, value_slid)
@@ -761,6 +810,95 @@ instance PartialNet : PetriNet = {
                     assert_eq!(missing_elements, vec!["ab_in"]);
                 }
                 other => panic!("expected PartialFunction error, got: {}", other),
+            }
+        } else {
+            panic!("expected instance");
+        }
+    }
+
+    #[test]
+    fn test_domain_type_error() {
+        // ab is of sort T, but in/src expects domain sort `in`
+        let input = r#"
+theory PetriNet {
+    P : Sort;
+    T : Sort;
+    in : Sort;
+    in/src : in -> P;
+}
+
+instance BadNet : PetriNet = {
+    A : P;
+    ab : T;
+    ab in/src = A;
+}
+"#;
+        let file = parse(input).expect("parse failed");
+        let mut env = Env::new();
+
+        if let ast::Declaration::Theory(t) = &file.declarations[0].node {
+            let elab = elaborate_theory(&mut env, t).expect("theory elaboration failed");
+            env.theories.insert(elab.theory.name.clone(), Rc::new(elab));
+        }
+
+        if let ast::Declaration::Instance(i) = &file.declarations[1].node {
+            let result = elaborate_instance(&env, i);
+            assert!(result.is_err(), "expected domain type error");
+
+            let err = result.unwrap_err();
+            match err {
+                ElabError::DomainMismatch { func_name, element_name, expected_sort, actual_sort } => {
+                    assert_eq!(func_name, "in/src");
+                    assert_eq!(element_name, "ab");
+                    assert_eq!(expected_sort, "in");
+                    assert_eq!(actual_sort, "T");
+                }
+                other => panic!("expected DomainMismatch error, got: {}", other),
+            }
+        } else {
+            panic!("expected instance");
+        }
+    }
+
+    #[test]
+    fn test_codomain_type_error() {
+        // ab is of sort T, but in/src has codomain P
+        let input = r#"
+theory PetriNet {
+    P : Sort;
+    T : Sort;
+    in : Sort;
+    in/src : in -> P;
+}
+
+instance BadNet : PetriNet = {
+    A : P;
+    ab : T;
+    ab_in : in;
+    ab_in in/src = ab;
+}
+"#;
+        let file = parse(input).expect("parse failed");
+        let mut env = Env::new();
+
+        if let ast::Declaration::Theory(t) = &file.declarations[0].node {
+            let elab = elaborate_theory(&mut env, t).expect("theory elaboration failed");
+            env.theories.insert(elab.theory.name.clone(), Rc::new(elab));
+        }
+
+        if let ast::Declaration::Instance(i) = &file.declarations[1].node {
+            let result = elaborate_instance(&env, i);
+            assert!(result.is_err(), "expected codomain type error");
+
+            let err = result.unwrap_err();
+            match err {
+                ElabError::CodomainMismatch { func_name, element_name, expected_sort, actual_sort } => {
+                    assert_eq!(func_name, "in/src");
+                    assert_eq!(element_name, "ab");
+                    assert_eq!(expected_sort, "P");
+                    assert_eq!(actual_sort, "T");
+                }
+                other => panic!("expected CodomainMismatch error, got: {}", other),
             }
         } else {
             panic!("expected instance");
