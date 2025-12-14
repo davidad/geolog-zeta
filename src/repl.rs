@@ -233,7 +233,11 @@ impl ReplState {
                     .signature
                     .functions
                     .iter()
-                    .map(|f| f.name.clone())
+                    .map(|f| {
+                        let domain = format_derived_sort(&f.domain, &theory.theory.signature);
+                        let codomain = format_derived_sort(&f.codomain, &theory.theory.signature);
+                        (f.name.clone(), domain, codomain)
+                    })
                     .collect(),
                 num_axioms: theory.theory.axioms.len(),
             }));
@@ -339,6 +343,26 @@ fn type_expr_to_theory_name(type_expr: &ast::TypeExpr) -> String {
         ast::TypeExpr::Arrow(_, _) => "Arrow".to_string(),
         ast::TypeExpr::Record(_) => "Record".to_string(),
         ast::TypeExpr::Instance(inner) => type_expr_to_theory_name(inner),
+    }
+}
+
+/// Format a DerivedSort as a string using sort names from the signature
+fn format_derived_sort(ds: &crate::core::DerivedSort, sig: &crate::core::Signature) -> String {
+    match ds {
+        crate::core::DerivedSort::Base(sort_id) => {
+            sig.sorts.get(*sort_id).cloned().unwrap_or_else(|| format!("Sort#{}", sort_id))
+        }
+        crate::core::DerivedSort::Product(fields) => {
+            if fields.is_empty() {
+                "Unit".to_string()
+            } else {
+                let field_strs: Vec<String> = fields
+                    .iter()
+                    .map(|(name, ds)| format!("{}: {}", name, format_derived_sort(ds, sig)))
+                    .collect();
+                format!("[{}]", field_strs.join(", "))
+            }
+        }
     }
 }
 
@@ -454,7 +478,7 @@ pub struct InstanceInfo {
 pub struct TheoryDetail {
     pub name: String,
     pub sorts: Vec<String>,
-    pub functions: Vec<String>,
+    pub functions: Vec<(String, String, String)>, // (name, domain, codomain)
     pub num_axioms: usize,
 }
 
@@ -512,8 +536,8 @@ pub fn format_theory_detail(detail: &TheoryDetail) -> String {
         out.push_str(&format!("  {} : Sort;\n", sort));
     }
 
-    for func in &detail.functions {
-        out.push_str(&format!("  {} : ...;\n", func));
+    for (name, domain, codomain) in &detail.functions {
+        out.push_str(&format!("  {} : {} -> {};\n", name, domain, codomain));
     }
 
     if detail.num_axioms > 0 {
