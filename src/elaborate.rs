@@ -13,6 +13,7 @@ use crate::core::*;
 #[derive(Clone, Debug)]
 pub enum ElabError {
     UnknownSort(String),
+    UnknownTheory(String),
     UnknownFunction(String),
     UnknownRel(String),
     UnknownVariable(String),
@@ -48,6 +49,7 @@ impl std::fmt::Display for ElabError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             ElabError::UnknownSort(s) => write!(f, "unknown sort: {}", s),
+            ElabError::UnknownTheory(s) => write!(f, "unknown theory: {}", s),
             ElabError::UnknownFunction(s) => write!(f, "unknown function: {}", s),
             ElabError::UnknownRel(s) => write!(f, "unknown relation: {}", s),
             ElabError::UnknownVariable(s) => write!(f, "unknown variable: {}", s),
@@ -361,7 +363,7 @@ pub fn elaborate_theory(env: &mut Env, theory: &ast::TheoryDecl) -> ElabResult<E
                         });
                         local_env.params.push((param.name.clone(), base_theory.clone()));
                     } else {
-                        return Err(ElabError::UnknownSort(theory_name));
+                        return Err(ElabError::UnknownTheory(theory_name));
                     }
                 }
             }
@@ -461,7 +463,7 @@ pub fn elaborate_instance(
     // For now, handle simple paths only (not `ExampleNet ReachabilityProblem`)
     let theory_name = type_expr_to_theory_name(&instance.theory)?;
     let theory = env.theories.get(&theory_name)
-        .ok_or_else(|| ElabError::UnknownSort(theory_name.clone()))?;
+        .ok_or_else(|| ElabError::UnknownTheory(theory_name.clone()))?;
 
     // 2. Initialize structure (functions will be initialized after first pass)
     let mut structure = Structure::new(theory.theory.signature.sorts.len());
