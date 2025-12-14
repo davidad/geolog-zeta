@@ -5,6 +5,7 @@
 
 use crate::core::Structure;
 use crate::id::Uuid;
+use crate::naming::NamingIndex;
 use crate::patch::{apply_patch, diff, to_initial_patch, Patch};
 use crate::universe::Universe;
 
@@ -35,6 +36,8 @@ pub struct VersionedState {
     pub patches_dir: PathBuf,
     /// The universe for UUID↔Luid mapping
     pub universe: Universe,
+    /// The naming index for element names
+    pub naming: NamingIndex,
 }
 
 impl VersionedState {
@@ -42,12 +45,14 @@ impl VersionedState {
     pub fn new(patches_dir: impl Into<PathBuf>) -> Self {
         let patches_dir = patches_dir.into();
         let universe_path = patches_dir.join("universe.bin");
+        let naming_path = patches_dir.join("names.bin");
         Self {
             patches: BTreeMap::new(),
             commit_parents: BTreeMap::new(),
             head: None,
             patches_dir,
             universe: Universe::with_path(universe_path),
+            naming: NamingIndex::with_path(naming_path),
         }
     }
 
@@ -59,6 +64,10 @@ impl VersionedState {
         // Load the universe
         let universe_path = self.patches_dir.join("universe.bin");
         self.universe = Universe::load(&universe_path)?;
+
+        // Load the naming index
+        let naming_path = self.patches_dir.join("names.bin");
+        self.naming = NamingIndex::load(&naming_path)?;
 
         let entries = fs::read_dir(&self.patches_dir)
             .map_err(|e| format!("Failed to read patches directory: {}", e))?;
@@ -123,7 +132,7 @@ impl VersionedState {
         }
     }
 
-    /// Save a patch to disk (also saves the universe if dirty)
+    /// Save a patch to disk (also saves the universe and naming if dirty)
     pub fn save_patch(&mut self, patch: &Patch) -> Result<(), String> {
         fs::create_dir_all(&self.patches_dir)
             .map_err(|e| format!("Failed to create patches directory: {}", e))?;
@@ -149,10 +158,17 @@ impl VersionedState {
             self.universe.save()?;
         }
 
+        // Save the naming index if dirty
+        if self.naming.is_dirty() {
+            self.naming.save()?;
+        }
+
         Ok(())
     }
 
     /// Checkout a specific commit, returning the reconstructed structure
+    ///
+    /// Also updates the naming index with names from applied patches.
     pub fn checkout(&mut self, commit: Uuid) -> Result<Structure, String> {
         // Build the chain of patches from root to target
         let mut chain = Vec::new();
@@ -172,13 +188,16 @@ impl VersionedState {
 
         // Apply patches in order
         let mut structure = if let Some(first_patch) = chain.first() {
-            Structure::new(first_patch.theory_name.clone(), first_patch.num_sorts)
+            Structure::new(first_patch.num_sorts)
         } else {
             return Err("No patches to apply".to_string());
         };
 
+        // Create a temporary naming index for checkout (don't modify the main one)
+        let mut checkout_naming = NamingIndex::new();
+
         for patch in &chain {
-            structure = apply_patch(&structure, patch, &mut self.universe)?;
+            structure = apply_patch(&structure, patch, &mut self.universe, &mut checkout_naming)?;
         }
 
         Ok(structure)
@@ -186,17 +205,20 @@ impl VersionedState {
 
     /// Commit a structure, creating a new patch from the current HEAD
     ///
-    /// Returns the new commit's UUID
-    pub fn commit(&mut self, structure: &Structure) -> Result<Uuid, String> {
+    /// Returns the new commit's UUID.
+    /// The naming parameter provides names for elements in the structure.
+    pub fn commit(&mut self, structure: &Structure, naming: &NamingIndex) -> Result<Uuid, String> {
         let patch = if let Some(head) = self.head {
             // Diff from current HEAD
             let base = self.checkout(head)?;
-            let mut patch = diff(&base, structure, &self.universe);
+            // Use empty naming for base (names are reconstructed from patches)
+            let base_naming = NamingIndex::new();
+            let mut patch = diff(&base, structure, &self.universe, &base_naming, naming);
             patch.source_commit = Some(head);
             patch
         } else {
             // Initial commit
-            to_initial_patch(structure, &self.universe)
+            to_initial_patch(structure, &self.universe, naming)
         };
 
         // Skip empty patches
@@ -205,6 +227,11 @@ impl VersionedState {
         }
 
         let commit_uuid = patch.target_commit;
+
+        // Apply names from patch to our naming index
+        for (uuid, name) in &patch.names.additions {
+            self.naming.insert(*uuid, name.clone());
+        }
 
         // Save to disk
         self.save_patch(&patch)?;
@@ -270,14 +297,21 @@ mod tests {
     fn test_commit_and_checkout() {
         let dir = temp_dir();
         let mut state = VersionedState::new(&dir);
+        let mut naming = NamingIndex::new();
 
         // Create a structure using the state's universe
-        let mut s1 = Structure::new("Test".to_string(), 2);
-        s1.add_element(&mut state.universe, "foo".to_string(), 0);
-        s1.add_element(&mut state.universe, "bar".to_string(), 1);
+        let mut s1 = Structure::new(2);
+        let (_, luid1) = s1.add_element(&mut state.universe, 0);
+        let (_, luid2) = s1.add_element(&mut state.universe, 1);
+
+        // Register names
+        let uuid1 = state.universe.get(luid1).unwrap();
+        let uuid2 = state.universe.get(luid2).unwrap();
+        naming.insert(uuid1, vec!["foo".to_string()]);
+        naming.insert(uuid2, vec!["bar".to_string()]);
 
         // Commit it
-        let commit1 = state.commit(&s1).expect("commit should succeed");
+        let commit1 = state.commit(&s1, &naming).expect("commit should succeed");
         assert_eq!(state.num_commits(), 1);
         assert_eq!(state.head, Some(commit1));
 
@@ -293,19 +327,28 @@ mod tests {
     fn test_multiple_commits() {
         let dir = temp_dir();
         let mut state = VersionedState::new(&dir);
+        let mut naming = NamingIndex::new();
 
         // First commit
-        let mut s1 = Structure::new("Test".to_string(), 2);
-        let foo_slid = s1.add_element(&mut state.universe, "foo".to_string(), 0);
-        let foo_luid = s1.get_luid(foo_slid);
-        let commit1 = state.commit(&s1).expect("commit 1");
+        let mut s1 = Structure::new(2);
+        let (foo_slid, foo_luid) = s1.add_element(&mut state.universe, 0);
+        let foo_uuid = state.universe.get(foo_luid).unwrap();
+        naming.insert(foo_uuid, vec!["foo".to_string()]);
+        let commit1 = state.commit(&s1, &naming).expect("commit 1");
 
         // Second commit with more elements (preserving "foo" via its Luid)
-        let mut s2 = Structure::new("Test".to_string(), 2);
-        s2.add_element_with_luid(foo_luid, "foo".to_string(), 0);
-        s2.add_element(&mut state.universe, "bar".to_string(), 1);
-        s2.add_element(&mut state.universe, "baz".to_string(), 0);
-        let commit2 = state.commit(&s2).expect("commit 2");
+        let mut s2 = Structure::new(2);
+        s2.add_element_with_luid(foo_luid, 0);
+        let (_, bar_luid) = s2.add_element(&mut state.universe, 1);
+        let (_, baz_luid) = s2.add_element(&mut state.universe, 0);
+
+        // Register names for new elements
+        let bar_uuid = state.universe.get(bar_luid).unwrap();
+        let baz_uuid = state.universe.get(baz_luid).unwrap();
+        naming.insert(bar_uuid, vec!["bar".to_string()]);
+        naming.insert(baz_uuid, vec!["baz".to_string()]);
+
+        let commit2 = state.commit(&s2, &naming).expect("commit 2");
 
         assert_eq!(state.num_commits(), 2);
 
@@ -325,6 +368,8 @@ mod tests {
 
         // Clean up
         let _ = fs::remove_dir_all(&dir);
+
+        let _ = foo_slid; // silence unused warning
     }
 
     #[test]
@@ -335,9 +380,14 @@ mod tests {
         let commit_uuid;
         {
             let mut state = VersionedState::new(&dir);
-            let mut s = Structure::new("Test".to_string(), 2);
-            s.add_element(&mut state.universe, "foo".to_string(), 0);
-            commit_uuid = state.commit(&s).expect("commit");
+            let mut naming = NamingIndex::new();
+
+            let mut s = Structure::new(2);
+            let (_, foo_luid) = s.add_element(&mut state.universe, 0);
+            let foo_uuid = state.universe.get(foo_luid).unwrap();
+            naming.insert(foo_uuid, vec!["foo".to_string()]);
+
+            commit_uuid = state.commit(&s, &naming).expect("commit");
         }
 
         // Create new state and load

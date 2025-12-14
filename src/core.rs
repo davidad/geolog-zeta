@@ -239,23 +239,25 @@ use roaring::RoaringTreemap;
 /// This is a model/instance of a theory — a functor from the signature to FinSet:
 /// - Each sort maps to a finite set of elements
 /// - Each function symbol maps to a function between those sets
+/// TODO: relation symbols, interpreted as bitmaps on finitary products of finite sets
 ///
 /// Elements are identified by Luids (Locally Universal IDs) which reference
 /// UUIDs in the global Universe. This allows efficient integer operations
 /// while maintaining stable identity across versions.
+///
+/// Note: Human-readable names are stored separately in a NamingIndex, keyed by UUID.
+/// This structure contains only UUIDs and their relationships.
 #[derive(Clone, Debug)]
 pub struct Structure {
-    /// The theory being instantiated
-    pub theory_name: String,
+    /// Reference to the theory this is an instance of (Luid of the Theory element)
+    /// None for structures that ARE theories (e.g., GeologMeta instances)
+    pub theory_luid: Option<Luid>,
 
     /// Global identity: Slid → Luid (references Universe for UUID lookup)
     pub luids: Vec<Luid>,
 
     /// Reverse lookup: Luid → Slid (for finding elements by their global ID)
     pub luid_to_slid: HashMap<Luid, Slid>,
-
-    /// Element names: Slid → name (for debugging/display)
-    pub names: Vec<String>,
 
     /// Element sorts: Slid → SortId
     pub sorts: Vec<SortId>,
@@ -269,23 +271,30 @@ pub struct Structure {
     pub functions: Vec<Vec<OptSlid>>,
 
     /// Nested structures (for instance-valued fields)
-    pub nested: HashMap<String, Structure>,
+    pub nested: HashMap<Luid, Structure>,
 }
 
 impl Structure {
-    /// Create a new empty structure for a theory.
+    /// Create a new empty structure.
     /// Note: functions are not pre-allocated here; call `init_functions()` after
     /// all elements are added and carrier sizes are known.
-    pub fn new(theory_name: String, num_sorts: usize) -> Self {
+    pub fn new(num_sorts: usize) -> Self {
         Self {
-            theory_name,
+            theory_luid: None,
             luids: Vec::new(),
             luid_to_slid: HashMap::new(),
-            names: Vec::new(),
             sorts: Vec::new(),
             carriers: vec![RoaringTreemap::new(); num_sorts],
             functions: Vec::new(),  // Initialized later via init_functions()
             nested: HashMap::new(),
+        }
+    }
+
+    /// Create a structure that is an instance of the given theory
+    pub fn new_instance(theory_luid: Luid, num_sorts: usize) -> Self {
+        Self {
+            theory_luid: Some(theory_luid),
+            ..Self::new(num_sorts)
         }
     }
 
@@ -304,20 +313,21 @@ impl Structure {
     }
 
     /// Add a new element to the structure, registering its UUID in the universe.
-    /// Returns the Slid (structure-local ID) for the new element.
-    pub fn add_element(&mut self, universe: &mut Universe, name: String, sort_id: SortId) -> Slid {
+    /// Returns the (Slid, Luid) for the new element.
+    /// Note: Names are registered separately in a NamingIndex.
+    pub fn add_element(&mut self, universe: &mut Universe, sort_id: SortId) -> (Slid, Luid) {
         let uuid = Uuid::now_v7();
         let luid = universe.intern(uuid);
-        self.add_element_with_luid(luid, name, sort_id)
+        let slid = self.add_element_with_luid(luid, sort_id);
+        (slid, luid)
     }
 
     /// Add an element with a specific Luid (used when applying patches or loading)
-    pub fn add_element_with_luid(&mut self, luid: Luid, name: String, sort_id: SortId) -> Slid {
+    pub fn add_element_with_luid(&mut self, luid: Luid, sort_id: SortId) -> Slid {
         let slid = self.luids.len();
 
         self.luids.push(luid);
         self.luid_to_slid.insert(luid, slid);
-        self.names.push(name);
         self.sorts.push(sort_id);
         self.carriers[sort_id].insert(slid as u64);
 
@@ -326,9 +336,10 @@ impl Structure {
 
     /// Add an element with a specific UUID, registering it in the universe.
     /// Used when applying patches that reference UUIDs.
-    pub fn add_element_with_uuid(&mut self, universe: &mut Universe, uuid: Uuid, name: String, sort_id: SortId) -> Slid {
+    pub fn add_element_with_uuid(&mut self, universe: &mut Universe, uuid: Uuid, sort_id: SortId) -> (Slid, Luid) {
         let luid = universe.intern(uuid);
-        self.add_element_with_luid(luid, name, sort_id)
+        let slid = self.add_element_with_luid(luid, sort_id);
+        (slid, luid)
     }
 
     /// Define a function value: f(domain_elem) = codomain_elem
@@ -339,8 +350,8 @@ impl Structure {
         if let Some(existing) = get_slid(self.functions[func_id][domain_sort_slid]) {
             if existing != codomain_slid {
                 return Err(format!(
-                    "conflicting definition: func {}({}) already defined as {}, cannot redefine as {}",
-                    func_id, self.names[domain_slid], self.names[existing], self.names[codomain_slid]
+                    "conflicting definition: func {}(slid {}) already defined as slid {}, cannot redefine as slid {}",
+                    func_id, domain_slid, existing, codomain_slid
                 ));
             }
         }
@@ -360,11 +371,6 @@ impl Structure {
         let sort_id = self.sorts[slid];
         // rank returns count of elements ≤ slid; subtract 1 for 0-based index
         (self.carriers[sort_id].rank(slid as u64) - 1) as SortSlid
-    }
-
-    /// Look up element by name
-    pub fn lookup(&self, name: &str) -> Option<Slid> {
-        self.names.iter().position(|n| n == name)
     }
 
     /// Look up element by Luid

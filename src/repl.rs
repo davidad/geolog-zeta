@@ -10,16 +10,30 @@ use std::rc::Rc;
 use crate::ast;
 use crate::core::Structure;
 use crate::elaborate::{elaborate_instance, elaborate_theory, Env};
+use crate::id::Slid;
+use crate::naming::NamingIndex;
 use crate::universe::Universe;
+
+/// Metadata stored alongside each instance
+struct InstanceData {
+    /// The structure itself
+    structure: Structure,
+    /// Name of the theory this instance is of
+    theory_name: String,
+    /// Local names for elements (Slid -> name)
+    element_names: HashMap<Slid, String>,
+}
 
 /// REPL state - holds all session data
 pub struct ReplState {
     /// Elaboration environment (theories in scope)
     pub env: Env,
-    /// Named instances (Structure values)
-    pub instances: HashMap<String, Structure>,
+    /// Named instances (Structure values with metadata)
+    instances: HashMap<String, InstanceData>,
     /// Universe for UUID<->Luid mapping
     pub universe: Universe,
+    /// Global naming index (for persistence)
+    pub naming: NamingIndex,
     /// Current workspace path (None = ephemeral session)
     pub workspace_path: Option<PathBuf>,
     /// Multi-line input buffer
@@ -41,6 +55,7 @@ impl ReplState {
             env: Env::new(),
             instances: HashMap::new(),
             universe: Universe::new(),
+            naming: NamingIndex::new(),
             workspace_path: None,
             input_buffer: String::new(),
             bracket_depth: 0,
@@ -52,8 +67,14 @@ impl ReplState {
         self.env = Env::new();
         self.instances.clear();
         self.universe = Universe::new();
+        self.naming = NamingIndex::new();
         self.input_buffer.clear();
         self.bracket_depth = 0;
+    }
+
+    /// Get a structure by instance name
+    pub fn get_structure(&self, name: &str) -> Option<&Structure> {
+        self.instances.get(name).map(|data| &data.structure)
     }
 
     /// Process a line of input, handling multi-line bracket matching
@@ -136,15 +157,30 @@ impl ReplState {
                         num_functions,
                     });
                 }
-                ast::Declaration::Instance(i) => {
-                    let structure = elaborate_instance(&self.env, i, &mut self.universe)
+                ast::Declaration::Instance(inst) => {
+                    let structure = elaborate_instance(&self.env, inst, &mut self.universe)
                         .map_err(|e| format!("Elaboration error: {}", e))?;
-                    let name = i.name.clone();
-                    let theory_name = structure.theory_name.clone();
+                    let instance_name = inst.name.clone();
+                    let theory_name = type_expr_to_theory_name(&inst.theory);
                     let num_elements = structure.len();
-                    self.instances.insert(name.clone(), structure);
+
+                    // Build element_names from AST (same iteration as elaborate_instance)
+                    let mut element_names = HashMap::new();
+                    let mut slid_counter: Slid = 0;
+                    for item in &inst.body {
+                        if let ast::InstanceItem::Element(elem_name, _sort_expr) = &item.node {
+                            element_names.insert(slid_counter, elem_name.clone());
+                            slid_counter += 1;
+                        }
+                    }
+
+                    self.instances.insert(instance_name.clone(), InstanceData {
+                        structure,
+                        theory_name: theory_name.clone(),
+                        element_names,
+                    });
                     results.push(ExecuteResult::Instance {
-                        name,
+                        name: instance_name,
                         theory_name,
                         num_elements,
                     });
@@ -177,10 +213,10 @@ impl ReplState {
     pub fn list_instances(&self) -> Vec<InstanceInfo> {
         self.instances
             .iter()
-            .map(|(name, structure)| InstanceInfo {
+            .map(|(name, data)| InstanceInfo {
                 name: name.clone(),
-                theory_name: structure.theory_name.clone(),
-                num_elements: structure.len(),
+                theory_name: data.theory_name.clone(),
+                num_elements: data.structure.len(),
             })
             .collect()
     }
@@ -204,13 +240,13 @@ impl ReplState {
         }
 
         // Check instances
-        if let Some(structure) = self.instances.get(name) {
-            let theory = self.env.theories.get(&structure.theory_name)?;
+        if let Some(data) = self.instances.get(name) {
+            let theory = self.env.theories.get(&data.theory_name)?;
             return Some(InspectResult::Instance(InstanceDetail {
                 name: name.to_string(),
-                theory_name: structure.theory_name.clone(),
-                elements: self.collect_elements(structure, &theory.theory.signature),
-                functions: self.collect_function_values(structure, &theory.theory.signature),
+                theory_name: data.theory_name.clone(),
+                elements: self.collect_elements(data, &theory.theory.signature),
+                functions: self.collect_function_values(data, &theory.theory.signature),
             }));
         }
 
@@ -220,14 +256,19 @@ impl ReplState {
     /// Collect elements grouped by sort
     fn collect_elements(
         &self,
-        structure: &Structure,
+        data: &InstanceData,
         signature: &crate::core::Signature,
     ) -> Vec<(String, Vec<String>)> {
         let mut result = Vec::new();
         for (sort_id, sort_name) in signature.sorts.iter().enumerate() {
-            let elements: Vec<String> = structure.carriers[sort_id]
+            let elements: Vec<String> = data.structure.carriers[sort_id]
                 .iter()
-                .map(|slid| structure.names[slid as usize].clone())
+                .map(|slid| {
+                    data.element_names
+                        .get(&(slid as Slid))
+                        .cloned()
+                        .unwrap_or_else(|| format!("#{}", slid))
+                })
                 .collect();
             if !elements.is_empty() {
                 result.push((sort_name.clone(), elements));
@@ -239,28 +280,36 @@ impl ReplState {
     /// Collect function values as "domain func = codomain"
     fn collect_function_values(
         &self,
-        structure: &Structure,
+        data: &InstanceData,
         signature: &crate::core::Signature,
     ) -> Vec<(String, Vec<String>)> {
         let mut result = Vec::new();
         for (func_id, func_sym) in signature.functions.iter().enumerate() {
-            if func_id >= structure.functions.len() {
+            if func_id >= data.structure.functions.len() {
                 continue;
             }
             let mut values = Vec::new();
 
             // Get the domain sort ID from the function signature
             if let crate::core::DerivedSort::Base(domain_sort_id) = &func_sym.domain {
-                for slid in structure.carriers[*domain_sort_id].iter() {
-                    let slid = slid as usize;
-                    let sort_slid = structure.sort_local_id(slid);
-                    if sort_slid < structure.functions[func_id].len() {
-                        if let Some(codomain_slid) = crate::id::get_slid(structure.functions[func_id][sort_slid]) {
+                for slid in data.structure.carriers[*domain_sort_id].iter() {
+                    let slid_usize = slid as usize;
+                    let sort_slid = data.structure.sort_local_id(slid_usize);
+                    if sort_slid < data.structure.functions[func_id].len() {
+                        if let Some(codomain_slid) = crate::id::get_slid(data.structure.functions[func_id][sort_slid]) {
+                            let domain_name = data.element_names
+                                .get(&(slid as Slid))
+                                .cloned()
+                                .unwrap_or_else(|| format!("#{}", slid));
+                            let codomain_name = data.element_names
+                                .get(&(codomain_slid as Slid))
+                                .cloned()
+                                .unwrap_or_else(|| format!("#{}", codomain_slid));
                             values.push(format!(
                                 "{} {} = {}",
-                                structure.names[slid],
+                                domain_name,
                                 func_sym.name,
-                                structure.names[codomain_slid]
+                                codomain_name
                             ));
                         }
                     }
@@ -271,6 +320,25 @@ impl ReplState {
             }
         }
         result
+    }
+}
+
+/// Helper to extract theory name from a type expression
+fn type_expr_to_theory_name(type_expr: &ast::TypeExpr) -> String {
+    match type_expr {
+        ast::TypeExpr::Sort => "Sort".to_string(),
+        ast::TypeExpr::Path(path) => {
+            // Just take the first component as the theory name
+            path.segments.first()
+                .cloned()
+                .unwrap_or_else(|| "Unknown".to_string())
+        }
+        ast::TypeExpr::App(base, _) => {
+            type_expr_to_theory_name(base)
+        }
+        ast::TypeExpr::Arrow(_, _) => "Arrow".to_string(),
+        ast::TypeExpr::Record(_) => "Record".to_string(),
+        ast::TypeExpr::Instance(inner) => type_expr_to_theory_name(inner),
     }
 }
 

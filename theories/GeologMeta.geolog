@@ -4,7 +4,7 @@
 // signatures, axioms, and well-formedness constraints.
 //
 // Key design principles:
-// - Names are opaque atoms (UUIDs); human-readable labels stored separately
+// - All elements identified by UUID; human-readable names in separate NamingIndex
 // - Child pointers go from parent to children (no products in domains)
 // - Binding uses upward pointers from variable to binder
 // - Transitive closure (ancestor) via Datalog-style axioms
@@ -13,16 +13,9 @@
 // Naming convention: DomainSort/descriptor
 // - Embeddings: VarT/term, EqF/formula (target sort)
 // - Parent pointers: Srt/theory, Field/prod (container sort)
-// - Projections: EqF/lhs, Binder/name (field name)
+// - Projections: EqF/lhs, ProjT/field (field reference)
 
 theory GeologMeta {
-
-  // ============================================================
-  // NAMES (nominal-set-style opaque atoms)
-  // ============================================================
-  // Identity is UUID only. Human-readable strings stored in separate index.
-
-  Name : Sort;
 
   // ============================================================
   // THEORIES
@@ -33,8 +26,7 @@ theory GeologMeta {
   // Theory parameters: (N : PetriNet) means N is a Param
   Param : Sort;
   Param/theory : Param -> Theory;        // which theory has this parameter
-  Param/name : Param -> Name;
-  Param/type : Param -> Theory;       // must instantiate this theory
+  Param/type : Param -> Theory;          // must instantiate this theory
 
   // ============================================================
   // SORTS (renamed to Srt to avoid keyword conflict)
@@ -42,7 +34,6 @@ theory GeologMeta {
 
   Srt : Sort;
   Srt/theory : Srt -> Theory;
-  Srt/name : Srt -> Name;
 
   // ============================================================
   // DERIVED SORTS (Base | Product)
@@ -63,7 +54,6 @@ theory GeologMeta {
   Field : Sort;
   Field/prod : Field -> ProdDS;
   Field/type : Field -> DSort;
-  Field/name : Field -> Name;
 
   // ============================================================
   // FUNCTION SYMBOLS
@@ -71,7 +61,6 @@ theory GeologMeta {
 
   Func : Sort;
   Func/theory : Func -> Theory;
-  Func/name : Func -> Name;
   Func/dom : Func -> DSort;
   Func/cod : Func -> DSort;
 
@@ -81,7 +70,6 @@ theory GeologMeta {
 
   Rel : Sort;
   Rel/theory : Rel -> Theory;
-  Rel/name : Rel -> Name;
   Rel/dom : Rel -> DSort;
 
   // ============================================================
@@ -91,7 +79,6 @@ theory GeologMeta {
   // Exists quantifiers or context variables.
 
   Binder : Sort;
-  Binder/name : Binder -> Name;
   Binder/type : Binder -> DSort;
 
   // ============================================================
@@ -118,13 +105,13 @@ theory GeologMeta {
   RecEntry : Sort;
   RecEntry/record : RecEntry -> RecordT;
   RecEntry/val : RecEntry -> Term;
-  RecEntry/name : RecEntry -> Name;
+  RecEntry/field : RecEntry -> Field;     // which field this entry is for
 
   // Projection t.field
   ProjT : Sort;
   ProjT/term : ProjT -> Term;
   ProjT/base : ProjT -> Term;
-  ProjT/field : ProjT -> Name;
+  ProjT/field : ProjT -> Field;           // which field to project
 
   // ============================================================
   // FORMULAS
@@ -180,7 +167,6 @@ theory GeologMeta {
 
   Sequent : Sort;
   Sequent/theory : Sequent -> Theory;
-  Sequent/name : Sequent -> Name;
   Sequent/premise : Sequent -> Formula;
   Sequent/conclusion : Sequent -> Formula;
 

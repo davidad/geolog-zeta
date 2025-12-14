@@ -8,12 +8,15 @@ pub mod core;
 pub mod elaborate;
 pub mod id;
 pub mod lexer;
+pub mod meta;
+pub mod naming;
 pub mod parser;
 pub mod patch;
 pub mod pretty;
 pub mod repl;
 pub mod universe;
 pub mod version;
+pub mod workspace;
 
 pub use ast::*;
 pub use lexer::lexer;

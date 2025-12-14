@@ -102,11 +102,16 @@ instance ExampleNet : PetriNet = {
                 }
             }
             geolog::Declaration::Instance(i) => {
+                // Extract theory name from the type expression
+                let theory_name = match &i.theory {
+                    geolog::TypeExpr::Path(p) => p.segments.first().cloned().unwrap_or_else(|| "?".to_string()),
+                    _ => "?".to_string(),
+                };
                 print!("Elaborating instance {}... ", i.name);
                 match elaborate_instance(&env, i, &mut universe) {
                     Ok(structure) => {
                         println!("OK!");
-                        println!("  Theory: {}", structure.theory_name);
+                        println!("  Theory: {}", theory_name);
                         println!("  Elements: {} total", structure.len());
                         for sort_id in 0..structure.carriers.len() {
                             println!("    Sort {}: {} elements", sort_id, structure.carrier_size(sort_id));

@@ -464,13 +464,12 @@ pub fn elaborate_instance(
         .ok_or_else(|| ElabError::UnknownSort(theory_name.clone()))?;
 
     // 2. Initialize structure (functions will be initialized after first pass)
-    let mut structure = Structure::new(
-        theory_name.clone(),
-        theory.theory.signature.sorts.len(),
-    );
+    let mut structure = Structure::new(theory.theory.signature.sorts.len());
 
     // Track name → Slid for resolving references within this instance
+    // Also track Slid → name for error messages
     let mut name_to_slid: HashMap<String, Slid> = HashMap::new();
+    let mut slid_to_name: HashMap<Slid, String> = HashMap::new();
 
     // 3. First pass: create elements
     for item in &instance.body {
@@ -478,9 +477,10 @@ pub fn elaborate_instance(
             // Resolve the sort
             let sort_id = resolve_instance_sort(&theory.theory.signature, sort_expr)?;
 
-            // Add element to structure
-            let slid = structure.add_element(universe, name.clone(), sort_id);
+            // Add element to structure (returns Slid, Luid)
+            let (slid, _luid) = structure.add_element(universe, sort_id);
             name_to_slid.insert(name.clone(), slid);
+            slid_to_name.insert(slid, name.clone());
         }
     }
 
@@ -516,7 +516,7 @@ pub fn elaborate_instance(
                 if elem_sort_id != *expected_domain {
                     return Err(ElabError::DomainMismatch {
                         func_name: func.name.clone(),
-                        element_name: structure.names[elem_slid].clone(),
+                        element_name: slid_to_name.get(&elem_slid).cloned().unwrap_or_else(|| format!("slid_{}", elem_slid)),
                         expected_sort: theory.theory.signature.sorts[*expected_domain].clone(),
                         actual_sort: theory.theory.signature.sorts[elem_sort_id].clone(),
                     });
@@ -529,7 +529,7 @@ pub fn elaborate_instance(
                 if value_sort_id != *expected_codomain {
                     return Err(ElabError::CodomainMismatch {
                         func_name: func.name.clone(),
-                        element_name: structure.names[value_slid].clone(),
+                        element_name: slid_to_name.get(&value_slid).cloned().unwrap_or_else(|| format!("slid_{}", value_slid)),
                         expected_sort: theory.theory.signature.sorts[*expected_codomain].clone(),
                         actual_sort: theory.theory.signature.sorts[value_sort_id].clone(),
                     });
@@ -553,7 +553,7 @@ pub fn elaborate_instance(
     }
 
     // 6. Validate totality: all functions must be defined on all elements of their domain
-    validate_totality(&structure, &theory.theory.signature)?;
+    validate_totality(&structure, &theory.theory.signature, &slid_to_name)?;
 
     Ok(structure)
 }
@@ -626,7 +626,11 @@ fn resolve_instance_element(
 }
 
 /// Check that all functions in the structure are total (defined on every element of their domain)
-fn validate_totality(structure: &Structure, sig: &Signature) -> ElabResult<()> {
+fn validate_totality(
+    structure: &Structure,
+    sig: &Signature,
+    slid_to_name: &HashMap<Slid, String>,
+) -> ElabResult<()> {
     for (func_id, func_sym) in sig.functions.iter().enumerate() {
         // Get the domain sort (only handle base sorts for now)
         let domain_sort_id = match &func_sym.domain {
@@ -641,12 +645,17 @@ fn validate_totality(structure: &Structure, sig: &Signature) -> ElabResult<()> {
         let mut missing = Vec::new();
         for (sort_slid, opt_slid) in structure.functions[func_id].iter().enumerate() {
             if opt_slid.is_none() {
-                // Reverse lookup: sort_slid → slid → name
+                // Reverse lookup: sort_slid → slid
                 // Find the slid that has this sort_slid in this domain sort
                 let slid = structure.carriers[domain_sort_id]
                     .select(sort_slid as u64)
                     .expect("sort_slid should be valid") as Slid;
-                missing.push(structure.names[slid].clone());
+                // Look up element name if available, otherwise fallback to slid
+                let name = slid_to_name
+                    .get(&slid)
+                    .cloned()
+                    .unwrap_or_else(|| format!("element#{}", slid));
+                missing.push(name);
             }
         }
 
@@ -858,10 +867,10 @@ instance ExampleNet : PetriNet = {
         }
 
         // Then elaborate ExampleNet instance
-        if let ast::Declaration::Instance(i) = &file.declarations[1].node {
-            let structure = elaborate_instance(&env, i, &mut universe).expect("instance elaboration failed");
+        if let ast::Declaration::Instance(inst) = &file.declarations[1].node {
+            let structure = elaborate_instance(&env, inst, &mut universe).expect("instance elaboration failed");
 
-            assert_eq!(structure.theory_name, "PetriNet");
+            // Elements are created in order: A(0), B(1), C(2), ab(3), ab_in(4), ab_out(5)
             assert_eq!(structure.len(), 6); // A, B, C, ab, ab_in, ab_out
 
             // Check carriers
@@ -871,9 +880,10 @@ instance ExampleNet : PetriNet = {
             assert_eq!(structure.carrier_size(3), 1); // out: ab_out
 
             // Check function definitions using the new columnar API
-            let ab_in_slid = structure.lookup("ab_in").expect("ab_in not found");
-            let a_slid = structure.lookup("A").expect("A not found");
-            let ab_slid = structure.lookup("ab").expect("ab not found");
+            // Elements by slid: A=0, B=1, C=2, ab=3, ab_in=4, ab_out=5
+            let a_slid: Slid = 0;
+            let ab_slid: Slid = 3;
+            let ab_in_slid: Slid = 4;
 
             // Get the sort-local ID for ab_in
             let ab_in_sort_slid = structure.sort_local_id(ab_in_slid);
