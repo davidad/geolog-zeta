@@ -13,6 +13,13 @@ rkyv = { version = "0.7", features = ["validation", "uuid", "indexmap"] }
 tinyvec = { version = "1.6", features = ["alloc"] }
 indexmap = "2.0"
 memmap2 = "0.9"
+rustyline = "15"  # readline for REPL
+toml = "0.8"      # workspace.toml parsing
+serde = { version = "1", features = ["derive"] }  # for toml
 
 [dev-dependencies]
 insta = "1.40"  # snapshot testing
+
+[[bin]]
+name = "geolog"
+path = "src/bin/geolog.rs"

@@ -11,6 +11,7 @@ pub mod lexer;
 pub mod parser;
 pub mod patch;
 pub mod pretty;
+pub mod repl;
 pub mod universe;
 pub mod version;
 
