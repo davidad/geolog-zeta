@@ -9,7 +9,9 @@ pub mod elaborate;
 pub mod id;
 pub mod lexer;
 pub mod parser;
+pub mod patch;
 pub mod pretty;
+pub mod version;
 
 pub use ast::*;
 pub use lexer::lexer;

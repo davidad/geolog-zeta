@@ -349,6 +349,29 @@ impl Structure {
     pub fn carrier_size(&self, sort_id: SortId) -> u64 {
         self.carriers[sort_id].len()
     }
+
+    /// Add an element with a specific UUID (used when applying patches)
+    pub fn add_element_with_uuid(&mut self, uuid: Uuid, name: String, sort_id: SortId) -> Slid {
+        let slid = self.uuids.len();
+
+        self.uuids.push(uuid);
+        self.uuid_to_slid.insert(uuid, slid);
+        self.names.push(name);
+        self.sorts.push(sort_id);
+        self.carriers[sort_id].insert(slid as u64);
+
+        slid
+    }
+
+    /// Get the number of sorts in this structure
+    pub fn num_sorts(&self) -> usize {
+        self.carriers.len()
+    }
+
+    /// Get the number of functions in this structure
+    pub fn num_functions(&self) -> usize {
+        self.functions.len()
+    }
 }
 
 // ============ Display implementations for debugging ============
