@@ -425,6 +425,7 @@ use crate::id::Slid;
 pub fn elaborate_instance(
     env: &Env,
     instance: &ast::InstanceDecl,
+    universe: &mut crate::universe::Universe,
 ) -> ElabResult<Structure> {
     // 1. Resolve the theory type
     // For now, handle simple paths only (not `ExampleNet ReachabilityProblem`)
@@ -448,7 +449,7 @@ pub fn elaborate_instance(
             let sort_id = resolve_instance_sort(&theory.theory.signature, sort_expr)?;
 
             // Add element to structure
-            let slid = structure.add_element(name.clone(), sort_id);
+            let slid = structure.add_element(universe, name.clone(), sort_id);
             name_to_slid.insert(name.clone(), slid);
         }
     }
@@ -634,6 +635,7 @@ fn validate_totality(structure: &Structure, sig: &Signature) -> ElabResult<()> {
 mod tests {
     use super::*;
     use crate::parse;
+    use crate::universe::Universe;
 
     #[test]
     fn test_elaborate_simple_theory() {
@@ -817,6 +819,7 @@ instance ExampleNet : PetriNet = {
 "#;
         let file = parse(input).expect("parse failed");
         let mut env = Env::new();
+        let mut universe = Universe::new();
 
         // First elaborate PetriNet theory
         if let ast::Declaration::Theory(t) = &file.declarations[0].node {
@@ -826,7 +829,7 @@ instance ExampleNet : PetriNet = {
 
         // Then elaborate ExampleNet instance
         if let ast::Declaration::Instance(i) = &file.declarations[1].node {
-            let structure = elaborate_instance(&env, i).expect("instance elaboration failed");
+            let structure = elaborate_instance(&env, i, &mut universe).expect("instance elaboration failed");
 
             assert_eq!(structure.theory_name, "PetriNet");
             assert_eq!(structure.len(), 6); // A, B, C, ab, ab_in, ab_out
@@ -877,6 +880,7 @@ instance PartialNet : PetriNet = {
 "#;
         let file = parse(input).expect("parse failed");
         let mut env = Env::new();
+        let mut universe = Universe::new();
 
         // First elaborate PetriNet theory
         if let ast::Declaration::Theory(t) = &file.declarations[0].node {
@@ -886,7 +890,7 @@ instance PartialNet : PetriNet = {
 
         // Then try to elaborate the partial instance — should fail
         if let ast::Declaration::Instance(i) = &file.declarations[1].node {
-            let result = elaborate_instance(&env, i);
+            let result = elaborate_instance(&env, i, &mut universe);
             assert!(result.is_err(), "expected error for partial function");
 
             let err = result.unwrap_err();
@@ -921,6 +925,7 @@ instance BadNet : PetriNet = {
 "#;
         let file = parse(input).expect("parse failed");
         let mut env = Env::new();
+        let mut universe = Universe::new();
 
         if let ast::Declaration::Theory(t) = &file.declarations[0].node {
             let elab = elaborate_theory(&mut env, t).expect("theory elaboration failed");
@@ -928,7 +933,7 @@ instance BadNet : PetriNet = {
         }
 
         if let ast::Declaration::Instance(i) = &file.declarations[1].node {
-            let result = elaborate_instance(&env, i);
+            let result = elaborate_instance(&env, i, &mut universe);
             assert!(result.is_err(), "expected domain type error");
 
             let err = result.unwrap_err();
@@ -966,6 +971,7 @@ instance BadNet : PetriNet = {
 "#;
         let file = parse(input).expect("parse failed");
         let mut env = Env::new();
+        let mut universe = Universe::new();
 
         if let ast::Declaration::Theory(t) = &file.declarations[0].node {
             let elab = elaborate_theory(&mut env, t).expect("theory elaboration failed");
@@ -973,7 +979,7 @@ instance BadNet : PetriNet = {
         }
 
         if let ast::Declaration::Instance(i) = &file.declarations[1].node {
-            let result = elaborate_instance(&env, i);
+            let result = elaborate_instance(&env, i, &mut universe);
             assert!(result.is_err(), "expected codomain type error");
 
             let err = result.unwrap_err();

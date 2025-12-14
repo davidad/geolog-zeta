@@ -9,8 +9,10 @@ ariadne = "0.4"  # for nice error reporting
 uuid = { version = "1", features = ["v7"] }
 roaring = "0.10"
 nonminmax = "0.1"
-rkyv = { version = "0.7", features = ["validation", "uuid"] }
+rkyv = { version = "0.7", features = ["validation", "uuid", "indexmap"] }
 tinyvec = { version = "1.6", features = ["alloc"] }
+indexmap = "2.0"
+memmap2 = "0.9"
 
 [dev-dependencies]
 insta = "1.40"  # snapshot testing

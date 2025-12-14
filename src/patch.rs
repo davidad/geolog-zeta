@@ -134,12 +134,14 @@ impl Patch {
 // ============ Diff and Apply operations ============
 
 use crate::core::Structure;
-use crate::id::{get_slid, some_slid};
+use crate::id::{get_slid, some_slid, Luid};
+use crate::universe::Universe;
 
 /// Create a patch representing the difference from `old` to `new`.
 ///
 /// The resulting patch, when applied to `old`, produces `new`.
-pub fn diff(old: &Structure, new: &Structure) -> Patch {
+/// Requires a Universe to convert Luids to UUIDs for the patch.
+pub fn diff(old: &Structure, new: &Structure, universe: &Universe) -> Patch {
     let mut patch = Patch::new(
         None, // Will be set by caller if needed
         new.theory_name.clone(),
@@ -148,19 +150,23 @@ pub fn diff(old: &Structure, new: &Structure) -> Patch {
     );
 
     // Find deletions: elements in old but not in new
-    for (_slid, uuid) in old.uuids.iter().enumerate() {
-        if !new.uuid_to_slid.contains_key(uuid) {
-            patch.elements.deletions.insert(*uuid);
+    for (_slid, &luid) in old.luids.iter().enumerate() {
+        if !new.luid_to_slid.contains_key(&luid) {
+            if let Some(uuid) = universe.get(luid) {
+                patch.elements.deletions.insert(uuid);
+            }
         }
     }
 
     // Find additions: elements in new but not in old
-    for (slid, uuid) in new.uuids.iter().enumerate() {
-        if !old.uuid_to_slid.contains_key(uuid) {
-            patch.elements.additions.insert(
-                *uuid,
-                (new.names[slid].clone(), new.sorts[slid]),
-            );
+    for (slid, &luid) in new.luids.iter().enumerate() {
+        if !old.luid_to_slid.contains_key(&luid) {
+            if let Some(uuid) = universe.get(luid) {
+                patch.elements.additions.insert(
+                    uuid,
+                    (new.names[slid].clone(), new.sorts[slid]),
+                );
+            }
         }
     }
 
@@ -178,36 +184,42 @@ pub fn diff(old: &Structure, new: &Structure) -> Patch {
         // Iterate over elements in the new structure's function domain
         for (sort_slid, opt_codomain) in new.functions[func_id].iter().enumerate() {
             // Find the UUID for this domain element
-            // We need to find the slid from sort_slid
             if let Some(new_codomain_slid) = get_slid(*opt_codomain) {
-                let domain_uuid = find_uuid_by_sort_slid(new, func_id, sort_slid);
+                let domain_uuid = find_uuid_by_sort_slid(new, universe, func_id, sort_slid);
                 if let Some(domain_uuid) = domain_uuid {
-                    let new_codomain_uuid = new.uuids[new_codomain_slid];
+                    let new_codomain_luid = new.luids[new_codomain_slid];
+                    let new_codomain_uuid = universe.get(new_codomain_luid);
 
-                    // Check if this element existed in old
-                    if let Some(&old_domain_slid) = old.uuid_to_slid.get(&domain_uuid) {
-                        let old_sort_slid = old.sort_local_id(old_domain_slid);
-                        let old_codomain = get_slid(old.functions[func_id][old_sort_slid]);
+                    if let Some(new_codomain_uuid) = new_codomain_uuid {
+                        // Check if this element existed in old (by looking up its luid)
+                        let domain_luid = find_luid_by_sort_slid(new, func_id, sort_slid);
+                        if let Some(domain_luid) = domain_luid {
+                            if let Some(&old_domain_slid) = old.luid_to_slid.get(&domain_luid) {
+                                let old_sort_slid = old.sort_local_id(old_domain_slid);
+                                let old_codomain = get_slid(old.functions[func_id][old_sort_slid]);
 
-                        match old_codomain {
-                            Some(old_codomain_slid) => {
-                                let old_codomain_uuid = old.uuids[old_codomain_slid];
-                                if old_codomain_uuid != new_codomain_uuid {
-                                    // Value changed
-                                    old_vals.insert(domain_uuid, Some(old_codomain_uuid));
-                                    new_vals.insert(domain_uuid, new_codomain_uuid);
+                                match old_codomain {
+                                    Some(old_codomain_slid) => {
+                                        let old_codomain_luid = old.luids[old_codomain_slid];
+                                        if let Some(old_codomain_uuid) = universe.get(old_codomain_luid) {
+                                            if old_codomain_uuid != new_codomain_uuid {
+                                                // Value changed
+                                                old_vals.insert(domain_uuid, Some(old_codomain_uuid));
+                                                new_vals.insert(domain_uuid, new_codomain_uuid);
+                                            }
+                                        }
+                                    }
+                                    None => {
+                                        // Was undefined, now defined
+                                        old_vals.insert(domain_uuid, None);
+                                        new_vals.insert(domain_uuid, new_codomain_uuid);
+                                    }
                                 }
-                            }
-                            None => {
-                                // Was undefined, now defined
-                                old_vals.insert(domain_uuid, None);
+                            } else {
+                                // Domain element is new - function value is part of the addition
                                 new_vals.insert(domain_uuid, new_codomain_uuid);
                             }
                         }
-                    } else {
-                        // Domain element is new - function value is part of the addition
-                        // We still record it in the patch for completeness
-                        new_vals.insert(domain_uuid, new_codomain_uuid);
                     }
                 }
             }
@@ -222,53 +234,53 @@ pub fn diff(old: &Structure, new: &Structure) -> Patch {
     patch
 }
 
-/// Helper to find the UUID of an element given its func_id and sort_slid in a structure
-fn find_uuid_by_sort_slid(structure: &Structure, func_id: usize, sort_slid: usize) -> Option<Uuid> {
-    // We need to find which sort this function's domain is
-    // For now, assume functions have base sort domains
-    // This is a simplification - product domains would need more work
-
-    // Iterate through all elements to find one with matching sort_slid
+/// Helper to find the Luid of an element given its func_id and sort_slid in a structure
+fn find_luid_by_sort_slid(structure: &Structure, func_id: usize, sort_slid: usize) -> Option<Luid> {
     for (slid, &_sort_id) in structure.sorts.iter().enumerate() {
         let elem_sort_slid = structure.sort_local_id(slid);
         if elem_sort_slid == sort_slid {
-            // Check if this element is in the domain of this function
-            // by checking if the carrier matches
             if structure.functions[func_id].len() > sort_slid {
-                return Some(structure.uuids[slid]);
+                return Some(structure.luids[slid]);
             }
         }
     }
     None
 }
 
+/// Helper to find the UUID of an element given its func_id and sort_slid in a structure
+fn find_uuid_by_sort_slid(structure: &Structure, universe: &Universe, func_id: usize, sort_slid: usize) -> Option<Uuid> {
+    find_luid_by_sort_slid(structure, func_id, sort_slid)
+        .and_then(|luid| universe.get(luid))
+}
+
 /// Apply a patch to create a new structure.
 ///
 /// Returns Ok(new_structure) on success, or Err with a description of what went wrong.
-pub fn apply_patch(base: &Structure, patch: &Patch) -> Result<Structure, String> {
+/// Requires a Universe to convert UUIDs from the patch to Luids.
+pub fn apply_patch(base: &Structure, patch: &Patch, universe: &mut Universe) -> Result<Structure, String> {
     // Create a new structure with the same theory
     let mut result = Structure::new(patch.theory_name.clone(), patch.num_sorts);
 
+    // Build a set of deleted UUIDs for quick lookup
+    let deleted_uuids: std::collections::HashSet<Uuid> = patch.elements.deletions.iter().copied().collect();
+
     // Copy elements from base that weren't deleted
-    for (slid, uuid) in base.uuids.iter().enumerate() {
-        if !patch.elements.deletions.contains(uuid) {
-            result.add_element_with_uuid(*uuid, base.names[slid].clone(), base.sorts[slid]);
+    for (slid, &luid) in base.luids.iter().enumerate() {
+        let uuid = universe.get(luid).ok_or("Unknown luid in base structure")?;
+        if !deleted_uuids.contains(&uuid) {
+            result.add_element_with_luid(luid, base.names[slid].clone(), base.sorts[slid]);
         }
     }
 
-    // Add new elements from the patch
+    // Add new elements from the patch (register UUIDs in universe)
     for (uuid, (name, sort_id)) in &patch.elements.additions {
-        result.add_element_with_uuid(*uuid, name.clone(), *sort_id);
+        result.add_element_with_uuid(universe, *uuid, name.clone(), *sort_id);
     }
 
     // Initialize function storage
-    // We need domain sort ids for each function
-    // For now, assume same structure as base (no schema changes)
     let domain_sort_ids: Vec<Option<SortId>> = (0..patch.num_functions)
         .map(|func_id| {
             if func_id < base.functions.len() && !base.functions[func_id].is_empty() {
-                // Find the sort that matches this function's domain size
-                // This is a heuristic - proper solution needs signature info
                 for (sort_id, carrier) in base.carriers.iter().enumerate() {
                     if carrier.len() as usize == base.functions[func_id].len() {
                         return Some(sort_id);
@@ -285,14 +297,14 @@ pub fn apply_patch(base: &Structure, patch: &Patch) -> Result<Structure, String>
     for func_id in 0..base.num_functions().min(result.num_functions()) {
         for (old_sort_slid, opt_codomain) in base.functions[func_id].iter().enumerate() {
             if let Some(old_codomain_slid) = get_slid(*opt_codomain) {
-                // Find the domain element's UUID
-                let domain_uuid = find_uuid_by_sort_slid(base, func_id, old_sort_slid);
-                if let Some(domain_uuid) = domain_uuid {
-                    // Check if domain element still exists
-                    if let Some(&new_domain_slid) = result.uuid_to_slid.get(&domain_uuid) {
+                // Find the domain element's Luid
+                let domain_luid = find_luid_by_sort_slid(base, func_id, old_sort_slid);
+                if let Some(domain_luid) = domain_luid {
+                    // Check if domain element still exists in result
+                    if let Some(&new_domain_slid) = result.luid_to_slid.get(&domain_luid) {
                         // Check if codomain element still exists
-                        let codomain_uuid = base.uuids[old_codomain_slid];
-                        if let Some(&new_codomain_slid) = result.uuid_to_slid.get(&codomain_uuid) {
+                        let codomain_luid = base.luids[old_codomain_slid];
+                        if let Some(&new_codomain_slid) = result.luid_to_slid.get(&codomain_luid) {
                             let new_sort_slid = result.sort_local_id(new_domain_slid);
                             if new_sort_slid < result.functions[func_id].len() {
                                 result.functions[func_id][new_sort_slid] = some_slid(new_codomain_slid);
@@ -304,17 +316,21 @@ pub fn apply_patch(base: &Structure, patch: &Patch) -> Result<Structure, String>
         }
     }
 
-    // Apply function value changes from patch
+    // Apply function value changes from patch (using UUIDs → Luids)
     for (func_id, changes) in &patch.functions.new_values {
         if *func_id < result.num_functions() {
             for (domain_uuid, codomain_uuid) in changes {
-                if let (Some(&domain_slid), Some(&codomain_slid)) = (
-                    result.uuid_to_slid.get(domain_uuid),
-                    result.uuid_to_slid.get(codomain_uuid),
-                ) {
-                    let sort_slid = result.sort_local_id(domain_slid);
-                    if sort_slid < result.functions[*func_id].len() {
-                        result.functions[*func_id][sort_slid] = some_slid(codomain_slid);
+                let domain_luid = universe.lookup(domain_uuid);
+                let codomain_luid = universe.lookup(codomain_uuid);
+                if let (Some(domain_luid), Some(codomain_luid)) = (domain_luid, codomain_luid) {
+                    if let (Some(&domain_slid), Some(&codomain_slid)) = (
+                        result.luid_to_slid.get(&domain_luid),
+                        result.luid_to_slid.get(&codomain_luid),
+                    ) {
+                        let sort_slid = result.sort_local_id(domain_slid);
+                        if sort_slid < result.functions[*func_id].len() {
+                            result.functions[*func_id][sort_slid] = some_slid(codomain_slid);
+                        }
                     }
                 }
             }
@@ -325,9 +341,9 @@ pub fn apply_patch(base: &Structure, patch: &Patch) -> Result<Structure, String>
 }
 
 /// Create a patch representing a structure from empty (initial commit)
-pub fn to_initial_patch(structure: &Structure) -> Patch {
+pub fn to_initial_patch(structure: &Structure, universe: &Universe) -> Patch {
     let empty = Structure::new(structure.theory_name.clone(), structure.num_sorts());
-    diff(&empty, structure)
+    diff(&empty, structure, universe)
 }
 
 #[cfg(test)]
@@ -351,36 +367,42 @@ mod tests {
 
     #[test]
     fn test_diff_empty_structures() {
+        let universe = Universe::new();
         let s1 = Structure::new("Test".to_string(), 2);
         let s2 = Structure::new("Test".to_string(), 2);
-        let patch = diff(&s1, &s2);
+        let patch = diff(&s1, &s2, &universe);
         assert!(patch.is_empty());
     }
 
     #[test]
     fn test_diff_with_additions() {
+        let mut universe = Universe::new();
         let s1 = Structure::new("Test".to_string(), 2);
         let mut s2 = Structure::new("Test".to_string(), 2);
-        s2.add_element("foo".to_string(), 0);
-        s2.add_element("bar".to_string(), 1);
+        s2.add_element(&mut universe, "foo".to_string(), 0);
+        s2.add_element(&mut universe, "bar".to_string(), 1);
 
-        let patch = diff(&s1, &s2);
+        let patch = diff(&s1, &s2, &universe);
         assert_eq!(patch.elements.additions.len(), 2);
         assert!(patch.elements.deletions.is_empty());
     }
 
     #[test]
     fn test_apply_patch_additions() {
+        let mut universe = Universe::new();
         let s1 = Structure::new("Test".to_string(), 2);
         let mut s2 = Structure::new("Test".to_string(), 2);
-        let uuid1 = s2.add_element("foo".to_string(), 0);
-        let uuid2 = s2.add_element("bar".to_string(), 1);
+        let slid1 = s2.add_element(&mut universe, "foo".to_string(), 0);
+        let slid2 = s2.add_element(&mut universe, "bar".to_string(), 1);
 
-        let patch = diff(&s1, &s2);
-        let s3 = apply_patch(&s1, &patch).unwrap();
+        let patch = diff(&s1, &s2, &universe);
+        let s3 = apply_patch(&s1, &patch, &mut universe).unwrap();
 
         assert_eq!(s3.len(), 2);
-        assert!(s3.uuid_to_slid.contains_key(&s2.uuids[uuid1]));
-        assert!(s3.uuid_to_slid.contains_key(&s2.uuids[uuid2]));
+        // Check that the Luids are present
+        let luid1 = s2.get_luid(slid1);
+        let luid2 = s2.get_luid(slid2);
+        assert!(s3.luid_to_slid.contains_key(&luid1));
+        assert!(s3.luid_to_slid.contains_key(&luid2));
     }
 }

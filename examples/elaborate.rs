@@ -1,5 +1,6 @@
 use std::rc::Rc;
 use geolog::{parse, elaborate::{Env, elaborate_theory, elaborate_instance}};
+use geolog::universe::Universe;
 
 fn main() {
     let input = r#"
@@ -71,6 +72,7 @@ instance ExampleNet : PetriNet = {
 
     println!("=== ELABORATING ===");
     let mut env = Env::new();
+    let mut universe = Universe::new();
 
     for decl in &file.declarations {
         match &decl.node {
@@ -101,7 +103,7 @@ instance ExampleNet : PetriNet = {
             }
             geolog::Declaration::Instance(i) => {
                 print!("Elaborating instance {}... ", i.name);
-                match elaborate_instance(&env, i) {
+                match elaborate_instance(&env, i, &mut universe) {
                     Ok(structure) => {
                         println!("OK!");
                         println!("  Theory: {}", structure.theory_name);

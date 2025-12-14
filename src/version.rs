@@ -6,6 +6,7 @@
 use crate::core::Structure;
 use crate::id::Uuid;
 use crate::patch::{apply_patch, diff, to_initial_patch, Patch};
+use crate::universe::Universe;
 
 use rkyv::ser::serializers::AllocSerializer;
 use rkyv::ser::Serializer;
@@ -19,6 +20,9 @@ use std::path::{Path, PathBuf};
 ///
 /// This provides a simple linear history (no branches/merges yet).
 /// Patches are stored on disk and loaded on demand.
+///
+/// Contains a Universe for mapping UUIDs to Luids. The Universe is
+/// persisted alongside the patches.
 #[derive(Debug)]
 pub struct VersionedState {
     /// All patches, indexed by target_commit UUID
@@ -29,16 +33,21 @@ pub struct VersionedState {
     pub head: Option<Uuid>,
     /// Directory where patches are stored
     pub patches_dir: PathBuf,
+    /// The universe for UUID↔Luid mapping
+    pub universe: Universe,
 }
 
 impl VersionedState {
     /// Create a new versioned state with the given patches directory
     pub fn new(patches_dir: impl Into<PathBuf>) -> Self {
+        let patches_dir = patches_dir.into();
+        let universe_path = patches_dir.join("universe.bin");
         Self {
             patches: BTreeMap::new(),
             commit_parents: BTreeMap::new(),
             head: None,
-            patches_dir: patches_dir.into(),
+            patches_dir,
+            universe: Universe::with_path(universe_path),
         }
     }
 
@@ -46,6 +55,10 @@ impl VersionedState {
     pub fn load_patches(&mut self) -> Result<(), String> {
         fs::create_dir_all(&self.patches_dir)
             .map_err(|e| format!("Failed to create patches directory: {}", e))?;
+
+        // Load the universe
+        let universe_path = self.patches_dir.join("universe.bin");
+        self.universe = Universe::load(&universe_path)?;
 
         let entries = fs::read_dir(&self.patches_dir)
             .map_err(|e| format!("Failed to read patches directory: {}", e))?;
@@ -110,8 +123,8 @@ impl VersionedState {
         }
     }
 
-    /// Save a patch to disk
-    pub fn save_patch(&self, patch: &Patch) -> Result<(), String> {
+    /// Save a patch to disk (also saves the universe if dirty)
+    pub fn save_patch(&mut self, patch: &Patch) -> Result<(), String> {
         fs::create_dir_all(&self.patches_dir)
             .map_err(|e| format!("Failed to create patches directory: {}", e))?;
 
@@ -131,11 +144,16 @@ impl VersionedState {
         file.write_all(&bytes)
             .map_err(|e| format!("Failed to write patch file: {}", e))?;
 
+        // Save the universe if dirty
+        if self.universe.is_dirty() {
+            self.universe.save()?;
+        }
+
         Ok(())
     }
 
     /// Checkout a specific commit, returning the reconstructed structure
-    pub fn checkout(&self, commit: Uuid) -> Result<Structure, String> {
+    pub fn checkout(&mut self, commit: Uuid) -> Result<Structure, String> {
         // Build the chain of patches from root to target
         let mut chain = Vec::new();
         let mut current = Some(commit);
@@ -145,7 +163,7 @@ impl VersionedState {
                 .patches
                 .get(&c)
                 .ok_or_else(|| format!("Commit {} not found", c))?;
-            chain.push(patch);
+            chain.push(patch.clone());
             current = patch.source_commit;
         }
 
@@ -159,8 +177,8 @@ impl VersionedState {
             return Err("No patches to apply".to_string());
         };
 
-        for patch in chain {
-            structure = apply_patch(&structure, patch)?;
+        for patch in &chain {
+            structure = apply_patch(&structure, patch, &mut self.universe)?;
         }
 
         Ok(structure)
@@ -173,12 +191,12 @@ impl VersionedState {
         let patch = if let Some(head) = self.head {
             // Diff from current HEAD
             let base = self.checkout(head)?;
-            let mut patch = diff(&base, structure);
+            let mut patch = diff(&base, structure, &self.universe);
             patch.source_commit = Some(head);
             patch
         } else {
             // Initial commit
-            to_initial_patch(structure)
+            to_initial_patch(structure, &self.universe)
         };
 
         // Skip empty patches
@@ -201,7 +219,7 @@ impl VersionedState {
     }
 
     /// Get the current HEAD structure, or None if no commits
-    pub fn get_head_structure(&self) -> Result<Option<Structure>, String> {
+    pub fn get_head_structure(&mut self) -> Result<Option<Structure>, String> {
         match self.head {
             Some(head) => Ok(Some(self.checkout(head)?)),
             None => Ok(None),
@@ -253,10 +271,10 @@ mod tests {
         let dir = temp_dir();
         let mut state = VersionedState::new(&dir);
 
-        // Create a structure
+        // Create a structure using the state's universe
         let mut s1 = Structure::new("Test".to_string(), 2);
-        s1.add_element("foo".to_string(), 0);
-        s1.add_element("bar".to_string(), 1);
+        s1.add_element(&mut state.universe, "foo".to_string(), 0);
+        s1.add_element(&mut state.universe, "bar".to_string(), 1);
 
         // Commit it
         let commit1 = state.commit(&s1).expect("commit should succeed");
@@ -278,14 +296,15 @@ mod tests {
 
         // First commit
         let mut s1 = Structure::new("Test".to_string(), 2);
-        s1.add_element("foo".to_string(), 0);
+        let foo_slid = s1.add_element(&mut state.universe, "foo".to_string(), 0);
+        let foo_luid = s1.get_luid(foo_slid);
         let commit1 = state.commit(&s1).expect("commit 1");
 
-        // Second commit with more elements
+        // Second commit with more elements (preserving "foo" via its Luid)
         let mut s2 = Structure::new("Test".to_string(), 2);
-        s2.add_element_with_uuid(s1.uuids[0], "foo".to_string(), 0);
-        s2.add_element("bar".to_string(), 1);
-        s2.add_element("baz".to_string(), 0);
+        s2.add_element_with_luid(foo_luid, "foo".to_string(), 0);
+        s2.add_element(&mut state.universe, "bar".to_string(), 1);
+        s2.add_element(&mut state.universe, "baz".to_string(), 0);
         let commit2 = state.commit(&s2).expect("commit 2");
 
         assert_eq!(state.num_commits(), 2);
@@ -317,7 +336,7 @@ mod tests {
         {
             let mut state = VersionedState::new(&dir);
             let mut s = Structure::new("Test".to_string(), 2);
-            s.add_element("foo".to_string(), 0);
+            s.add_element(&mut state.universe, "foo".to_string(), 0);
             commit_uuid = state.commit(&s).expect("commit");
         }
 

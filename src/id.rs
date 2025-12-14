@@ -2,10 +2,16 @@
 //!
 //! The key insight is that different operations benefit from different ID granularities:
 //! - UUIDs for global identity (persistence, version control, cross-structure references)
-//! - Local indices for efficient computation (cache-friendly, compact)
+//! - Luids for installation-wide identity (stable across structures, persisted)
+//! - Slids for structure-local computation (cache-friendly, compact)
 
 pub use uuid::Uuid;
 pub use nonminmax::NonMaxUsize;
+
+/// Locally Universal ID: index into the global universe of UUIDs (0..N-1)
+/// This is stable across the entire installation and persists across sessions.
+/// See `universe::Universe` for the mapping.
+pub type Luid = usize;
 
 /// Structure-Local ID: index within a structure's element universe (0..N-1)
 /// This is the primary working ID for most operations within a structure.

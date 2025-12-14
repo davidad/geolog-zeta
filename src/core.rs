@@ -217,7 +217,8 @@ pub struct ElaboratedTheory {
 
 // ============ Structures (instances/models) ============
 
-use crate::id::{Slid, SortSlid, Uuid, OptSlid, some_slid, get_slid};
+use crate::id::{Luid, Slid, SortSlid, Uuid, OptSlid, some_slid, get_slid};
+use crate::universe::Universe;
 use roaring::RoaringTreemap;
 
 /// A structure: interpretation of a signature in FinSet
@@ -225,16 +226,20 @@ use roaring::RoaringTreemap;
 /// This is a model/instance of a theory — a functor from the signature to FinSet:
 /// - Each sort maps to a finite set of elements
 /// - Each function symbol maps to a function between those sets
+///
+/// Elements are identified by Luids (Locally Universal IDs) which reference
+/// UUIDs in the global Universe. This allows efficient integer operations
+/// while maintaining stable identity across versions.
 #[derive(Clone, Debug)]
 pub struct Structure {
     /// The theory being instantiated
     pub theory_name: String,
 
-    /// Global identity: Slid → Uuid (for persistence, version control)
-    pub uuids: Vec<Uuid>,
+    /// Global identity: Slid → Luid (references Universe for UUID lookup)
+    pub luids: Vec<Luid>,
 
-    /// Reverse lookup: Uuid → Slid
-    pub uuid_to_slid: HashMap<Uuid, Slid>,
+    /// Reverse lookup: Luid → Slid (for finding elements by their global ID)
+    pub luid_to_slid: HashMap<Luid, Slid>,
 
     /// Element names: Slid → name (for debugging/display)
     pub names: Vec<String>,
@@ -261,8 +266,8 @@ impl Structure {
     pub fn new(theory_name: String, num_sorts: usize) -> Self {
         Self {
             theory_name,
-            uuids: Vec::new(),
-            uuid_to_slid: HashMap::new(),
+            luids: Vec::new(),
+            luid_to_slid: HashMap::new(),
             names: Vec::new(),
             sorts: Vec::new(),
             carriers: vec![RoaringTreemap::new(); num_sorts],
@@ -285,18 +290,32 @@ impl Structure {
             .collect();
     }
 
-    /// Add a new element to the structure
-    pub fn add_element(&mut self, name: String, sort_id: SortId) -> Slid {
+    /// Add a new element to the structure, registering its UUID in the universe.
+    /// Returns the Slid (structure-local ID) for the new element.
+    pub fn add_element(&mut self, universe: &mut Universe, name: String, sort_id: SortId) -> Slid {
         let uuid = Uuid::now_v7();
-        let slid = self.uuids.len();
+        let luid = universe.intern(uuid);
+        self.add_element_with_luid(luid, name, sort_id)
+    }
 
-        self.uuids.push(uuid);
-        self.uuid_to_slid.insert(uuid, slid);
+    /// Add an element with a specific Luid (used when applying patches or loading)
+    pub fn add_element_with_luid(&mut self, luid: Luid, name: String, sort_id: SortId) -> Slid {
+        let slid = self.luids.len();
+
+        self.luids.push(luid);
+        self.luid_to_slid.insert(luid, slid);
         self.names.push(name);
         self.sorts.push(sort_id);
         self.carriers[sort_id].insert(slid as u64);
 
         slid
+    }
+
+    /// Add an element with a specific UUID, registering it in the universe.
+    /// Used when applying patches that reference UUIDs.
+    pub fn add_element_with_uuid(&mut self, universe: &mut Universe, uuid: Uuid, name: String, sort_id: SortId) -> Slid {
+        let luid = universe.intern(uuid);
+        self.add_element_with_luid(luid, name, sort_id)
     }
 
     /// Define a function value: f(domain_elem) = codomain_elem
@@ -335,32 +354,34 @@ impl Structure {
         self.names.iter().position(|n| n == name)
     }
 
+    /// Look up element by Luid
+    pub fn lookup_luid(&self, luid: Luid) -> Option<Slid> {
+        self.luid_to_slid.get(&luid).copied()
+    }
+
+    /// Get the Luid for a Slid
+    pub fn get_luid(&self, slid: Slid) -> Luid {
+        self.luids[slid]
+    }
+
+    /// Get the UUID for a Slid (requires Universe lookup)
+    pub fn get_uuid(&self, slid: Slid, universe: &Universe) -> Option<Uuid> {
+        universe.get(self.luids[slid])
+    }
+
     /// Get element count
     pub fn len(&self) -> usize {
-        self.uuids.len()
+        self.luids.len()
     }
 
     /// Check if empty
     pub fn is_empty(&self) -> bool {
-        self.uuids.is_empty()
+        self.luids.is_empty()
     }
 
     /// Get carrier size for a sort
     pub fn carrier_size(&self, sort_id: SortId) -> u64 {
         self.carriers[sort_id].len()
-    }
-
-    /// Add an element with a specific UUID (used when applying patches)
-    pub fn add_element_with_uuid(&mut self, uuid: Uuid, name: String, sort_id: SortId) -> Slid {
-        let slid = self.uuids.len();
-
-        self.uuids.push(uuid);
-        self.uuid_to_slid.insert(uuid, slid);
-        self.names.push(name);
-        self.sorts.push(sort_id);
-        self.carriers[sort_id].insert(slid as u64);
-
-        slid
     }
 
     /// Get the number of sorts in this structure
