@@ -1,5 +1,5 @@
 use std::rc::Rc;
-use geolog::{parse, elaborate::{Env, elaborate_theory}};
+use geolog::{parse, elaborate::{Env, elaborate_theory, elaborate_instance}};
 
 fn main() {
     let input = r#"
@@ -26,6 +26,36 @@ theory (X : Sort) (Y : Sort) Iso {
   bwd : Y -> X;
   fb : forall x : X. |- x fwd bwd = x;
   bf : forall y : Y. |- y bwd fwd = y;
+}
+
+instance ExampleNet : PetriNet = {
+  A : P;
+  B : P;
+  C : P;
+  ab : T;
+  ba : T;
+  abc : T;
+  ab_in : in;
+  ab_in in/src = A;
+  ab_in in/tgt = ab;
+  ab_out : out;
+  ab_out out/src = ab;
+  ab_out out/tgt = B;
+  ba_in : in;
+  ba_in in/src = B;
+  ba_in in/tgt = ba;
+  ba_out : out;
+  ba_out out/src = ba;
+  ba_out out/tgt = A;
+  abc_in1 : in;
+  abc_in1 in/src = A;
+  abc_in1 in/tgt = abc;
+  abc_in2 : in;
+  abc_in2 in/src = B;
+  abc_in2 in/tgt = abc;
+  abc_out : out;
+  abc_out out/src = abc;
+  abc_out out/tgt = C;
 }
 "#;
 
@@ -69,8 +99,26 @@ theory (X : Sort) (Y : Sort) Iso {
                     }
                 }
             }
-            geolog::Declaration::Instance(_) => {
-                println!("Skipping instance (not implemented yet)");
+            geolog::Declaration::Instance(i) => {
+                print!("Elaborating instance {}... ", i.name);
+                match elaborate_instance(&env, i) {
+                    Ok(structure) => {
+                        println!("OK!");
+                        println!("  Theory: {}", structure.theory_name);
+                        println!("  Elements: {} total", structure.len());
+                        for sort_id in 0..structure.carriers.len() {
+                            println!("    Sort {}: {} elements", sort_id, structure.carrier_size(sort_id));
+                        }
+                        println!("  Functions defined:");
+                        for (fid, func_map) in structure.functions.iter().enumerate() {
+                            println!("    Func {}: {} mappings", fid, func_map.len());
+                        }
+                        println!();
+                    }
+                    Err(e) => {
+                        println!("FAILED: {}", e);
+                    }
+                }
             }
             geolog::Declaration::Query(_) => {
                 println!("Skipping query (not implemented yet)");

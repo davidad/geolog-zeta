@@ -215,7 +215,168 @@ pub struct ElaboratedTheory {
     pub theory: Theory,
 }
 
+// ============ Structures (instances/models) ============
+
+use crate::id::{Slid, SortSlid, Uuid, OptSlid, some_slid, get_slid};
+use roaring::RoaringTreemap;
+
+/// A structure: interpretation of a signature in FinSet
+///
+/// This is a model/instance of a theory — a functor from the signature to FinSet:
+/// - Each sort maps to a finite set of elements
+/// - Each function symbol maps to a function between those sets
+#[derive(Clone, Debug)]
+pub struct Structure {
+    /// The theory being instantiated
+    pub theory_name: String,
+
+    /// Global identity: Slid → Uuid (for persistence, version control)
+    pub uuids: Vec<Uuid>,
+
+    /// Reverse lookup: Uuid → Slid
+    pub uuid_to_slid: HashMap<Uuid, Slid>,
+
+    /// Element names: Slid → name (for debugging/display)
+    pub names: Vec<String>,
+
+    /// Element sorts: Slid → SortId
+    pub sorts: Vec<SortId>,
+
+    /// Carriers: SortId → RoaringTreemap of Slids in that sort
+    pub carriers: Vec<RoaringTreemap>,
+
+    /// Functions: FuncId → Vec indexed by domain SortSlid
+    /// Each Vec[sort_slid] contains the codomain Slid (or None if undefined)
+    /// Using OptSlid (Option<NonMaxUsize>) which is same size as usize
+    pub functions: Vec<Vec<OptSlid>>,
+
+    /// Nested structures (for instance-valued fields)
+    pub nested: HashMap<String, Structure>,
+}
+
+impl Structure {
+    /// Create a new empty structure for a theory.
+    /// Note: functions are not pre-allocated here; call `init_functions()` after
+    /// all elements are added and carrier sizes are known.
+    pub fn new(theory_name: String, num_sorts: usize) -> Self {
+        Self {
+            theory_name,
+            uuids: Vec::new(),
+            uuid_to_slid: HashMap::new(),
+            names: Vec::new(),
+            sorts: Vec::new(),
+            carriers: vec![RoaringTreemap::new(); num_sorts],
+            functions: Vec::new(),  // Initialized later via init_functions()
+            nested: HashMap::new(),
+        }
+    }
+
+    /// Initialize function storage based on domain carrier sizes.
+    /// Must be called after all elements are added.
+    pub fn init_functions(&mut self, domain_sort_ids: &[Option<SortId>]) {
+        self.functions = domain_sort_ids
+            .iter()
+            .map(|opt_sort_id| {
+                match opt_sort_id {
+                    Some(sort_id) => vec![None; self.carrier_size(*sort_id) as usize],
+                    None => Vec::new(),  // Product domains deferred
+                }
+            })
+            .collect();
+    }
+
+    /// Add a new element to the structure
+    pub fn add_element(&mut self, name: String, sort_id: SortId) -> Slid {
+        let uuid = Uuid::now_v7();
+        let slid = self.uuids.len();
+
+        self.uuids.push(uuid);
+        self.uuid_to_slid.insert(uuid, slid);
+        self.names.push(name);
+        self.sorts.push(sort_id);
+        self.carriers[sort_id].insert(slid as u64);
+
+        slid
+    }
+
+    /// Define a function value: f(domain_elem) = codomain_elem
+    /// Uses SortSlid indexing into the columnar function storage.
+    pub fn define_function(&mut self, func_id: FuncId, domain_slid: Slid, codomain_slid: Slid) -> Result<(), String> {
+        let domain_sort_slid = self.sort_local_id(domain_slid);
+
+        if let Some(existing) = get_slid(self.functions[func_id][domain_sort_slid]) {
+            if existing != codomain_slid {
+                return Err(format!(
+                    "conflicting definition: func {}({}) already defined as {}, cannot redefine as {}",
+                    func_id, self.names[domain_slid], self.names[existing], self.names[codomain_slid]
+                ));
+            }
+        }
+
+        self.functions[func_id][domain_sort_slid] = some_slid(codomain_slid);
+        Ok(())
+    }
+
+    /// Get a function value by SortSlid index (for iteration/lookup)
+    pub fn get_function(&self, func_id: FuncId, domain_sort_slid: SortSlid) -> Option<Slid> {
+        get_slid(self.functions[func_id][domain_sort_slid])
+    }
+
+    /// Get the sort-local index for an element.
+    /// Note: roaring's rank(x) returns count of elements ≤ x, so we subtract 1.
+    pub fn sort_local_id(&self, slid: Slid) -> SortSlid {
+        let sort_id = self.sorts[slid];
+        // rank returns count of elements ≤ slid; subtract 1 for 0-based index
+        (self.carriers[sort_id].rank(slid as u64) - 1) as SortSlid
+    }
+
+    /// Look up element by name
+    pub fn lookup(&self, name: &str) -> Option<Slid> {
+        self.names.iter().position(|n| n == name)
+    }
+
+    /// Get element count
+    pub fn len(&self) -> usize {
+        self.uuids.len()
+    }
+
+    /// Check if empty
+    pub fn is_empty(&self) -> bool {
+        self.uuids.is_empty()
+    }
+
+    /// Get carrier size for a sort
+    pub fn carrier_size(&self, sort_id: SortId) -> u64 {
+        self.carriers[sort_id].len()
+    }
+}
+
 // ============ Display implementations for debugging ============
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_roaring_rank() {
+        let mut bm = RoaringTreemap::new();
+        bm.insert(4);
+
+        println!("bitmap: {:?}", bm.iter().collect::<Vec<_>>());
+        println!("rank(4) = {}", bm.rank(4));
+        println!("rank(5) = {}", bm.rank(5));
+        println!("rank(3) = {}", bm.rank(3));
+        println!("len = {}", bm.len());
+
+        // rank(x) returns number of elements LESS THAN OR EQUAL to x
+        assert_eq!(bm.rank(4), 1, "rank(4) on {{4}} should be 1 (one element ≤ 4)");
+        assert_eq!(bm.rank(5), 1, "rank(5) on {{4}} should be 1 (one element ≤ 5)");
+        assert_eq!(bm.rank(3), 0, "rank(3) on {{4}} should be 0 (no elements ≤ 3)");
+
+        // So 0-based index of x in bitmap = rank(x) - 1
+        assert_eq!(bm.rank(4) - 1, 0, "0-based index of 4 should be 0");
+    }
+}
 
 impl std::fmt::Display for DerivedSort {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

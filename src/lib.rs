@@ -6,6 +6,7 @@
 pub mod ast;
 pub mod core;
 pub mod elaborate;
+pub mod id;
 pub mod lexer;
 pub mod parser;
 pub mod pretty;
