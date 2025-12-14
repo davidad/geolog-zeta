@@ -6,6 +6,7 @@
 pub mod ast;
 pub mod core;
 pub mod elaborate;
+pub mod error;
 pub mod id;
 pub mod lexer;
 pub mod meta;
@@ -29,7 +30,7 @@ pub fn parse(input: &str) -> Result<File, String> {
 
     let tokens = lexer::lexer()
         .parse(input)
-        .map_err(|errs| format!("Lexer errors: {:?}", errs))?;
+        .map_err(|errs| error::format_lexer_errors(input, errs))?;
 
     let token_stream: Vec<_> = tokens.iter().map(|(t, s)| (t.clone(), s.clone())).collect();
     let len = input.len();
@@ -39,5 +40,5 @@ pub fn parse(input: &str) -> Result<File, String> {
             len..len + 1,
             token_stream.into_iter(),
         ))
-        .map_err(|errs| format!("Parser errors: {:?}", errs))
+        .map_err(|errs| error::format_parser_errors(input, errs, &tokens))
 }
