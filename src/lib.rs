@@ -4,6 +4,8 @@
 //! designed as a unified language for database schemas, queries, and migrations.
 
 pub mod ast;
+pub mod core;
+pub mod elaborate;
 pub mod lexer;
 pub mod parser;
 pub mod pretty;
