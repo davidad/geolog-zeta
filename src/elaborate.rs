@@ -217,11 +217,22 @@ pub fn elaborate_term(
             // So App(base, func) where base is the argument and func is the function
             // First, elaborate the base (the argument)
             let elab_arg = elaborate_term(env, ctx, base)?;
+            let arg_sort = elab_arg.sort(&env.signature);
 
             // Then figure out what the function is
             match func.as_ref() {
                 ast::Term::Path(path) => {
                     let func_id = env.resolve_func_path(path)?;
+                    let func_sym = &env.signature.functions[func_id];
+
+                    // Type check: argument sort must match function domain
+                    if arg_sort != func_sym.domain {
+                        return Err(ElabError::TypeMismatch {
+                            expected: func_sym.domain.clone(),
+                            got: arg_sort,
+                        });
+                    }
+
                     Ok(Term::App(func_id, Box::new(elab_arg)))
                 }
                 _ => {
@@ -257,7 +268,17 @@ pub fn elaborate_formula(
         ast::Formula::Eq(lhs, rhs) => {
             let elab_lhs = elaborate_term(env, ctx, lhs)?;
             let elab_rhs = elaborate_term(env, ctx, rhs)?;
-            // TODO: check that sorts match
+
+            // Type check: both sides must have the same sort
+            let lhs_sort = elab_lhs.sort(&env.signature);
+            let rhs_sort = elab_rhs.sort(&env.signature);
+            if lhs_sort != rhs_sort {
+                return Err(ElabError::TypeMismatch {
+                    expected: lhs_sort,
+                    got: rhs_sort,
+                });
+            }
+
             Ok(Formula::Eq(elab_lhs, elab_rhs))
         }
         ast::Formula::And(conjuncts) => {
@@ -697,6 +718,71 @@ theory Iso {
             let ax = &elab.theory.axioms[0];
             assert_eq!(ax.context.vars.len(), 1);
             assert_eq!(ax.context.vars[0].0, "x");
+        } else {
+            panic!("expected theory");
+        }
+    }
+
+    #[test]
+    fn test_axiom_function_type_error() {
+        // x is of sort X, but bwd expects Y
+        let input = r#"
+theory BadIso {
+    X : Sort;
+    Y : Sort;
+    fwd : X -> Y;
+    bwd : Y -> X;
+    bad : forall x : X. |- x bwd = x;
+}
+"#;
+        let file = parse(input).expect("parse failed");
+        let mut env = Env::new();
+
+        if let ast::Declaration::Theory(t) = &file.declarations[0].node {
+            let result = elaborate_theory(&mut env, t);
+            assert!(result.is_err(), "expected type error in axiom");
+
+            let err = result.unwrap_err();
+            match err {
+                ElabError::TypeMismatch { expected, got } => {
+                    // expected Y (bwd's domain), got X
+                    assert_eq!(expected, DerivedSort::Base(1)); // Y
+                    assert_eq!(got, DerivedSort::Base(0));      // X
+                }
+                other => panic!("expected TypeMismatch error, got: {}", other),
+            }
+        } else {
+            panic!("expected theory");
+        }
+    }
+
+    #[test]
+    fn test_axiom_equality_type_error() {
+        // LHS is X, RHS is Y — can't compare different sorts
+        let input = r#"
+theory BadEq {
+    X : Sort;
+    Y : Sort;
+    fwd : X -> Y;
+    bad : forall x : X. |- x = x fwd;
+}
+"#;
+        let file = parse(input).expect("parse failed");
+        let mut env = Env::new();
+
+        if let ast::Declaration::Theory(t) = &file.declarations[0].node {
+            let result = elaborate_theory(&mut env, t);
+            assert!(result.is_err(), "expected type error in equality");
+
+            let err = result.unwrap_err();
+            match err {
+                ElabError::TypeMismatch { expected, got } => {
+                    // LHS is X, RHS is Y
+                    assert_eq!(expected, DerivedSort::Base(0)); // X
+                    assert_eq!(got, DerivedSort::Base(1));      // Y
+                }
+                other => panic!("expected TypeMismatch error, got: {}", other),
+            }
         } else {
             panic!("expected theory");
         }
