@@ -6,10 +6,12 @@
 pub mod ast;
 pub mod lexer;
 pub mod parser;
+pub mod pretty;
 
 pub use ast::*;
 pub use lexer::lexer;
 pub use parser::parser;
+pub use pretty::pretty_print;
 
 /// Parse a Geolog source string into an AST
 pub fn parse(input: &str) -> Result<File, String> {
