@@ -63,8 +63,10 @@ pub struct Signature {
     pub functions: Vec<FunctionSymbol>,
     /// Map from function name to FuncId
     pub func_names: HashMap<String, FuncId>,
-    /// Relation symbols (currently unused in geolog surface syntax, but present in the formalism)
+    /// Relation symbols
     pub relations: Vec<RelationSymbol>,
+    /// Map from relation name to RelId
+    pub rel_names: HashMap<String, RelId>,
 }
 
 impl Signature {
@@ -86,12 +88,23 @@ impl Signature {
         id
     }
 
+    pub fn add_relation(&mut self, name: String, domain: DerivedSort) -> RelId {
+        let id = self.relations.len();
+        self.rel_names.insert(name.clone(), id);
+        self.relations.push(RelationSymbol { name, domain });
+        id
+    }
+
     pub fn lookup_sort(&self, name: &str) -> Option<SortId> {
         self.sort_names.get(name).copied()
     }
 
     pub fn lookup_func(&self, name: &str) -> Option<FuncId> {
         self.func_names.get(name).copied()
+    }
+
+    pub fn lookup_rel(&self, name: &str) -> Option<RelId> {
+        self.rel_names.get(name).copied()
     }
 }
 

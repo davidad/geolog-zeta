@@ -24,7 +24,7 @@ use geolog::repl::{
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 const PROMPT: &str = "geolog> ";
-const CONTINUATION: &str = "...... ";
+const CONTINUATION: &str = "......  ";
 
 fn main() {
     // Parse command line args

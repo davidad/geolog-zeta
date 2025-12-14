@@ -134,7 +134,7 @@ impl Pretty {
     }
 
     pub fn axiom_decl(&mut self, a: &AxiomDecl) {
-        self.write(&a.name);
+        self.write(&a.name.to_string());
         self.write(" : forall ");
         for (i, qv) in a.quantified.iter().enumerate() {
             if i > 0 {
@@ -251,6 +251,12 @@ impl Pretty {
         match f {
             Formula::True => self.write("true"),
             Formula::False => self.write("false"),
+            Formula::RelApp(rel_name, arg) => {
+                // Postfix relation application: term rel
+                self.term(arg);
+                self.write(" ");
+                self.write(rel_name);
+            }
             Formula::Eq(l, r) => {
                 self.term(l);
                 self.write(" = ");

@@ -127,7 +127,7 @@ pub struct FunctionDecl {
 /// An axiom declaration
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AxiomDecl {
-    pub name: String,
+    pub name: Path,  // Can be hierarchical like `ax/anc/base`
     pub quantified: Vec<QuantifiedVar>,
     pub hypotheses: Vec<Formula>,
     pub conclusion: Formula,
@@ -185,6 +185,9 @@ pub enum Term {
 /// Formulas (geometric logic)
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Formula {
+    /// Relation application: `rel(term)` or `rel([field: value, ...])`
+    RelApp(String, Term),
+
     /// Equality: `t1 = t2`
     Eq(Term, Term),
 

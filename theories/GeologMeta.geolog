@@ -1,0 +1,292 @@
+// GeologMeta: A homoiconic representation of geolog theories
+//
+// An instance of GeologMeta IS a collection of geolog theories, complete with
+// signatures, axioms, and well-formedness constraints.
+//
+// Key design principles:
+// - Names are opaque atoms (UUIDs); human-readable labels stored separately
+// - Child pointers go from parent to children (no products in domains)
+// - Binding uses upward pointers from variable to binder
+// - Transitive closure (ancestor) via Datalog-style axioms
+// - Srt/theory, Func/theory enables multi-theory instances and theory parameters
+//
+// Naming convention: DomainSort/descriptor
+// - Embeddings: VarT/term, EqF/formula (target sort)
+// - Parent pointers: Srt/theory, Field/prod (container sort)
+// - Projections: EqF/lhs, Binder/name (field name)
+
+theory GeologMeta {
+
+  // ============================================================
+  // NAMES (nominal-set-style opaque atoms)
+  // ============================================================
+  // Identity is UUID only. Human-readable strings stored in separate index.
+
+  Name : Sort;
+
+  // ============================================================
+  // THEORIES
+  // ============================================================
+
+  Theory : Sort;
+
+  // Theory parameters: (N : PetriNet) means N is a Param
+  Param : Sort;
+  Param/theory : Param -> Theory;        // which theory has this parameter
+  Param/name : Param -> Name;
+  Param/type : Param -> Theory;       // must instantiate this theory
+
+  // ============================================================
+  // SORTS (renamed to Srt to avoid keyword conflict)
+  // ============================================================
+
+  Srt : Sort;
+  Srt/theory : Srt -> Theory;
+  Srt/name : Srt -> Name;
+
+  // ============================================================
+  // DERIVED SORTS (Base | Product)
+  // ============================================================
+
+  DSort : Sort;
+
+  // Base case: wraps a Sort
+  BaseDS : Sort;
+  BaseDS/dsort : BaseDS -> DSort;
+  BaseDS/srt : BaseDS -> Srt;
+
+  // Product case: [x: A, y: B, ...]
+  ProdDS : Sort;
+  ProdDS/dsort : ProdDS -> DSort;
+
+  // Product fields (recursive: field type is DSort)
+  Field : Sort;
+  Field/prod : Field -> ProdDS;
+  Field/type : Field -> DSort;
+  Field/name : Field -> Name;
+
+  // ============================================================
+  // FUNCTION SYMBOLS
+  // ============================================================
+
+  Func : Sort;
+  Func/theory : Func -> Theory;
+  Func/name : Func -> Name;
+  Func/dom : Func -> DSort;
+  Func/cod : Func -> DSort;
+
+  // ============================================================
+  // RELATION SYMBOLS (predicates, no codomain)
+  // ============================================================
+
+  Rel : Sort;
+  Rel/theory : Rel -> Theory;
+  Rel/name : Rel -> Name;
+  Rel/dom : Rel -> DSort;
+
+  // ============================================================
+  // BINDERS (for variable scoping)
+  // ============================================================
+  // Variables point UP to their binder. Binders are introduced by
+  // Exists quantifiers or context variables.
+
+  Binder : Sort;
+  Binder/name : Binder -> Name;
+  Binder/type : Binder -> DSort;
+
+  // ============================================================
+  // TERMS
+  // ============================================================
+
+  Term : Sort;
+
+  // Variable reference (points to binder)
+  VarT : Sort;
+  VarT/term : VarT -> Term;
+  VarT/binder : VarT -> Binder;       // UPWARD pointer to introducing binder
+
+  // Function application (unary - argument may be a record)
+  AppT : Sort;
+  AppT/term : AppT -> Term;
+  AppT/func : AppT -> Func;
+  AppT/arg : AppT -> Term;
+
+  // Record construction [x = t1, y = t2, ...]
+  RecordT : Sort;
+  RecordT/term : RecordT -> Term;
+
+  RecEntry : Sort;
+  RecEntry/record : RecEntry -> RecordT;
+  RecEntry/val : RecEntry -> Term;
+  RecEntry/name : RecEntry -> Name;
+
+  // Projection t.field
+  ProjT : Sort;
+  ProjT/term : ProjT -> Term;
+  ProjT/base : ProjT -> Term;
+  ProjT/field : ProjT -> Name;
+
+  // ============================================================
+  // FORMULAS
+  // ============================================================
+
+  Formula : Sort;
+
+  // Relation application R(t)
+  RelF : Sort;
+  RelF/formula : RelF -> Formula;
+  RelF/rel : RelF -> Rel;
+  RelF/arg : RelF -> Term;
+
+  // Truth
+  TrueF : Sort;
+  TrueF/formula : TrueF -> Formula;
+
+  // Falsity
+  FalseF : Sort;
+  FalseF/formula : FalseF -> Formula;
+
+  // Equality t1 = t2
+  EqF : Sort;
+  EqF/formula : EqF -> Formula;
+  EqF/lhs : EqF -> Term;
+  EqF/rhs : EqF -> Term;
+
+  // Conjunction (n-ary via arms)
+  ConjF : Sort;
+  ConjF/formula : ConjF -> Formula;
+
+  ConjArm : Sort;
+  ConjArm/conj : ConjArm -> ConjF;
+  ConjArm/child : ConjArm -> Formula;
+
+  // Disjunction (n-ary via arms)
+  DisjF : Sort;
+  DisjF/formula : DisjF -> Formula;
+
+  DisjArm : Sort;
+  DisjArm/disj : DisjArm -> DisjF;
+  DisjArm/child : DisjArm -> Formula;
+
+  // Existential quantification
+  ExistsF : Sort;
+  ExistsF/formula : ExistsF -> Formula;
+  ExistsF/binder : ExistsF -> Binder;     // introduces this binder
+  ExistsF/body : ExistsF -> Formula;
+
+  // ============================================================
+  // SEQUENTS (axioms)
+  // ============================================================
+
+  Sequent : Sort;
+  Sequent/theory : Sequent -> Theory;
+  Sequent/name : Sequent -> Name;
+  Sequent/premise : Sequent -> Formula;
+  Sequent/conclusion : Sequent -> Formula;
+
+  // Context variables (universal quantification at sequent level)
+  CtxVar : Sort;
+  CtxVar/sequent : CtxVar -> Sequent;
+  CtxVar/binder : CtxVar -> Binder;       // introduces this binder
+
+  // ============================================================
+  // NODE UNIVERSE (for ancestry/scoping)
+  // ============================================================
+  // Unified sort for tracking parent-child in formula trees
+
+  Node : Sort;
+  Term/node : Term -> Node;
+  Formula/node : Formula -> Node;
+
+  // ============================================================
+  // CHILD RELATION
+  // ============================================================
+  // child(p, c) means c is an immediate child of p in the AST
+
+  child : [parent: Node, child: Node];
+
+  // ============================================================
+  // ANCESTOR RELATION (transitive closure of child)
+  // ============================================================
+
+  ancestor : [anc: Node, desc: Node];
+
+  // Datalog-style transitive closure axioms
+  ax/anc/base : forall p : Node, c : Node.
+    [parent: p, child: c] child |- [anc: p, desc: c] ancestor;
+
+  ax/anc/step : forall a : Node, p : Node, c : Node.
+    [anc: a, desc: p] ancestor, [parent: p, child: c] child |- [anc: a, desc: c] ancestor;
+
+  // ============================================================
+  // CHILD AXIOMS (populate child from structure)
+  // ============================================================
+
+  // EqF children
+  ax/child/eq/lhs : forall e : EqF, t : Term.
+    e EqF/lhs = t |- [parent: e EqF/formula Formula/node, child: t Term/node] child;
+  ax/child/eq/rhs : forall e : EqF, t : Term.
+    e EqF/rhs = t |- [parent: e EqF/formula Formula/node, child: t Term/node] child;
+
+  // ExistsF body
+  ax/child/exists : forall e : ExistsF, f : Formula.
+    e ExistsF/body = f |- [parent: e ExistsF/formula Formula/node, child: f Formula/node] child;
+
+  // ConjF arms
+  ax/child/conj : forall a : ConjArm, c : ConjF, f : Formula.
+    a ConjArm/conj = c, a ConjArm/child = f |-
+      [parent: c ConjF/formula Formula/node, child: f Formula/node] child;
+
+  // DisjF arms
+  ax/child/disj : forall a : DisjArm, d : DisjF, f : Formula.
+    a DisjArm/disj = d, a DisjArm/child = f |-
+      [parent: d DisjF/formula Formula/node, child: f Formula/node] child;
+
+  // RelF argument
+  ax/child/rel : forall r : RelF, t : Term.
+    r RelF/arg = t |- [parent: r RelF/formula Formula/node, child: t Term/node] child;
+
+  // AppT argument
+  ax/child/app : forall a : AppT, t : Term.
+    a AppT/arg = t |- [parent: a AppT/term Term/node, child: t Term/node] child;
+
+  // ProjT base
+  ax/child/proj : forall p : ProjT, t : Term.
+    p ProjT/base = t |- [parent: p ProjT/term Term/node, child: t Term/node] child;
+
+  // RecEntry value
+  ax/child/rec : forall e : RecEntry, r : RecordT, t : Term.
+    e RecEntry/record = r, e RecEntry/val = t |-
+      [parent: r RecordT/term Term/node, child: t Term/node] child;
+
+  // ============================================================
+  // IN-SEQUENT RELATION (for context variable scoping)
+  // ============================================================
+
+  in_seq : [node: Node, seq: Sequent];
+
+  ax/in_seq/premise : forall s : Sequent, f : Formula.
+    s Sequent/premise = f |- [node: f Formula/node, seq: s] in_seq;
+
+  ax/in_seq/conclusion : forall s : Sequent, f : Formula.
+    s Sequent/conclusion = f |- [node: f Formula/node, seq: s] in_seq;
+
+  ax/in_seq/desc : forall n : Node, m : Node, s : Sequent.
+    [node: n, seq: s] in_seq, [anc: n, desc: m] ancestor |- [node: m, seq: s] in_seq;
+
+  // ============================================================
+  // BINDING WELL-FORMEDNESS CONSTRAINTS
+  // ============================================================
+  // These axioms ensure variables point to valid binders.
+  // An instance satisfies these iff scoping is correct.
+
+  // Exists-bound: binder's exists must be an ancestor of the var
+  ax/wf/exists : forall v : VarT, b : Binder, e : ExistsF.
+    v VarT/binder = b, e ExistsF/binder = b |-
+      [anc: e ExistsF/formula Formula/node, desc: v VarT/term Term/node] ancestor;
+
+  // Context-bound: var must be in the same sequent as the ctx var
+  ax/wf/ctx : forall v : VarT, b : Binder, cv : CtxVar, s : Sequent.
+    v VarT/binder = b, cv CtxVar/binder = b, cv CtxVar/sequent = s |-
+      [node: v VarT/term Term/node, seq: s] in_seq;
+}

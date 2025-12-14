@@ -14,6 +14,7 @@ use crate::core::*;
 pub enum ElabError {
     UnknownSort(String),
     UnknownFunction(String),
+    UnknownRel(String),
     UnknownVariable(String),
     TypeMismatch { expected: DerivedSort, got: DerivedSort },
     NotASort(String),
@@ -48,6 +49,7 @@ impl std::fmt::Display for ElabError {
         match self {
             ElabError::UnknownSort(s) => write!(f, "unknown sort: {}", s),
             ElabError::UnknownFunction(s) => write!(f, "unknown function: {}", s),
+            ElabError::UnknownRel(s) => write!(f, "unknown relation: {}", s),
             ElabError::UnknownVariable(s) => write!(f, "unknown variable: {}", s),
             ElabError::TypeMismatch { expected, got } =>
                 write!(f, "type mismatch: expected {}, got {}", expected, got),
@@ -314,6 +316,26 @@ pub fn elaborate_formula(
             }
             Ok(result)
         }
+        ast::Formula::RelApp(rel_name, arg) => {
+            // Look up the relation
+            let rel_id = env.signature.lookup_rel(rel_name)
+                .ok_or_else(|| ElabError::UnknownRel(rel_name.clone()))?;
+
+            // Elaborate the argument
+            let elab_arg = elaborate_term(env, ctx, arg)?;
+
+            // Type check: argument must match relation domain
+            let rel_sym = &env.signature.relations[rel_id];
+            let arg_sort = elab_arg.sort(&env.signature);
+            if arg_sort != rel_sym.domain {
+                return Err(ElabError::TypeMismatch {
+                    expected: rel_sym.domain.clone(),
+                    got: arg_sort,
+                });
+            }
+
+            Ok(Formula::Rel(rel_id, elab_arg))
+        }
     }
 }
 
@@ -368,12 +390,20 @@ pub fn elaborate_theory(env: &mut Env, theory: &ast::TheoryDecl) -> ElabResult<E
         }
     }
 
-    // Second pass: collect all functions
+    // Second pass: collect all functions and relations
     for item in &theory.body {
-        if let ast::TheoryItem::Function(f) = &item.node {
-            let domain = elaborate_type(&local_env, &f.domain)?;
-            let codomain = elaborate_type(&local_env, &f.codomain)?;
-            local_env.signature.add_function(f.name.to_string(), domain, codomain);
+        match &item.node {
+            ast::TheoryItem::Function(f) => {
+                let domain = elaborate_type(&local_env, &f.domain)?;
+                let codomain = elaborate_type(&local_env, &f.codomain)?;
+                local_env.signature.add_function(f.name.to_string(), domain, codomain);
+            }
+            // A Field with a Record type is a relation declaration
+            ast::TheoryItem::Field(name, ty @ ast::TypeExpr::Record(_)) => {
+                let domain = elaborate_type(&local_env, ty)?;
+                local_env.signature.add_relation(name.clone(), domain);
+            }
+            _ => {}
         }
     }
 

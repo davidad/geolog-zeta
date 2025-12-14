@@ -27,6 +27,14 @@ fn to_span(span: Span) -> crate::ast::Span {
 fn ident() -> impl Parser<Token, String, Error = Simple<Token>> + Clone {
     select! {
         Token::Ident(s) => s,
+        // Allow keywords to be used as identifiers (e.g., in paths like ax/child/exists)
+        Token::Namespace => "namespace".to_string(),
+        Token::Theory => "theory".to_string(),
+        Token::Instance => "instance".to_string(),
+        Token::Query => "query".to_string(),
+        Token::Sort => "Sort".to_string(),
+        Token::Forall => "forall".to_string(),
+        Token::Exists => "exists".to_string(),
     }
 }
 
@@ -213,18 +221,37 @@ fn formula() -> impl Parser<Token, Formula, Error = Simple<Token>> + Clone {
             .then(formula.clone())
             .map(|(vars, body)| Formula::Exists(vars, Box::new(body)));
 
-        // Equality: term = term
-        let equality = term()
-            .then_ignore(just(Token::Eq))
-            .then(term())
-            .map(|(l, r)| Formula::Eq(l, r));
-
         // Parenthesized formula
         let paren_formula = formula
             .clone()
             .delimited_by(just(Token::LParen), just(Token::RParen));
 
-        let atom = choice((exists, paren_formula, equality));
+        // Term-based formulas: either equality (term = term) or relation application (term rel)
+        // Since term() greedily parses `base rel` as App(base, Path(rel)),
+        // we detect that pattern when not followed by `=` and convert to RelApp
+        let term_based = term()
+            .then(just(Token::Eq).ignore_then(term()).or_not())
+            .try_map(|(t, opt_rhs), span| {
+                match opt_rhs {
+                    Some(rhs) => Ok(Formula::Eq(t, rhs)),
+                    None => {
+                        // Not equality - check for relation application pattern: term rel
+                        match t {
+                            Term::App(base, rel_term) => {
+                                match *rel_term {
+                                    Term::Path(path) if path.segments.len() == 1 => {
+                                        Ok(Formula::RelApp(path.segments[0].clone(), *base))
+                                    }
+                                    _ => Err(Simple::custom(span, "expected relation name (single identifier)"))
+                                }
+                            }
+                            _ => Err(Simple::custom(span, "expected relation application (term rel) or equality (term = term)"))
+                        }
+                    }
+                }
+            });
+
+        let atom = choice((exists, paren_formula, term_based));
 
         // Disjunction: phi \/ psi
         atom.clone()
@@ -264,7 +291,8 @@ fn axiom_decl() -> impl Parser<Token, AxiomDecl, Error = Simple<Token>> + Clone 
         .then_ignore(just(Token::Turnstile));
 
     // name : forall vars. hyps |- conclusion
-    ident()
+    // Name can be a path like `ax/anc/base`
+    path()
         .then_ignore(just(Token::Colon))
         .then(quantified_vars)
         .then(hypotheses)
