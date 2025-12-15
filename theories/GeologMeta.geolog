@@ -189,13 +189,13 @@ theory GeologMeta {
   // ============================================================
   // child(p, c) means c is an immediate child of p in the AST
 
-  child : [parent: Node, child: Node];
+  child : [parent: Node, child: Node] -> Prop;
 
   // ============================================================
   // ANCESTOR RELATION (transitive closure of child)
   // ============================================================
 
-  ancestor : [anc: Node, desc: Node];
+  ancestor : [anc: Node, desc: Node] -> Prop;
 
   // Datalog-style transitive closure axioms
   ax/anc/base : forall p : Node, c : Node.
@@ -249,7 +249,7 @@ theory GeologMeta {
   // IN-SEQUENT RELATION (for context variable scoping)
   // ============================================================
 
-  in_seq : [node: Node, seq: Sequent];
+  in_seq : [node: Node, seq: Sequent] -> Prop;
 
   ax/in_seq/premise : forall s : Sequent, f : Formula.
     s Sequent/premise = f |- [node: f Formula/node, seq: s] in_seq;

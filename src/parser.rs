@@ -33,6 +33,7 @@ fn ident() -> impl Parser<Token, String, Error = Simple<Token>> + Clone {
         Token::Instance => "instance".to_string(),
         Token::Query => "query".to_string(),
         Token::Sort => "Sort".to_string(),
+        Token::Prop => "Prop".to_string(),
         Token::Forall => "forall".to_string(),
         Token::Exists => "exists".to_string(),
     }
@@ -56,6 +57,7 @@ fn path() -> impl Parser<Token, Path, Error = Simple<Token>> + Clone {
 fn type_expr_impl() -> impl Parser<Token, TypeExpr, Error = Simple<Token>> + Clone {
     recursive(|type_expr_rec| {
         let sort = just(Token::Sort).to(TypeExpr::Sort);
+        let prop = just(Token::Prop).to(TypeExpr::Prop);
 
         let path_type = path().map(TypeExpr::Path);
 
@@ -75,7 +77,7 @@ fn type_expr_impl() -> impl Parser<Token, TypeExpr, Error = Simple<Token>> + Clo
             .delimited_by(just(Token::LParen), just(Token::RParen));
 
         // Atomic types (no left recursion)
-        let atom = choice((sort, record_type, paren_type, path_type));
+        let atom = choice((sort, prop, record_type, paren_type, path_type));
 
         // Type application (juxtaposition) and `instance` suffix
         let with_app_and_instance = atom
@@ -107,6 +109,7 @@ fn type_expr() -> impl Parser<Token, TypeExpr, Error = Simple<Token>> + Clone {
 fn type_expr_no_arrow() -> impl Parser<Token, TypeExpr, Error = Simple<Token>> + Clone {
     recursive(|_type_expr_rec| {
         let sort = just(Token::Sort).to(TypeExpr::Sort);
+        let prop = just(Token::Prop).to(TypeExpr::Prop);
 
         let path_type = path().map(TypeExpr::Path);
 
@@ -124,7 +127,7 @@ fn type_expr_no_arrow() -> impl Parser<Token, TypeExpr, Error = Simple<Token>> +
         let paren_type = type_expr_impl().delimited_by(just(Token::LParen), just(Token::RParen));
 
         // Atomic types
-        let atom = choice((sort, record_type, paren_type, path_type));
+        let atom = choice((sort, prop, record_type, paren_type, path_type));
 
         // Type application and instance, but NO arrows
         atom.clone()
@@ -427,6 +430,7 @@ fn instance_item() -> impl Parser<Token, InstanceItem, Error = Simple<Token>> + 
 fn type_expr_no_instance() -> impl Parser<Token, TypeExpr, Error = Simple<Token>> + Clone {
     recursive(|_type_expr_rec| {
         let sort = just(Token::Sort).to(TypeExpr::Sort);
+        let prop = just(Token::Prop).to(TypeExpr::Prop);
         let path_type = path().map(TypeExpr::Path);
 
         let record_field = ident()
@@ -440,7 +444,7 @@ fn type_expr_no_instance() -> impl Parser<Token, TypeExpr, Error = Simple<Token>
 
         let paren_type = type_expr_impl().delimited_by(just(Token::LParen), just(Token::RParen));
 
-        let atom = choice((sort, record_type, paren_type, path_type));
+        let atom = choice((sort, prop, record_type, paren_type, path_type));
 
         // Type application only, NO instance suffix
         atom.clone()

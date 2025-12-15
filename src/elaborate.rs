@@ -208,6 +208,12 @@ pub fn elaborate_type(env: &Env, ty: &ast::TypeExpr) -> ElabResult<DerivedSort> 
                 "Sort is a kind, not a type".to_string(),
             ))
         }
+        ast::TypeExpr::Prop => {
+            // "Prop" is the kind for relation codomains, not a sort itself
+            Err(ElabError::NotASort(
+                "Prop is a kind, not a type".to_string(),
+            ))
+        }
         ast::TypeExpr::Path(path) => env.resolve_sort_path(path),
         ast::TypeExpr::Record(fields) => {
             let elab_fields: Result<Vec<_>, _> = fields
@@ -436,13 +442,22 @@ pub fn elaborate_theory(env: &mut Env, theory: &ast::TheoryDecl) -> ElabResult<E
     for item in &theory.body {
         match &item.node {
             ast::TheoryItem::Function(f) => {
-                let domain = elaborate_type(&local_env, &f.domain)?;
-                let codomain = elaborate_type(&local_env, &f.codomain)?;
-                local_env
-                    .signature
-                    .add_function(f.name.to_string(), domain, codomain);
+                // Check if codomain is Prop — if so, this is a relation declaration
+                if matches!(f.codomain, ast::TypeExpr::Prop) {
+                    let domain = elaborate_type(&local_env, &f.domain)?;
+                    local_env
+                        .signature
+                        .add_relation(f.name.to_string(), domain);
+                } else {
+                    let domain = elaborate_type(&local_env, &f.domain)?;
+                    let codomain = elaborate_type(&local_env, &f.codomain)?;
+                    local_env
+                        .signature
+                        .add_function(f.name.to_string(), domain, codomain);
+                }
             }
-            // A Field with a Record type is a relation declaration
+            // Legacy: A Field with a Record type is a relation declaration
+            // (kept for backwards compatibility, may remove later)
             ast::TheoryItem::Field(name, ty @ ast::TypeExpr::Record(_)) => {
                 let domain = elaborate_type(&local_env, ty)?;
                 local_env.signature.add_relation(name.clone(), domain);

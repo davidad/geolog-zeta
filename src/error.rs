@@ -136,6 +136,7 @@ fn format_token(token: &Token) -> String {
         Token::Instance => "instance".to_string(),
         Token::Query => "query".to_string(),
         Token::Sort => "Sort".to_string(),
+        Token::Prop => "Prop".to_string(),
         Token::Forall => "forall".to_string(),
         Token::Exists => "exists".to_string(),
         Token::Ident(s) => s.clone(),

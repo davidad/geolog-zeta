@@ -375,6 +375,7 @@ impl ReplState {
 fn type_expr_to_theory_name(type_expr: &ast::TypeExpr) -> String {
     match type_expr {
         ast::TypeExpr::Sort => "Sort".to_string(),
+        ast::TypeExpr::Prop => "Prop".to_string(),
         ast::TypeExpr::Path(path) => {
             // Just take the first component as the theory name
             path.segments
@@ -720,7 +721,7 @@ pub fn format_theory_detail(detail: &TheoryDetail) -> String {
 
     // Relations
     for (name, domain) in &detail.relations {
-        out.push_str(&format!("  {} : {} Relation;\n", name, domain));
+        out.push_str(&format!("  {} : {} -> Prop;\n", name, domain));
     }
 
     // Axioms (full details)

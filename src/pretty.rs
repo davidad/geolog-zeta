@@ -165,6 +165,7 @@ impl Pretty {
     pub fn type_expr(&mut self, ty: &TypeExpr) {
         match ty {
             TypeExpr::Sort => self.write("Sort"),
+            TypeExpr::Prop => self.write("Prop"),
             TypeExpr::Path(p) => self.write(&p.to_string()),
             TypeExpr::App(f, a) => {
                 self.type_expr(f);

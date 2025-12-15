@@ -14,6 +14,7 @@ pub enum Token {
     Instance,
     Query,
     Sort,
+    Prop,
     Forall,
     Exists,
 
@@ -47,6 +48,7 @@ impl std::fmt::Display for Token {
             Token::Instance => write!(f, "instance"),
             Token::Query => write!(f, "query"),
             Token::Sort => write!(f, "Sort"),
+            Token::Prop => write!(f, "Prop"),
             Token::Forall => write!(f, "forall"),
             Token::Exists => write!(f, "exists"),
             Token::Ident(s) => write!(f, "{}", s),
@@ -81,6 +83,7 @@ pub fn lexer() -> impl Parser<char, Vec<(Token, Span)>, Error = Simple<char>> {
         "instance" => Token::Instance,
         "query" => Token::Query,
         "Sort" => Token::Sort,
+        "Prop" => Token::Prop,
         "forall" => Token::Forall,
         "exists" => Token::Exists,
         _ => Token::Ident(s),

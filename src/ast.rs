@@ -149,6 +149,9 @@ pub enum TypeExpr {
     /// The kind `Sort`
     Sort,
 
+    /// The kind `Prop` (for relation declarations: `R : domain -> Prop`)
+    Prop,
+
     /// A named type or path: `P`, `N.P`, `N Marking`
     Path(Path),
 
