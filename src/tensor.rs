@@ -110,6 +110,11 @@ pub enum TensorExpr {
     /// Result dimensions = concatenation of input dimensions
     Product(Vec<TensorExpr>),
 
+    /// Lazy disjunction (union of extents)
+    /// All children must have the same dimensions.
+    /// Result is true wherever ANY child is true (pointwise OR).
+    Sum(Vec<TensorExpr>),
+
     /// Lazy contraction
     /// Maps input indices to output indices; indices mapping to same target
     /// are identified; targets not in output are summed (OR'd) over.
@@ -145,6 +150,10 @@ impl TensorExpr {
             TensorExpr::Leaf(t) => t.dims.clone(),
             TensorExpr::Product(exprs) => {
                 exprs.iter().flat_map(|e| e.dims()).collect()
+            }
+            TensorExpr::Sum(exprs) => {
+                // All children should have same dims; return first or empty
+                exprs.first().map(|e| e.dims()).unwrap_or_default()
             }
             TensorExpr::Contract { inner, index_map, output } => {
                 let inner_dims = inner.dims();
@@ -187,10 +196,43 @@ impl TensorExpr {
                 SparseTensor { dims, extent }
             }
 
+            TensorExpr::Sum(exprs) => {
+                if exprs.is_empty() {
+                    // Empty disjunction = false = empty tensor with unknown dims
+                    return SparseTensor::scalar(false);
+                }
+                // Union of extents (pointwise OR)
+                let first = exprs[0].materialize();
+                let dims = first.dims.clone();
+                let mut extent = first.extent;
+
+                for expr in &exprs[1..] {
+                    let child = expr.materialize();
+                    debug_assert_eq!(child.dims, dims, "Sum children must have same dimensions");
+                    extent.extend(child.extent);
+                }
+
+                SparseTensor { dims, extent }
+            }
+
             TensorExpr::Contract { inner, index_map, output } => {
                 // Check for fusion opportunity: Contract(Product(...))
                 if let TensorExpr::Product(children) = inner.as_ref() {
                     return self.fused_join(children, index_map, output);
+                }
+
+                // Fusion: Contract(Sum(...)) distributes
+                // Contract(Sum(a, b)) = Sum(Contract(a), Contract(b))
+                if let TensorExpr::Sum(children) = inner.as_ref() {
+                    let contracted_children: Vec<TensorExpr> = children
+                        .iter()
+                        .map(|child| TensorExpr::Contract {
+                            inner: Box::new(child.clone()),
+                            index_map: index_map.clone(),
+                            output: output.clone(),
+                        })
+                        .collect();
+                    return TensorExpr::Sum(contracted_children).materialize();
                 }
 
                 // Otherwise, materialize inner and contract
@@ -416,6 +458,74 @@ pub fn conjunction_all(tensors: Vec<(TensorExpr, Vec<String>)>) -> (TensorExpr, 
 
     for (expr, vars) in result {
         let (new_expr, new_vars) = conjunction(acc_expr, &acc_vars, expr, &vars);
+        acc_expr = new_expr;
+        acc_vars = new_vars;
+    }
+
+    (acc_expr, acc_vars)
+}
+
+/// Disjunction of two tensor expressions with variable alignment.
+///
+/// Both tensors must have the same variables (possibly in different order).
+/// The result is the pointwise OR.
+pub fn disjunction(
+    t1: TensorExpr,
+    vars1: &[String],
+    t2: TensorExpr,
+    vars2: &[String],
+) -> (TensorExpr, Vec<String>) {
+    // Check that variables are the same set
+    let set1: std::collections::HashSet<_> = vars1.iter().collect();
+    let set2: std::collections::HashSet<_> = vars2.iter().collect();
+
+    if set1 != set2 {
+        // For disjunction, variables must match. If they don't, we need to
+        // align them by extending each tensor with the missing variables
+        // (treating them as "any value" via Product with full domain).
+        // For now, we require exact match since this is the geometric logic case.
+        panic!(
+            "disjunction requires same variables; got {:?} vs {:?}",
+            vars1, vars2
+        );
+    }
+
+    // If vars2 is in different order than vars1, reorder t2 via Contract
+    if vars1 == vars2 {
+        // Same order, just union
+        (TensorExpr::Sum(vec![t1, t2]), vars1.to_vec())
+    } else {
+        // Need to reorder t2 to match vars1 ordering
+        // Build index_map from vars2 positions to vars1 positions
+        let index_map: Vec<usize> = vars2
+            .iter()
+            .map(|v| vars1.iter().position(|v1| v1 == v).unwrap())
+            .collect();
+        let output: BTreeSet<usize> = (0..vars1.len()).collect();
+
+        let t2_reordered = TensorExpr::Contract {
+            inner: Box::new(t2),
+            index_map,
+            output,
+        };
+
+        (TensorExpr::Sum(vec![t1, t2_reordered]), vars1.to_vec())
+    }
+}
+
+/// Multi-way disjunction with variable alignment.
+///
+/// All tensors must have the same variables.
+pub fn disjunction_all(tensors: Vec<(TensorExpr, Vec<String>)>) -> (TensorExpr, Vec<String>) {
+    if tensors.is_empty() {
+        return (TensorExpr::scalar(false), vec![]);
+    }
+
+    let mut result = tensors.into_iter();
+    let (mut acc_expr, mut acc_vars) = result.next().unwrap();
+
+    for (expr, vars) in result {
+        let (new_expr, new_vars) = disjunction(acc_expr, &acc_vars, expr, &vars);
         acc_expr = new_expr;
         acc_vars = new_vars;
     }
@@ -715,5 +825,191 @@ mod tests {
         assert_eq!(result.len(), 50);
         assert!(result.contains(&[0, 2]));
         assert!(result.contains(&[49, 51]));
+    }
+
+    // ========================================================================
+    // DISJUNCTION TESTS
+    // ========================================================================
+
+    #[test]
+    fn test_sum_basic() {
+        // R ∨ S where R = {(0,0), (1,1)} and S = {(1,1), (2,2)}
+        let mut r = SparseTensor::empty(vec![3, 3]);
+        r.insert(vec![0, 0]);
+        r.insert(vec![1, 1]);
+
+        let mut s = SparseTensor::empty(vec![3, 3]);
+        s.insert(vec![1, 1]);
+        s.insert(vec![2, 2]);
+
+        let expr = TensorExpr::Sum(vec![leaf(r), leaf(s)]);
+        let result = expr.materialize();
+
+        assert_eq!(result.dims, vec![3, 3]);
+        assert_eq!(result.len(), 3); // Union removes duplicates
+        assert!(result.contains(&[0, 0]));
+        assert!(result.contains(&[1, 1]));
+        assert!(result.contains(&[2, 2]));
+    }
+
+    #[test]
+    fn test_sum_empty() {
+        // Empty disjunction = false
+        let expr = TensorExpr::Sum(vec![]);
+        let result = expr.materialize();
+
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_disjunction_same_vars() {
+        // R(x,y) ∨ S(x,y) with same variable order
+        let mut r = SparseTensor::empty(vec![2, 2]);
+        r.insert(vec![0, 0]);
+
+        let mut s = SparseTensor::empty(vec![2, 2]);
+        s.insert(vec![1, 1]);
+
+        let vars = vec!["x".to_string(), "y".to_string()];
+
+        let (expr, result_vars) = disjunction(leaf(r), &vars, leaf(s), &vars);
+        let result = expr.materialize();
+
+        assert_eq!(result_vars, vec!["x", "y"]);
+        assert_eq!(result.len(), 2);
+        assert!(result.contains(&[0, 0]));
+        assert!(result.contains(&[1, 1]));
+    }
+
+    #[test]
+    fn test_disjunction_reordered_vars() {
+        // R(x,y) ∨ S(y,x) - different variable order requires reordering
+        let mut r = SparseTensor::empty(vec![2, 3]);
+        r.insert(vec![0, 1]); // x=0, y=1
+
+        let mut s = SparseTensor::empty(vec![3, 2]);
+        s.insert(vec![2, 1]); // y=2, x=1
+
+        let vars_r = vec!["x".to_string(), "y".to_string()];
+        let vars_s = vec!["y".to_string(), "x".to_string()];
+
+        let (expr, result_vars) = disjunction(leaf(r), &vars_r, leaf(s), &vars_s);
+        let result = expr.materialize();
+
+        assert_eq!(result_vars, vec!["x", "y"]);
+        assert_eq!(result.len(), 2);
+        assert!(result.contains(&[0, 1])); // from R
+        assert!(result.contains(&[1, 2])); // from S reordered
+    }
+
+    #[test]
+    fn test_disjunction_all() {
+        // R(x) ∨ S(x) ∨ T(x)
+        let mut r = SparseTensor::empty(vec![5]);
+        r.insert(vec![0]);
+
+        let mut s = SparseTensor::empty(vec![5]);
+        s.insert(vec![1]);
+
+        let mut t = SparseTensor::empty(vec![5]);
+        t.insert(vec![2]);
+
+        let vars = vec!["x".to_string()];
+
+        let (expr, result_vars) = disjunction_all(vec![
+            (leaf(r), vars.clone()),
+            (leaf(s), vars.clone()),
+            (leaf(t), vars.clone()),
+        ]);
+        let result = expr.materialize();
+
+        assert_eq!(result_vars, vec!["x"]);
+        assert_eq!(result.len(), 3);
+        assert!(result.contains(&[0]));
+        assert!(result.contains(&[1]));
+        assert!(result.contains(&[2]));
+    }
+
+    #[test]
+    fn test_disjunction_all_empty() {
+        // Empty disjunction = false
+        let (expr, vars) = disjunction_all(vec![]);
+        let result = expr.materialize();
+
+        assert!(vars.is_empty());
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_contract_sum_distributes() {
+        // Contract(Sum(R, S)) = Sum(Contract(R), Contract(S))
+        // Using ∃y. (R(x,y) ∨ S(x,y))
+        let mut r = SparseTensor::empty(vec![2, 2]);
+        r.insert(vec![0, 0]);
+        r.insert(vec![0, 1]);
+
+        let mut s = SparseTensor::empty(vec![2, 2]);
+        s.insert(vec![1, 0]);
+
+        let sum = TensorExpr::Sum(vec![leaf(r), leaf(s)]);
+
+        // ∃y: map y to fresh target, output only x
+        let output: BTreeSet<usize> = [0].into_iter().collect();
+        let expr = TensorExpr::Contract {
+            inner: Box::new(sum),
+            index_map: vec![0, 2], // x→0, y→2 (fresh)
+            output,
+        };
+
+        let result = expr.materialize();
+
+        assert_eq!(result.dims, vec![2]);
+        assert_eq!(result.len(), 2);
+        assert!(result.contains(&[0])); // from R
+        assert!(result.contains(&[1])); // from S
+    }
+
+    #[test]
+    fn test_geometric_formula_pattern() {
+        // Test pattern from geometric logic: ∃y. (R(x,y) ∧ S(y)) ∨ (T(x))
+        // This exercises Sum inside a more complex expression
+
+        // R(x,y): edges 0→1, 1→2
+        let mut r = SparseTensor::empty(vec![3, 3]);
+        r.insert(vec![0, 1]);
+        r.insert(vec![1, 2]);
+
+        // S(y): valid y values {1, 2}
+        let mut s = SparseTensor::empty(vec![3]);
+        s.insert(vec![1]);
+        s.insert(vec![2]);
+
+        // T(x): alternative x values {2}
+        let mut t = SparseTensor::empty(vec![3]);
+        t.insert(vec![2]);
+
+        // Build: R(x,y) ∧ S(y)
+        let vars_r = vec!["x".to_string(), "y".to_string()];
+        let vars_s = vec!["y".to_string()];
+        let (conj, conj_vars) = conjunction(leaf(r), &vars_r, leaf(s), &vars_s);
+        // conj_vars = ["x", "y"]
+
+        // ∃y. (R(x,y) ∧ S(y))
+        let (exists_expr, exists_vars) = exists(conj, &conj_vars, "y");
+        // exists_vars = ["x"]
+
+        // (∃y. R(x,y) ∧ S(y)) ∨ T(x)
+        let vars_t = vec!["x".to_string()];
+        let (result_expr, result_vars) = disjunction(exists_expr, &exists_vars, leaf(t), &vars_t);
+
+        let result = result_expr.materialize();
+
+        assert_eq!(result_vars, vec!["x"]);
+        // From R ∧ S: x=0 (path 0→1, 1∈S) and x=1 (path 1→2, 2∈S)
+        // From T: x=2
+        assert_eq!(result.len(), 3);
+        assert!(result.contains(&[0]));
+        assert!(result.contains(&[1]));
+        assert!(result.contains(&[2]));
     }
 }
