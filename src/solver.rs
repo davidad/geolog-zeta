@@ -61,6 +61,9 @@ use crate::id::{Luid, Slid, Uuid};
 use crate::tensor::{CheckResult, Violation};
 use crate::universe::Universe;
 
+// Re-export for convenience
+pub use egglog_union_find::UnionFind;
+
 // ============================================================================
 // NODE AND TREE TYPES
 // ============================================================================
@@ -907,5 +910,38 @@ mod tests {
         assert_eq!(summary.total_nodes, 3);
         assert_eq!(summary.frontier_size, 2);
         assert_eq!(summary.solved_count, 0);
+    }
+
+    #[test]
+    fn test_union_find_with_slid() {
+        use crate::id::Slid;
+
+        // Verify egglog's union-find works with our Slid type (which is usize)
+        let mut uf: UnionFind<Slid> = UnionFind::default();
+
+        // Union some elements
+        let (parent, child) = uf.union(0, 1);
+        assert_eq!(parent, 0); // union-by-min: smaller id becomes parent
+        assert_eq!(child, 1);
+
+        // Find should return canonical representative
+        assert_eq!(uf.find(0), 0);
+        assert_eq!(uf.find(1), 0);
+
+        // Add more elements and union
+        let (parent2, child2) = uf.union(2, 3);
+        assert_eq!(parent2, 2);
+        assert_eq!(child2, 3);
+
+        // Union the two equivalence classes
+        let (parent3, child3) = uf.union(1, 3);
+        // Now 0, 1, 2, 3 should all be in same class with 0 as root
+        assert_eq!(parent3, 0); // find(1) = 0, find(3) = 2, min(0,2) = 0
+        assert_eq!(child3, 2);
+
+        assert_eq!(uf.find(0), 0);
+        assert_eq!(uf.find(1), 0);
+        assert_eq!(uf.find(2), 0);
+        assert_eq!(uf.find(3), 0);
     }
 }
