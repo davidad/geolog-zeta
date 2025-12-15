@@ -130,72 +130,30 @@ impl Env {
         Self::default()
     }
 
-    /// Resolve a path like "N/P" where N is a parameter and P is a sort in N's theory
+    /// Resolve a path like "N/P" where N is a parameter and P is a sort in N's theory.
+    ///
+    /// All param sorts are copied into the local signature with qualified names (e.g., "N/P"),
+    /// so we just need to look up the joined path in the current signature.
     pub fn resolve_sort_path(&self, path: &ast::Path) -> ElabResult<DerivedSort> {
-        if path.segments.len() == 1 {
-            // Simple name — look in current signature
-            let name = &path.segments[0];
-            if let Some(id) = self.signature.lookup_sort(name) {
-                return Ok(DerivedSort::Base(id));
-            }
-            return Err(ElabError::UnknownSort(name.clone()));
+        // Join all segments with "/" — this handles both simple names like "F"
+        // and qualified names like "N/P"
+        let full_name = path.segments.join("/");
+        if let Some(id) = self.signature.lookup_sort(&full_name) {
+            return Ok(DerivedSort::Base(id));
         }
-
-        // Qualified path — first segment should be a parameter name
-        let param_name = &path.segments[0];
-        let param_theory = self
-            .params
-            .iter()
-            .find(|(n, _)| n == param_name)
-            .map(|(_, t)| t.clone())
-            .ok_or_else(|| ElabError::InvalidPath(path.to_string()))?;
-
-        // Rest of path is within that theory
-        let rest = &path.segments[1..];
-        if rest.len() == 1 {
-            let sort_name = &rest[0];
-            if let Some(id) = param_theory.theory.signature.lookup_sort(sort_name) {
-                // Return a sort reference — but we need to track that it's from a parameter
-                // For now, just return a placeholder
-                // TODO: proper handling of parameterized sorts
-                return Ok(DerivedSort::Base(id));
-            }
-            return Err(ElabError::UnknownSort(format!(
-                "{}/{}",
-                param_name, sort_name
-            )));
-        }
-
-        Err(ElabError::InvalidPath(path.to_string()))
+        Err(ElabError::UnknownSort(full_name))
     }
 
-    /// Resolve a function path
+    /// Resolve a function path like "N/in/src" or "F/of".
+    ///
+    /// All param functions are copied into the local signature with qualified names,
+    /// so we just need to look up the joined path.
     pub fn resolve_func_path(&self, path: &ast::Path) -> ElabResult<FuncId> {
-        if path.segments.len() == 1 {
-            let name = &path.segments[0];
-            if let Some(id) = self.signature.lookup_func(name) {
-                return Ok(id);
-            }
-            return Err(ElabError::UnknownFunction(name.clone()));
-        }
-
-        // Qualified path — could be param/func or current/qualified/func
-        // For now, try joining with / and looking up
         let full_name = path.segments.join("/");
         if let Some(id) = self.signature.lookup_func(&full_name) {
             return Ok(id);
         }
-
-        // Try looking in parameter theories
-        let param_name = &path.segments[0];
-        if let Some((_, param_theory)) = self.params.iter().find(|(n, _)| n == param_name) {
-            let func_name = path.segments[1..].join("/");
-            if let Some(id) = param_theory.theory.signature.lookup_func(&func_name) {
-                return Ok(id);
-            }
-        }
-
-        Err(ElabError::UnknownFunction(path.to_string()))
+        Err(ElabError::UnknownFunction(full_name))
     }
 }
 
@@ -384,6 +342,44 @@ pub fn elaborate_formula(env: &Env, ctx: &Context, formula: &ast::Formula) -> El
     }
 }
 
+/// Remap a DerivedSort from one signature namespace to another.
+///
+/// When copying sorts/functions from a param theory into the local signature,
+/// the sort IDs need to be remapped. For example, if PetriNet has sort P at id=0,
+/// and we copy it as "N/P" into local signature at id=2, then any DerivedSort::Base(0)
+/// needs to become DerivedSort::Base(2).
+fn remap_derived_sort(
+    sort: &DerivedSort,
+    source_sig: &Signature,
+    target_sig: &Signature,
+    param_name: &str,
+) -> DerivedSort {
+    match sort {
+        DerivedSort::Base(source_id) => {
+            // Look up the sort name in the source signature
+            let sort_name = &source_sig.sorts[*source_id];
+            // Find the corresponding qualified name in target signature
+            let qualified_name = format!("{}/{}", param_name, sort_name);
+            let target_id = target_sig
+                .lookup_sort(&qualified_name)
+                .expect("qualified sort should have been added");
+            DerivedSort::Base(target_id)
+        }
+        DerivedSort::Product(fields) => {
+            let remapped_fields = fields
+                .iter()
+                .map(|(name, s)| {
+                    (
+                        name.clone(),
+                        remap_derived_sort(s, source_sig, target_sig, param_name),
+                    )
+                })
+                .collect();
+            DerivedSort::Product(remapped_fields)
+        }
+    }
+}
+
 /// Elaborate a theory declaration
 pub fn elaborate_theory(env: &mut Env, theory: &ast::TheoryDecl) -> ElabResult<ElaboratedTheory> {
     // Set up the environment for this theory
@@ -392,6 +388,10 @@ pub fn elaborate_theory(env: &mut Env, theory: &ast::TheoryDecl) -> ElabResult<E
     local_env.signature = Signature::new();
 
     // Process parameters
+    // When we have `theory (N : PetriNet instance) Trace { ... }`, we need to:
+    // 1. Copy all sorts from PetriNet into local signature with qualified names (N/P, N/T, etc.)
+    // 2. Copy all functions with qualified names (N/in/src, etc.)
+    // This ensures all sort/func IDs are in a single namespace.
     let mut params = Vec::new();
     for param in &theory.params {
         match &param.ty {
@@ -400,6 +400,45 @@ pub fn elaborate_theory(env: &mut Env, theory: &ast::TheoryDecl) -> ElabResult<E
                 if let ast::TypeExpr::Path(path) = inner.as_ref() {
                     let theory_name = path.to_string();
                     if let Some(base_theory) = env.theories.get(&theory_name) {
+                        // Copy all sorts from param theory into local signature with qualified names
+                        for sort_name in &base_theory.theory.signature.sorts {
+                            let qualified_name = format!("{}/{}", param.name, sort_name);
+                            local_env.signature.add_sort(qualified_name);
+                        }
+
+                        // Copy all functions from param theory with qualified names
+                        for func in &base_theory.theory.signature.functions {
+                            let qualified_name = format!("{}/{}", param.name, func.name);
+                            // Remap domain and codomain to use local signature's sort IDs
+                            let domain = remap_derived_sort(
+                                &func.domain,
+                                &base_theory.theory.signature,
+                                &local_env.signature,
+                                &param.name,
+                            );
+                            let codomain = remap_derived_sort(
+                                &func.codomain,
+                                &base_theory.theory.signature,
+                                &local_env.signature,
+                                &param.name,
+                            );
+                            local_env
+                                .signature
+                                .add_function(qualified_name, domain, codomain);
+                        }
+
+                        // Copy all relations from param theory with qualified names
+                        for rel in &base_theory.theory.signature.relations {
+                            let qualified_name = format!("{}/{}", param.name, rel.name);
+                            let domain = remap_derived_sort(
+                                &rel.domain,
+                                &base_theory.theory.signature,
+                                &local_env.signature,
+                                &param.name,
+                            );
+                            local_env.signature.add_relation(qualified_name, domain);
+                        }
+
                         params.push(TheoryParam {
                             name: param.name.clone(),
                             theory_name: theory_name.clone(),
@@ -522,13 +561,12 @@ pub fn elaborate_instance(
     instance: &ast::InstanceDecl,
     universe: &mut crate::universe::Universe,
 ) -> ElabResult<Structure> {
-    // 1. Resolve the theory type
-    // For now, handle simple paths only (not `ExampleNet ReachabilityProblem`)
-    let theory_name = type_expr_to_theory_name(&instance.theory)?;
+    // 1. Resolve the theory type (handles parameterized types like `ExampleNet ReachabilityProblem`)
+    let resolved = resolve_instance_type(env, &instance.theory)?;
     let theory = env
         .theories
-        .get(&theory_name)
-        .ok_or_else(|| ElabError::UnknownTheory(theory_name.clone()))?;
+        .get(&resolved.theory_name)
+        .ok_or_else(|| ElabError::UnknownTheory(resolved.theory_name.clone()))?;
 
     // 2. Initialize structure (functions will be initialized after first pass)
     let mut structure = Structure::new(theory.theory.signature.sorts.len());
@@ -537,6 +575,15 @@ pub fn elaborate_instance(
     // Also track Slid → name for error messages
     let mut name_to_slid: HashMap<String, Slid> = HashMap::new();
     let mut slid_to_name: HashMap<Slid, String> = HashMap::new();
+
+    // For parameterized theories, we note the bindings but don't import elements yet.
+    // Cross-instance references (like `ExampleNet/A`) will be handled when we have
+    // access to Workspace. For now, we just validate the parameter count.
+    for (param_name, instance_name) in &resolved.arguments {
+        // TODO: When Workspace is available, import elements from param instances
+        // For now, just note that we have these bindings
+        let _ = (param_name, instance_name);
+    }
 
     // 3. First pass: create elements
     for item in &instance.body {
@@ -631,15 +678,108 @@ pub fn elaborate_instance(
     Ok(structure)
 }
 
-/// Extract a simple theory name from a type expression
-fn type_expr_to_theory_name(ty: &ast::TypeExpr) -> ElabResult<String> {
+/// Result of resolving a (possibly parameterized) instance type.
+///
+/// For `ExampleNet ReachabilityProblem`:
+/// - theory_name = "ReachabilityProblem"
+/// - arguments = vec![("N", "ExampleNet")]
+///
+/// For simple `PetriNet`:
+/// - theory_name = "PetriNet"
+/// - arguments = vec![]
+struct ResolvedInstanceType {
+    theory_name: String,
+    /// (param_name, instance_name) pairs
+    arguments: Vec<(String, String)>,
+}
+
+/// Resolve a type expression to a theory name and its arguments.
+///
+/// In curried application syntax, the theory is at the end:
+/// - Simple: `PetriNet` -> ("PetriNet", [])
+/// - Single param: `ExampleNet Marking` -> ("Marking", [("N", "ExampleNet")])
+/// - Multiple params: `ExampleNet problem0 ReachabilityProblem/Solution` -> ("ReachabilityProblem/Solution", [("N", "ExampleNet"), ("RP", "problem0")])
+///
+/// AST structure for `A B C`:
+/// - App(App(A, B), C) where C is the "function" being applied
+/// - So we need to collect: theory=C, args=[A, B]
+fn resolve_instance_type(
+    env: &Env,
+    ty: &ast::TypeExpr,
+) -> ElabResult<ResolvedInstanceType> {
     match ty {
-        ast::TypeExpr::Path(path) => Ok(path.to_string()),
-        ast::TypeExpr::App(_, _) => {
-            // For now, don't support parameterized instance types
-            Err(ElabError::UnsupportedFeature(
-                "parameterized instance types".to_string(),
-            ))
+        ast::TypeExpr::Path(path) => {
+            // Simple theory name
+            Ok(ResolvedInstanceType {
+                theory_name: path.to_string(),
+                arguments: vec![],
+            })
+        }
+        ast::TypeExpr::App(_base, _arg) => {
+            // Theory application: `arg1 arg2 ... theory`
+            // In AST: App(App(...App(arg1, arg2)..., argN), theory)
+            //
+            // The rightmost is the theory, everything else are arguments.
+            // We walk down collecting all paths, then the last one is the theory.
+            let mut all_paths = vec![];
+            let mut current = ty;
+
+            // Walk down the App chain
+            while let ast::TypeExpr::App(inner_base, inner_arg) = current {
+                // The inner_arg should be a Path
+                if let ast::TypeExpr::Path(arg_path) = inner_arg.as_ref() {
+                    all_paths.push(arg_path.to_string());
+                } else {
+                    return Err(ElabError::UnsupportedFeature(
+                        "complex theory application argument".to_string(),
+                    ));
+                }
+                current = inner_base;
+            }
+
+            // After unwinding, `current` should be the leftmost path (first argument)
+            if let ast::TypeExpr::Path(first_path) = current {
+                all_paths.push(first_path.to_string());
+            } else {
+                return Err(ElabError::UnsupportedFeature(
+                    "complex theory application base".to_string(),
+                ));
+            }
+
+            // Now all_paths contains [rightmost, ..., leftmost]
+            // We want: theory = rightmost, args = [leftmost, ..., second-to-rightmost]
+            // So reverse to get [leftmost, ..., rightmost], then pop the theory
+            all_paths.reverse();
+            let theory_name = all_paths.pop().expect("at least one path");
+            let args = all_paths; // [leftmost, ..., second-to-rightmost] = arguments in order
+
+            // Look up the theory to get parameter names
+            let theory = env
+                .theories
+                .get(&theory_name)
+                .ok_or_else(|| ElabError::UnknownTheory(theory_name.clone()))?;
+
+            // Match up arguments with parameters
+            if args.len() != theory.params.len() {
+                return Err(ElabError::UnsupportedFeature(format!(
+                    "theory {} expects {} parameters, got {}",
+                    theory_name,
+                    theory.params.len(),
+                    args.len()
+                )));
+            }
+
+            let arguments: Vec<(String, String)> = theory
+                .params
+                .iter()
+                .zip(args.iter())
+                .map(|(param, arg)| (param.name.clone(), arg.clone()))
+                .collect();
+
+            Ok(ResolvedInstanceType {
+                theory_name,
+                arguments,
+            })
         }
         _ => Err(ElabError::NotASort(format!("{:?}", ty))),
     }

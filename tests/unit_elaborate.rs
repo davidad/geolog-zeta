@@ -59,8 +59,14 @@ theory (N : PetriNet instance) Marking {
         assert_eq!(elab.params.len(), 1);
         assert_eq!(elab.params[0].name, "N");
         assert_eq!(elab.params[0].theory_name, "PetriNet");
-        assert_eq!(elab.theory.signature.sorts.len(), 1); // token
-        assert_eq!(elab.theory.signature.functions.len(), 1); // token/of
+        // Signature now includes param sorts: N/P, N/T (from PetriNet) + token (local)
+        assert_eq!(elab.theory.signature.sorts.len(), 3);
+        assert!(elab.theory.signature.lookup_sort("N/P").is_some());
+        assert!(elab.theory.signature.lookup_sort("N/T").is_some());
+        assert!(elab.theory.signature.lookup_sort("token").is_some());
+        // Functions: just token/of (PetriNet had no functions in this test)
+        assert_eq!(elab.theory.signature.functions.len(), 1);
+        assert!(elab.theory.signature.lookup_func("token/of").is_some());
     } else {
         panic!("expected theory");
     }

@@ -218,12 +218,52 @@ pub fn load_structure(path: &Path) -> Result<Structure, String> {
 // WORKSPACE (directory of structures)
 // ============================================================================
 
+/// Metadata for a named instance
+pub struct InstanceMeta {
+    /// The structure itself
+    pub structure: Structure,
+    /// Name of the theory this is an instance of
+    pub theory_name: String,
+    /// Element name → Slid mapping (for cross-instance references)
+    pub element_names: HashMap<String, Slid>,
+    /// Slid → element name (reverse mapping for display)
+    pub slid_to_name: HashMap<Slid, String>,
+}
+
+impl InstanceMeta {
+    pub fn new(structure: Structure, theory_name: String) -> Self {
+        Self {
+            structure,
+            theory_name,
+            element_names: HashMap::new(),
+            slid_to_name: HashMap::new(),
+        }
+    }
+
+    /// Register an element name
+    pub fn register_element(&mut self, name: String, slid: Slid) {
+        self.element_names.insert(name.clone(), slid);
+        self.slid_to_name.insert(slid, name);
+    }
+
+    /// Look up element by name
+    pub fn get_element(&self, name: &str) -> Option<Slid> {
+        self.element_names.get(name).copied()
+    }
+
+    /// Get element name by Slid
+    pub fn get_name(&self, slid: Slid) -> Option<&str> {
+        self.slid_to_name.get(&slid).map(|s| s.as_str())
+    }
+}
+
 /// A workspace: a directory containing .theory and .instance files
 pub struct Workspace {
     path: PathBuf,
     pub env: Env,
     pub theories: HashMap<String, Rc<ElaboratedTheory>>,
-    pub instances: HashMap<String, Structure>,
+    /// Named instances with metadata
+    pub instances: HashMap<String, InstanceMeta>,
 }
 
 impl Workspace {
@@ -296,6 +336,8 @@ impl Workspace {
         }
 
         // Load instances (*.instance files)
+        // Note: element names are not stored in the file, so we can't recover them.
+        // They would need to be reconstructed from NamingIndex if available.
         if let Ok(entries) = fs::read_dir(&self.path) {
             for entry in entries.flatten() {
                 let path = entry.path();
@@ -303,7 +345,9 @@ impl Workspace {
                     && let Some(name) = path.file_stem().and_then(|s| s.to_str()) {
                         match load_structure(&path) {
                             Ok(structure) => {
-                                self.instances.insert(name.to_string(), structure);
+                                // TODO: recover element names from NamingIndex
+                                let meta = InstanceMeta::new(structure, "unknown".to_string());
+                                self.instances.insert(name.to_string(), meta);
                             }
                             Err(e) => {
                                 eprintln!("Warning: failed to load {}: {}", path.display(), e)
@@ -337,9 +381,9 @@ impl Workspace {
         }
 
         // Save instances
-        for (name, structure) in &self.instances {
+        for (name, meta) in &self.instances {
             let path = self.path.join(format!("{}.instance", name));
-            save_structure(structure, &path)?;
+            save_structure(&meta.structure, &path)?;
         }
 
         Ok(())
@@ -353,9 +397,19 @@ impl Workspace {
         self.theories.insert(name, rc_theory);
     }
 
-    /// Add an instance to the workspace
-    pub fn add_instance(&mut self, name: String, structure: Structure) {
-        self.instances.insert(name, structure);
+    /// Add an instance to the workspace with metadata
+    pub fn add_instance(&mut self, name: String, meta: InstanceMeta) {
+        self.instances.insert(name, meta);
+    }
+
+    /// Get an instance by name
+    pub fn get_instance(&self, name: &str) -> Option<&InstanceMeta> {
+        self.instances.get(name)
+    }
+
+    /// Get a structure by instance name (convenience method)
+    pub fn get_structure(&self, name: &str) -> Option<&Structure> {
+        self.instances.get(name).map(|m| &m.structure)
     }
 
     /// Get workspace path
