@@ -119,11 +119,11 @@ theory GeologMeta {
 
   Formula : Sort;
 
-  // Relation application R(t)
+  // Relation application `t R`
   RelF : Sort;
   RelF/formula : RelF -> Formula;
-  RelF/rel : RelF -> Rel;
   RelF/arg : RelF -> Term;
+  RelF/rel : RelF -> Rel;
 
   // Truth
   TrueF : Sort;
