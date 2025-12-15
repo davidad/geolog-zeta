@@ -3,8 +3,10 @@
 //! Provides `Strategy` implementations for generating valid instances
 //! of core data types used in property tests.
 
+#![allow(dead_code)]
+
 use geolog::core::{SortId, Structure};
-use geolog::id::{Luid, Uuid};
+use geolog::id::Uuid;
 use geolog::naming::NamingIndex;
 use geolog::universe::Universe;
 use proptest::collection::vec;
@@ -262,4 +264,111 @@ pub fn structures_equivalent(s1: &Structure, s2: &Structure, u1: &Universe, u2: 
     let uuids2: HashSet<_> = s2.luids.iter().filter_map(|&luid| u2.get(luid)).collect();
 
     uuids1 == uuids2
+}
+
+// ============================================================================
+// Tensor Generation
+// ============================================================================
+
+use geolog::tensor::SparseTensor;
+use std::collections::BTreeSet;
+
+/// Parameters for sparse tensor generation
+#[derive(Debug, Clone)]
+pub struct TensorParams {
+    pub max_dims: usize,
+    pub max_dim_size: usize,
+    pub max_tuples: usize,
+}
+
+impl Default for TensorParams {
+    fn default() -> Self {
+        Self {
+            max_dims: 4,
+            max_dim_size: 10,
+            max_tuples: 20,
+        }
+    }
+}
+
+/// Generate a random sparse tensor
+pub fn arb_sparse_tensor(params: TensorParams) -> impl Strategy<Value = SparseTensor> {
+    // First generate dimensions
+    vec(1..=params.max_dim_size, 0..=params.max_dims).prop_flat_map(move |dims| {
+        let dims_clone = dims.clone();
+        let max_tuples = params.max_tuples;
+
+        // Generate tuples within the dimension bounds
+        if dims.is_empty() {
+            // Scalar tensor - either true or false
+            any::<bool>()
+                .prop_map(|value| {
+                    let mut extent = BTreeSet::new();
+                    if value {
+                        extent.insert(vec![]);
+                    }
+                    SparseTensor { dims: vec![], extent }
+                })
+                .boxed()
+        } else {
+            // Generate random tuples
+            let tuple_gen = dims
+                .iter()
+                .map(|&d| 0..d)
+                .collect::<Vec<_>>();
+
+            vec(tuple_gen.prop_map(|indices| indices), 0..=max_tuples)
+                .prop_map(move |tuples| {
+                    let extent: BTreeSet<Vec<usize>> = tuples.into_iter().collect();
+                    SparseTensor {
+                        dims: dims_clone.clone(),
+                        extent,
+                    }
+                })
+                .boxed()
+        }
+    })
+}
+
+/// Generate a sparse tensor with specific dimensions
+pub fn arb_sparse_tensor_with_dims(dims: Vec<usize>, max_tuples: usize) -> impl Strategy<Value = SparseTensor> {
+    if dims.is_empty() {
+        any::<bool>()
+            .prop_map(|value| {
+                let mut extent = BTreeSet::new();
+                if value {
+                    extent.insert(vec![]);
+                }
+                SparseTensor { dims: vec![], extent }
+            })
+            .boxed()
+    } else {
+        let tuple_gen: Vec<_> = dims.iter().map(|&d| 0..d).collect();
+        let dims_clone = dims.clone();
+
+        vec(tuple_gen.prop_map(|indices| indices), 0..=max_tuples)
+            .prop_map(move |tuples| {
+                let extent: BTreeSet<Vec<usize>> = tuples.into_iter().collect();
+                SparseTensor {
+                    dims: dims_clone.clone(),
+                    extent,
+                }
+            })
+            .boxed()
+    }
+}
+
+/// Generate a pair of tensors with matching dimensions (for disjunction tests)
+pub fn arb_tensor_pair_same_dims(params: TensorParams) -> impl Strategy<Value = (SparseTensor, SparseTensor)> {
+    vec(1..=params.max_dim_size, 0..=params.max_dims).prop_flat_map(move |dims| {
+        let max_tuples = params.max_tuples;
+        let t1 = arb_sparse_tensor_with_dims(dims.clone(), max_tuples);
+        let t2 = arb_sparse_tensor_with_dims(dims, max_tuples);
+        (t1, t2)
+    })
+}
+
+/// Generate variable names
+pub fn arb_var_names(count: usize) -> impl Strategy<Value = Vec<String>> {
+    Just((0..count).map(|i| format!("v{}", i)).collect())
 }
