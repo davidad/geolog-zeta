@@ -374,5 +374,4 @@ pub fn pretty_print(file: &File) -> String {
     p.finish()
 }
 
-
 // Unit tests moved to tests/unit_pretty.rs

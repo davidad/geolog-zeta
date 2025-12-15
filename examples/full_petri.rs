@@ -114,8 +114,12 @@ query findTrace {
             for decl in &file.declarations {
                 match &decl.node {
                     geolog::Declaration::Namespace(n) => println!("  - namespace {}", n),
-                    geolog::Declaration::Theory(t) => println!("  - theory {} ({} items)", t.name, t.body.len()),
-                    geolog::Declaration::Instance(i) => println!("  - instance {} ({} items)", i.name, i.body.len()),
+                    geolog::Declaration::Theory(t) => {
+                        println!("  - theory {} ({} items)", t.name, t.body.len())
+                    }
+                    geolog::Declaration::Instance(i) => {
+                        println!("  - instance {} ({} items)", i.name, i.body.len())
+                    }
                     geolog::Declaration::Query(q) => println!("  - query {}", q.name),
                 }
             }

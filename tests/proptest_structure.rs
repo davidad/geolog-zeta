@@ -2,7 +2,7 @@
 
 mod generators;
 
-use generators::{check_structure_invariants, StructureParams, StructureOp};
+use generators::{StructureOp, StructureParams, check_structure_invariants};
 use geolog::core::Structure;
 use geolog::universe::Universe;
 use proptest::prelude::*;
@@ -234,4 +234,3 @@ proptest! {
         prop_assert_eq!(structure.functions[2].len(), 0);
     }
 }
-

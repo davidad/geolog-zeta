@@ -94,11 +94,7 @@ pub struct Patch {
 
 impl Patch {
     /// Create a new patch
-    pub fn new(
-        source_commit: Option<Uuid>,
-        num_sorts: usize,
-        num_functions: usize,
-    ) -> Self {
+    pub fn new(source_commit: Option<Uuid>, num_sorts: usize, num_functions: usize) -> Self {
         Self {
             source_commit,
             target_commit: Uuid::now_v7(),
@@ -123,9 +119,7 @@ impl Patch {
     pub fn invert(&self) -> Patch {
         Patch {
             source_commit: Some(self.target_commit),
-            target_commit: self
-                .source_commit
-                .unwrap_or_else(Uuid::now_v7),
+            target_commit: self.source_commit.unwrap_or_else(Uuid::now_v7),
             num_sorts: self.num_sorts,
             num_functions: self.num_functions,
             elements: ElementPatch {
@@ -138,19 +132,33 @@ impl Patch {
                     .collect(),
             },
             functions: FunctionPatch {
-                old_values: self.functions.new_values.iter().map(|(func_id, changes)| {
-                    (*func_id, changes.iter().map(|(k, v)| (*k, Some(*v))).collect())
-                }).collect(),
-                new_values: self.functions.old_values.iter().filter_map(|(func_id, changes)| {
-                    let filtered: BTreeMap<_, _> = changes.iter()
-                        .filter_map(|(k, v)| v.map(|v| (*k, v)))
-                        .collect();
-                    if filtered.is_empty() {
-                        None
-                    } else {
-                        Some((*func_id, filtered))
-                    }
-                }).collect(),
+                old_values: self
+                    .functions
+                    .new_values
+                    .iter()
+                    .map(|(func_id, changes)| {
+                        (
+                            *func_id,
+                            changes.iter().map(|(k, v)| (*k, Some(*v))).collect(),
+                        )
+                    })
+                    .collect(),
+                new_values: self
+                    .functions
+                    .old_values
+                    .iter()
+                    .filter_map(|(func_id, changes)| {
+                        let filtered: BTreeMap<_, _> = changes
+                            .iter()
+                            .filter_map(|(k, v)| v.map(|v| (*k, v)))
+                            .collect();
+                        if filtered.is_empty() {
+                            None
+                        } else {
+                            Some((*func_id, filtered))
+                        }
+                    })
+                    .collect(),
             },
             names: NamingPatch {
                 deletions: self.names.additions.keys().copied().collect(),
@@ -168,7 +176,7 @@ impl Patch {
 // ============ Diff and Apply operations ============
 
 use crate::core::Structure;
-use crate::id::{get_slid, some_slid, Luid};
+use crate::id::{Luid, get_slid, some_slid};
 use crate::naming::NamingIndex;
 use crate::universe::Universe;
 
@@ -260,10 +268,13 @@ pub fn diff(
                                 match old_codomain {
                                     Some(old_codomain_slid) => {
                                         let old_codomain_luid = old.luids[old_codomain_slid];
-                                        if let Some(old_codomain_uuid) = universe.get(old_codomain_luid) {
+                                        if let Some(old_codomain_uuid) =
+                                            universe.get(old_codomain_luid)
+                                        {
                                             if old_codomain_uuid != new_codomain_uuid {
                                                 // Value changed
-                                                old_vals.insert(domain_uuid, Some(old_codomain_uuid));
+                                                old_vals
+                                                    .insert(domain_uuid, Some(old_codomain_uuid));
                                                 new_vals.insert(domain_uuid, new_codomain_uuid);
                                             }
                                         }
@@ -307,9 +318,13 @@ fn find_luid_by_sort_slid(structure: &Structure, func_id: usize, sort_slid: usiz
 }
 
 /// Helper to find the UUID of an element given its func_id and sort_slid in a structure
-fn find_uuid_by_sort_slid(structure: &Structure, universe: &Universe, func_id: usize, sort_slid: usize) -> Option<Uuid> {
-    find_luid_by_sort_slid(structure, func_id, sort_slid)
-        .and_then(|luid| universe.get(luid))
+fn find_uuid_by_sort_slid(
+    structure: &Structure,
+    universe: &Universe,
+    func_id: usize,
+    sort_slid: usize,
+) -> Option<Uuid> {
+    find_luid_by_sort_slid(structure, func_id, sort_slid).and_then(|luid| universe.get(luid))
 }
 
 /// Apply a patch to create a new structure and update naming index.
@@ -327,7 +342,8 @@ pub fn apply_patch(
     let mut result = Structure::new(patch.num_sorts);
 
     // Build a set of deleted UUIDs for quick lookup
-    let deleted_uuids: std::collections::HashSet<Uuid> = patch.elements.deletions.iter().copied().collect();
+    let deleted_uuids: std::collections::HashSet<Uuid> =
+        patch.elements.deletions.iter().copied().collect();
 
     // Copy elements from base that weren't deleted
     for (slid, &luid) in base.luids.iter().enumerate() {
@@ -381,7 +397,8 @@ pub fn apply_patch(
                         if let Some(&new_codomain_slid) = result.luid_to_slid.get(&codomain_luid) {
                             let new_sort_slid = result.sort_local_id(new_domain_slid);
                             if new_sort_slid < result.functions[func_id].len() {
-                                result.functions[func_id][new_sort_slid] = some_slid(new_codomain_slid);
+                                result.functions[func_id][new_sort_slid] =
+                                    some_slid(new_codomain_slid);
                             }
                         }
                     }

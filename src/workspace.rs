@@ -6,16 +6,16 @@
 //!
 //! The UUID universe and naming index are global (installation-wide), not per-workspace.
 
-use crate::core::{ElaboratedTheory, SortId, Structure};
+use crate::core::{ElaboratedTheory, RelationStorage, SortId, Structure, TupleId, VecRelation};
 use crate::elaborate::Env;
-use crate::id::{get_slid, some_slid, Luid};
+use crate::id::{Luid, Slid, get_slid, some_slid};
 use crate::meta::{structure_to_theory, theory_to_structure};
 use crate::naming::NamingIndex;
 use crate::universe::Universe;
 use memmap2::Mmap;
-use rkyv::ser::serializers::AllocSerializer;
 use rkyv::ser::Serializer;
-use rkyv::{check_archived_root, Archive, Deserialize, Serialize};
+use rkyv::ser::serializers::AllocSerializer;
+use rkyv::{Archive, Deserialize, Serialize, check_archived_root};
 use std::collections::HashMap;
 use std::fs::{self, File};
 use std::io::Write;
@@ -64,6 +64,18 @@ pub fn global_universe() -> Universe {
 // STRUCTURE SERIALIZATION
 // ============================================================================
 
+/// Serializable form of a relation
+#[derive(Archive, Deserialize, Serialize)]
+#[archive(check_bytes)]
+pub struct RelationData {
+    /// Arity of this relation
+    pub arity: usize,
+    /// All tuples ever inserted (append-only log)
+    pub tuples: Vec<Vec<Slid>>,
+    /// Tuple IDs currently in the extent
+    pub extent: Vec<TupleId>,
+}
+
 /// Serializable form of a Structure
 ///
 /// Strips out RoaringTreemap carriers and luid_to_slid HashMap (rebuilt on load).
@@ -76,6 +88,7 @@ pub struct StructureData {
     pub luids: Vec<Luid>,
     pub sorts: Vec<SortId>,
     pub functions: Vec<Vec<Option<usize>>>,
+    pub relations: Vec<RelationData>,
 }
 
 impl StructureData {
@@ -87,11 +100,22 @@ impl StructureData {
             .map(|func_vec| func_vec.iter().map(|&opt| get_slid(opt)).collect())
             .collect();
 
+        let relations = structure
+            .relations
+            .iter()
+            .map(|rel| RelationData {
+                arity: rel.arity(),
+                tuples: rel.tuples.clone(),
+                extent: rel.iter_ids().collect(),
+            })
+            .collect();
+
         Self {
             num_sorts: structure.num_sorts(),
             luids: structure.luids.clone(),
             sorts: structure.sorts.clone(),
             functions,
+            relations,
         }
     }
 
@@ -100,12 +124,7 @@ impl StructureData {
         let mut structure = Structure::new(self.num_sorts);
 
         // Rebuild elements (also rebuilds carriers and luid_to_slid)
-        for (slid, (&luid, &sort_id)) in self
-            .luids
-            .iter()
-            .zip(self.sorts.iter())
-            .enumerate()
-        {
+        for (slid, (&luid, &sort_id)) in self.luids.iter().zip(self.sorts.iter()).enumerate() {
             let added_slid = structure.add_element_with_luid(luid, sort_id);
             debug_assert_eq!(added_slid, slid);
         }
@@ -122,6 +141,25 @@ impl StructureData {
             })
             .collect();
 
+        // Rebuild relations
+        structure.relations = self
+            .relations
+            .iter()
+            .map(|rel_data| {
+                let mut rel = VecRelation::new(rel_data.arity);
+                // Rebuild tuple log and index
+                for tuple in &rel_data.tuples {
+                    rel.tuple_to_id.insert(tuple.clone(), rel.tuples.len());
+                    rel.tuples.push(tuple.clone());
+                }
+                // Rebuild extent bitmap
+                for &tuple_id in &rel_data.extent {
+                    rel.extent.insert(tuple_id as u64);
+                }
+                rel
+            })
+            .collect();
+
         structure
     }
 }
@@ -131,8 +169,7 @@ pub fn save_structure(structure: &Structure, path: &Path) -> Result<(), String> 
     let data = StructureData::from_structure(structure);
 
     if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)
-            .map_err(|e| format!("Failed to create directory: {}", e))?;
+        fs::create_dir_all(parent).map_err(|e| format!("Failed to create directory: {}", e))?;
     }
 
     let mut serializer = AllocSerializer::<4096>::default();
@@ -144,27 +181,24 @@ pub fn save_structure(structure: &Structure, path: &Path) -> Result<(), String> 
     // Write atomically
     let temp_path = path.with_extension("tmp");
     {
-        let mut file = File::create(&temp_path)
-            .map_err(|e| format!("Failed to create temp file: {}", e))?;
+        let mut file =
+            File::create(&temp_path).map_err(|e| format!("Failed to create temp file: {}", e))?;
         file.write_all(&bytes)
             .map_err(|e| format!("Failed to write file: {}", e))?;
         file.sync_all()
             .map_err(|e| format!("Failed to sync file: {}", e))?;
     }
 
-    fs::rename(&temp_path, path)
-        .map_err(|e| format!("Failed to rename file: {}", e))?;
+    fs::rename(&temp_path, path).map_err(|e| format!("Failed to rename file: {}", e))?;
 
     Ok(())
 }
 
 /// Load a Structure from a file
 pub fn load_structure(path: &Path) -> Result<Structure, String> {
-    let file = File::open(path)
-        .map_err(|e| format!("Failed to open file: {}", e))?;
+    let file = File::open(path).map_err(|e| format!("Failed to open file: {}", e))?;
 
-    let mmap = unsafe { Mmap::map(&file) }
-        .map_err(|e| format!("Failed to mmap file: {}", e))?;
+    let mmap = unsafe { Mmap::map(&file) }.map_err(|e| format!("Failed to mmap file: {}", e))?;
 
     if mmap.is_empty() {
         return Err("Empty structure file".to_string());
@@ -248,10 +282,14 @@ impl Workspace {
                     if let Some(name) = path.file_stem().and_then(|s| s.to_str()) {
                         match self.load_theory_file(&path, universe, naming) {
                             Ok(theory) => {
-                                self.env.theories.insert(name.to_string(), Rc::new(theory.clone()));
+                                self.env
+                                    .theories
+                                    .insert(name.to_string(), Rc::new(theory.clone()));
                                 self.theories.insert(name.to_string(), Rc::new(theory));
                             }
-                            Err(e) => eprintln!("Warning: failed to load {}: {}", path.display(), e),
+                            Err(e) => {
+                                eprintln!("Warning: failed to load {}: {}", path.display(), e)
+                            }
                         }
                     }
                 }
@@ -268,7 +306,9 @@ impl Workspace {
                             Ok(structure) => {
                                 self.instances.insert(name.to_string(), structure);
                             }
-                            Err(e) => eprintln!("Warning: failed to load {}: {}", path.display(), e),
+                            Err(e) => {
+                                eprintln!("Warning: failed to load {}: {}", path.display(), e)
+                            }
                         }
                     }
                 }
@@ -335,6 +375,5 @@ impl Workspace {
         self.instances.keys().collect()
     }
 }
-
 
 // Unit tests moved to tests/unit_workspace.rs

@@ -10,9 +10,9 @@
 use crate::id::Uuid;
 use indexmap::IndexMap;
 use memmap2::Mmap;
-use rkyv::ser::serializers::AllocSerializer;
 use rkyv::ser::Serializer;
-use rkyv::{check_archived_root, Archive, Deserialize, Serialize};
+use rkyv::ser::serializers::AllocSerializer;
+use rkyv::{Archive, Deserialize, Serialize, check_archived_root};
 use std::collections::HashMap;
 use std::fs::{self, File};
 use std::io::Write;
@@ -69,8 +69,7 @@ impl NamingIndex {
             return Ok(Self::with_path(path));
         }
 
-        let file = File::open(&path)
-            .map_err(|e| format!("Failed to open naming index: {}", e))?;
+        let file = File::open(&path).map_err(|e| format!("Failed to open naming index: {}", e))?;
 
         let mmap = unsafe { Mmap::map(&file) }
             .map_err(|e| format!("Failed to mmap naming index: {}", e))?;
@@ -96,7 +95,9 @@ impl NamingIndex {
 
     /// Save the naming index to disk
     pub fn save(&mut self) -> Result<(), String> {
-        let path = self.path.as_ref()
+        let path = self
+            .path
+            .as_ref()
             .ok_or("Naming index has no persistence path")?;
 
         if let Some(parent) = path.parent() {
@@ -105,7 +106,8 @@ impl NamingIndex {
         }
 
         let data = NamingData {
-            entries: self.uuid_to_name
+            entries: self
+                .uuid_to_name
                 .iter()
                 .map(|(k, v)| (*k, v.clone()))
                 .collect(),
@@ -164,7 +166,8 @@ impl NamingIndex {
 
     /// Get the simple (last component) name for a UUID
     pub fn get_simple(&self, uuid: &Uuid) -> Option<&str> {
-        self.uuid_to_name.get(uuid)
+        self.uuid_to_name
+            .get(uuid)
             .and_then(|name| name.last())
             .map(|s| s.as_str())
     }

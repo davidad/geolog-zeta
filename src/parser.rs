@@ -80,13 +80,7 @@ fn type_expr_impl() -> impl Parser<Token, TypeExpr, Error = Simple<Token>> + Clo
         // Type application (juxtaposition) and `instance` suffix
         let with_app_and_instance = atom
             .clone()
-            .then(
-                choice((
-                    just(Token::Instance).to(None),
-                    atom.clone().map(Some),
-                ))
-                .repeated(),
-            )
+            .then(choice((just(Token::Instance).to(None), atom.clone().map(Some))).repeated())
             .foldl(|acc, item| match item {
                 None => TypeExpr::Instance(Box::new(acc)),
                 Some(arg) => TypeExpr::App(Box::new(acc), Box::new(arg)),
@@ -127,22 +121,14 @@ fn type_expr_no_arrow() -> impl Parser<Token, TypeExpr, Error = Simple<Token>> +
             .map(TypeExpr::Record);
 
         // Parenthesized type - allows full type expressions inside
-        let paren_type = type_expr_impl()
-            .delimited_by(just(Token::LParen), just(Token::RParen));
+        let paren_type = type_expr_impl().delimited_by(just(Token::LParen), just(Token::RParen));
 
         // Atomic types
         let atom = choice((sort, record_type, paren_type, path_type));
 
         // Type application and instance, but NO arrows
-        atom
-            .clone()
-            .then(
-                choice((
-                    just(Token::Instance).to(None),
-                    atom.clone().map(Some),
-                ))
-                .repeated(),
-            )
+        atom.clone()
+            .then(choice((just(Token::Instance).to(None), atom.clone().map(Some))).repeated())
             .foldl(|acc, item| match item {
                 None => TypeExpr::Instance(Box::new(acc)),
                 Some(arg) => TypeExpr::App(Box::new(acc), Box::new(arg)),
@@ -159,9 +145,7 @@ fn term() -> impl Parser<Token, Term, Error = Simple<Token>> + Clone {
         let path_term = path().map(Term::Path);
 
         // Record literal: [field: term, ...]
-        let record_field = ident()
-            .then_ignore(just(Token::Colon))
-            .then(term.clone());
+        let record_field = ident().then_ignore(just(Token::Colon)).then(term.clone());
 
         let record_term = record_field
             .separated_by(just(Token::Comma))
@@ -182,7 +166,9 @@ fn term() -> impl Parser<Token, Term, Error = Simple<Token>> + Clone {
             .then(
                 choice((
                     // Field projection: .field
-                    just(Token::Dot).ignore_then(ident()).map(TermPostfix::Project),
+                    just(Token::Dot)
+                        .ignore_then(ident())
+                        .map(TermPostfix::Project),
                     // Application: another atom
                     atom.clone().map(TermPostfix::App),
                 ))
@@ -216,7 +202,12 @@ fn formula() -> impl Parser<Token, Formula, Error = Simple<Token>> + Clone {
 
         // Existential: exists x : T. phi
         let exists = just(Token::Exists)
-            .ignore_then(quantified_var.clone().separated_by(just(Token::Comma)).at_least(1))
+            .ignore_then(
+                quantified_var
+                    .clone()
+                    .separated_by(just(Token::Comma))
+                    .at_least(1),
+            )
             .then_ignore(just(Token::Dot))
             .then(formula.clone())
             .map(|(vars, body)| Formula::Exists(vars, Box::new(body)));
@@ -447,14 +438,12 @@ fn type_expr_no_instance() -> impl Parser<Token, TypeExpr, Error = Simple<Token>
             .delimited_by(just(Token::LBracket), just(Token::RBracket))
             .map(TypeExpr::Record);
 
-        let paren_type = type_expr_impl()
-            .delimited_by(just(Token::LParen), just(Token::RParen));
+        let paren_type = type_expr_impl().delimited_by(just(Token::LParen), just(Token::RParen));
 
         let atom = choice((sort, record_type, paren_type, path_type));
 
         // Type application only, NO instance suffix
-        atom
-            .clone()
+        atom.clone()
             .then(atom.clone().repeated())
             .foldl(|acc, arg| TypeExpr::App(Box::new(acc), Box::new(arg)))
     })

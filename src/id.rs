@@ -5,8 +5,8 @@
 //! - Luids for installation-wide identity (stable across structures, persisted)
 //! - Slids for structure-local computation (cache-friendly, compact)
 
-pub use uuid::Uuid;
 pub use nonminmax::NonMaxUsize;
+pub use uuid::Uuid;
 
 /// Locally Universal ID: index into the global universe of UUIDs (0..N-1)
 /// This is stable across the entire installation and persists across sessions.

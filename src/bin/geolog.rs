@@ -18,8 +18,8 @@ use rustyline::history::DefaultHistory;
 use rustyline::{Config, Editor};
 
 use geolog::repl::{
-    format_instance_detail, format_theory_detail, ExecuteResult, InputResult, InspectResult,
-    ListTarget, MetaCommand, ReplState,
+    ExecuteResult, InputResult, InspectResult, ListTarget, MetaCommand, ReplState,
+    format_instance_detail, format_theory_detail,
 };
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -43,10 +43,9 @@ fn main() {
     }
 
     // Set up rustyline
-    let config = Config::builder()
-        .auto_add_history(true)
-        .build();
-    let mut rl: Editor<(), DefaultHistory> = Editor::with_config(config).expect("Failed to create editor");
+    let config = Config::builder().auto_add_history(true).build();
+    let mut rl: Editor<(), DefaultHistory> =
+        Editor::with_config(config).expect("Failed to create editor");
 
     // Try to load history
     let history_path = dirs_history_path();
@@ -162,11 +161,16 @@ fn handle_geolog(state: &mut ReplState, source: &str) {
                 name,
                 num_sorts,
                 num_functions,
+                num_relations,
             } => {
-                println!(
-                    "Defined theory {} ({} sorts, {} functions)",
-                    name, num_sorts, num_functions
-                );
+                let mut parts = vec![format!("{} sorts", num_sorts)];
+                if num_functions > 0 {
+                    parts.push(format!("{} functions", num_functions));
+                }
+                if num_relations > 0 {
+                    parts.push(format!("{} relations", num_relations));
+                }
+                println!("Defined theory {} ({})", name, parts.join(", "));
             }
             ExecuteResult::Instance {
                 name,
@@ -193,7 +197,9 @@ fn print_help(topic: Option<&str>) {
             println!();
             println!("  :help [topic]    Show help (topics: syntax, examples)");
             println!("  :quit            Exit the REPL");
-            println!("  :list [target]   List theories/instances (target: theories, instances, all)");
+            println!(
+                "  :list [target]   List theories/instances (target: theories, instances, all)"
+            );
             println!("  :inspect <name>  Show details of a theory or instance");
             println!("  :source <file>   Load and execute a geolog file");
             println!("  :clear           Clear the screen");
@@ -251,10 +257,17 @@ fn handle_list(state: &ReplState, target: ListTarget) {
             } else {
                 println!("Theories:");
                 for t in theories {
-                    println!(
-                        "  {} ({} sorts, {} functions, {} axioms)",
-                        t.name, t.num_sorts, t.num_functions, t.num_axioms
-                    );
+                    let mut parts = vec![format!("{} sorts", t.num_sorts)];
+                    if t.num_functions > 0 {
+                        parts.push(format!("{} functions", t.num_functions));
+                    }
+                    if t.num_relations > 0 {
+                        parts.push(format!("{} relations", t.num_relations));
+                    }
+                    if t.num_axioms > 0 {
+                        parts.push(format!("{} axioms", t.num_axioms));
+                    }
+                    println!("  {} ({})", t.name, parts.join(", "));
                 }
             }
         }
@@ -271,7 +284,10 @@ fn handle_list(state: &ReplState, target: ListTarget) {
             } else {
                 println!("Instances:");
                 for i in instances {
-                    println!("  {} : {} ({} elements)", i.name, i.theory_name, i.num_elements);
+                    println!(
+                        "  {} : {} ({} elements)",
+                        i.name, i.theory_name, i.num_elements
+                    );
                 }
             }
         }

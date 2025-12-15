@@ -9,7 +9,7 @@ use std::rc::Rc;
 
 use crate::ast;
 use crate::core::Structure;
-use crate::elaborate::{elaborate_instance, elaborate_theory, Env};
+use crate::elaborate::{Env, elaborate_instance, elaborate_theory};
 use crate::id::Slid;
 use crate::naming::NamingIndex;
 use crate::universe::Universe;
@@ -111,9 +111,7 @@ impl ReplState {
         }
 
         // Complete when brackets balanced and line ends with } or ;
-        if self.bracket_depth <= 0
-            && (trimmed.ends_with('}') || trimmed.ends_with(';'))
-        {
+        if self.bracket_depth <= 0 && (trimmed.ends_with('}') || trimmed.ends_with(';')) {
             let input = std::mem::take(&mut self.input_buffer);
             self.bracket_depth = 0;
             InputResult::GeologInput(input)
@@ -145,19 +143,35 @@ impl ReplState {
                     results.push(ExecuteResult::Namespace(name.clone()));
                 }
                 ast::Declaration::Theory(t) => {
+                    // Check for duplicate theory name
+                    if self.env.theories.contains_key(&t.name) {
+                        return Err(format!(
+                            "Theory '{}' already exists. Use a different name or :reset to clear.",
+                            t.name
+                        ));
+                    }
                     let elab = elaborate_theory(&mut self.env, t)
                         .map_err(|e| format!("Elaboration error: {}", e))?;
                     let name = elab.theory.name.clone();
                     let num_sorts = elab.theory.signature.sorts.len();
                     let num_functions = elab.theory.signature.functions.len();
+                    let num_relations = elab.theory.signature.relations.len();
                     self.env.theories.insert(name.clone(), Rc::new(elab));
                     results.push(ExecuteResult::Theory {
                         name,
                         num_sorts,
                         num_functions,
+                        num_relations,
                     });
                 }
                 ast::Declaration::Instance(inst) => {
+                    // Check for duplicate instance name
+                    if self.instances.contains_key(&inst.name) {
+                        return Err(format!(
+                            "Instance '{}' already exists. Use a different name or :reset to clear.",
+                            inst.name
+                        ));
+                    }
                     let structure = elaborate_instance(&self.env, inst, &mut self.universe)
                         .map_err(|e| format!("Elaboration error: {}", e))?;
                     let instance_name = inst.name.clone();
@@ -174,11 +188,14 @@ impl ReplState {
                         }
                     }
 
-                    self.instances.insert(instance_name.clone(), InstanceData {
-                        structure,
-                        theory_name: theory_name.clone(),
-                        element_names,
-                    });
+                    self.instances.insert(
+                        instance_name.clone(),
+                        InstanceData {
+                            structure,
+                            theory_name: theory_name.clone(),
+                            element_names,
+                        },
+                    );
                     results.push(ExecuteResult::Instance {
                         name: instance_name,
                         theory_name,
@@ -192,7 +209,10 @@ impl ReplState {
         }
 
         // Return first result (usually there's just one)
-        results.into_iter().next().ok_or_else(|| "No declarations found".to_string())
+        results
+            .into_iter()
+            .next()
+            .ok_or_else(|| "No declarations found".to_string())
     }
 
     /// List all theories
@@ -204,6 +224,7 @@ impl ReplState {
                 name: name.clone(),
                 num_sorts: theory.theory.signature.sorts.len(),
                 num_functions: theory.theory.signature.functions.len(),
+                num_relations: theory.theory.signature.relations.len(),
                 num_axioms: theory.theory.axioms.len(),
             })
             .collect()
@@ -227,6 +248,11 @@ impl ReplState {
         if let Some(theory) = self.env.theories.get(name) {
             return Some(InspectResult::Theory(TheoryDetail {
                 name: name.to_string(),
+                params: theory
+                    .params
+                    .iter()
+                    .map(|p| (p.name.clone(), p.theory_name.clone()))
+                    .collect(),
                 sorts: theory.theory.signature.sorts.clone(),
                 functions: theory
                     .theory
@@ -239,7 +265,22 @@ impl ReplState {
                         (f.name.clone(), domain, codomain)
                     })
                     .collect(),
-                num_axioms: theory.theory.axioms.len(),
+                relations: theory
+                    .theory
+                    .signature
+                    .relations
+                    .iter()
+                    .map(|r| {
+                        let domain = format_derived_sort(&r.domain, &theory.theory.signature);
+                        (r.name.clone(), domain)
+                    })
+                    .collect(),
+                axioms: theory
+                    .theory
+                    .axioms
+                    .iter()
+                    .map(|ax| format_axiom(ax, &theory.theory.signature))
+                    .collect(),
             }));
         }
 
@@ -300,20 +341,22 @@ impl ReplState {
                     let slid_usize = slid as usize;
                     let sort_slid = data.structure.sort_local_id(slid_usize);
                     if sort_slid < data.structure.functions[func_id].len() {
-                        if let Some(codomain_slid) = crate::id::get_slid(data.structure.functions[func_id][sort_slid]) {
-                            let domain_name = data.element_names
+                        if let Some(codomain_slid) =
+                            crate::id::get_slid(data.structure.functions[func_id][sort_slid])
+                        {
+                            let domain_name = data
+                                .element_names
                                 .get(&(slid as Slid))
                                 .cloned()
                                 .unwrap_or_else(|| format!("#{}", slid));
-                            let codomain_name = data.element_names
+                            let codomain_name = data
+                                .element_names
                                 .get(&(codomain_slid as Slid))
                                 .cloned()
                                 .unwrap_or_else(|| format!("#{}", codomain_slid));
                             values.push(format!(
                                 "{} {} = {}",
-                                domain_name,
-                                func_sym.name,
-                                codomain_name
+                                domain_name, func_sym.name, codomain_name
                             ));
                         }
                     }
@@ -333,13 +376,12 @@ fn type_expr_to_theory_name(type_expr: &ast::TypeExpr) -> String {
         ast::TypeExpr::Sort => "Sort".to_string(),
         ast::TypeExpr::Path(path) => {
             // Just take the first component as the theory name
-            path.segments.first()
+            path.segments
+                .first()
                 .cloned()
                 .unwrap_or_else(|| "Unknown".to_string())
         }
-        ast::TypeExpr::App(base, _) => {
-            type_expr_to_theory_name(base)
-        }
+        ast::TypeExpr::App(base, _) => type_expr_to_theory_name(base),
         ast::TypeExpr::Arrow(_, _) => "Arrow".to_string(),
         ast::TypeExpr::Record(_) => "Record".to_string(),
         ast::TypeExpr::Instance(inner) => type_expr_to_theory_name(inner),
@@ -349,9 +391,11 @@ fn type_expr_to_theory_name(type_expr: &ast::TypeExpr) -> String {
 /// Format a DerivedSort as a string using sort names from the signature
 fn format_derived_sort(ds: &crate::core::DerivedSort, sig: &crate::core::Signature) -> String {
     match ds {
-        crate::core::DerivedSort::Base(sort_id) => {
-            sig.sorts.get(*sort_id).cloned().unwrap_or_else(|| format!("Sort#{}", sort_id))
-        }
+        crate::core::DerivedSort::Base(sort_id) => sig
+            .sorts
+            .get(*sort_id)
+            .cloned()
+            .unwrap_or_else(|| format!("Sort#{}", sort_id)),
         crate::core::DerivedSort::Product(fields) => {
             if fields.is_empty() {
                 "Unit".to_string()
@@ -362,6 +406,112 @@ fn format_derived_sort(ds: &crate::core::DerivedSort, sig: &crate::core::Signatu
                     .collect();
                 format!("[{}]", field_strs.join(", "))
             }
+        }
+    }
+}
+
+/// Format a core::Sequent (axiom) for display
+fn format_axiom(ax: &crate::core::Sequent, sig: &crate::core::Signature) -> AxiomDetail {
+    let context: Vec<(String, String)> = ax
+        .context
+        .vars
+        .iter()
+        .map(|(name, sort)| (name.clone(), format_derived_sort(sort, sig)))
+        .collect();
+    let premise = format_core_formula(&ax.premise, sig);
+    let conclusion = format_core_formula(&ax.conclusion, sig);
+    AxiomDetail {
+        context,
+        premise,
+        conclusion,
+    }
+}
+
+/// Format a core::Term for display
+fn format_core_term(term: &crate::core::Term, sig: &crate::core::Signature) -> String {
+    match term {
+        crate::core::Term::Var(name, _) => name.clone(),
+        crate::core::Term::App(func_id, arg) => {
+            let func_name = sig
+                .functions
+                .get(*func_id)
+                .map(|f| f.name.clone())
+                .unwrap_or_else(|| format!("func#{}", func_id));
+            format!("{} {}", format_core_term(arg, sig), func_name)
+        }
+        crate::core::Term::Record(fields) => {
+            let field_strs: Vec<String> = fields
+                .iter()
+                .map(|(name, t)| format!("{}: {}", name, format_core_term(t, sig)))
+                .collect();
+            format!("[{}]", field_strs.join(", "))
+        }
+        crate::core::Term::Project(base, field) => {
+            format!("{} .{}", format_core_term(base, sig), field)
+        }
+    }
+}
+
+/// Format a core::Formula for display
+fn format_core_formula(formula: &crate::core::Formula, sig: &crate::core::Signature) -> String {
+    match formula {
+        crate::core::Formula::True => "true".to_string(),
+        crate::core::Formula::False => "false".to_string(),
+        crate::core::Formula::Eq(lhs, rhs) => {
+            format!(
+                "{} = {}",
+                format_core_term(lhs, sig),
+                format_core_term(rhs, sig)
+            )
+        }
+        crate::core::Formula::Rel(rel_id, arg) => {
+            let rel_name = sig
+                .relations
+                .get(*rel_id)
+                .map(|r| r.name.clone())
+                .unwrap_or_else(|| format!("rel#{}", rel_id));
+            format!("{} {}", format_core_term(arg, sig), rel_name)
+        }
+        crate::core::Formula::Conj(conjuncts) => {
+            if conjuncts.is_empty() {
+                "true".to_string()
+            } else {
+                conjuncts
+                    .iter()
+                    .map(|f| format_core_formula(f, sig))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            }
+        }
+        crate::core::Formula::Disj(disjuncts) => {
+            if disjuncts.is_empty() {
+                "false".to_string()
+            } else {
+                disjuncts
+                    .iter()
+                    .map(|f| {
+                        let s = format_core_formula(f, sig);
+                        // Wrap in parens if it contains disjunction or conjunction
+                        if matches!(
+                            f,
+                            crate::core::Formula::Conj(_) | crate::core::Formula::Disj(_)
+                        ) {
+                            format!("({})", s)
+                        } else {
+                            s
+                        }
+                    })
+                    .collect::<Vec<_>>()
+                    .join(" \\/ ")
+            }
+        }
+        crate::core::Formula::Exists(name, sort, body) => {
+            format!(
+                "(exists {} : {}. {})",
+                name,
+                format_derived_sort(sort, sig),
+                format_core_formula(body, sig)
+            )
         }
     }
 }
@@ -448,6 +598,7 @@ pub enum ExecuteResult {
         name: String,
         num_sorts: usize,
         num_functions: usize,
+        num_relations: usize,
     },
     Instance {
         name: String,
@@ -462,6 +613,7 @@ pub struct TheoryInfo {
     pub name: String,
     pub num_sorts: usize,
     pub num_functions: usize,
+    pub num_relations: usize,
     pub num_axioms: usize,
 }
 
@@ -477,9 +629,19 @@ pub struct InstanceInfo {
 #[derive(Debug)]
 pub struct TheoryDetail {
     pub name: String,
+    pub params: Vec<(String, String)>, // (param_name, theory_name or "Sort")
     pub sorts: Vec<String>,
     pub functions: Vec<(String, String, String)>, // (name, domain, codomain)
-    pub num_axioms: usize,
+    pub relations: Vec<(String, String)>,         // (name, domain)
+    pub axioms: Vec<AxiomDetail>,                 // full axiom details
+}
+
+/// Detailed info about an axiom (for inspection)
+#[derive(Debug)]
+pub struct AxiomDetail {
+    pub context: Vec<(String, String)>, // (var_name, sort)
+    pub premise: String,                // formatted premise formula
+    pub conclusion: String,             // formatted conclusion formula
 }
 
 /// Detailed info about an instance (for inspection)
@@ -503,7 +665,10 @@ pub enum InspectResult {
 /// Format instance detail as geolog-like syntax
 pub fn format_instance_detail(detail: &InstanceDetail) -> String {
     let mut out = String::new();
-    out.push_str(&format!("instance {} : {} = {{\n", detail.name, detail.theory_name));
+    out.push_str(&format!(
+        "instance {} : {} = {{\n",
+        detail.name, detail.theory_name
+    ));
 
     // Elements by sort
     for (sort_name, elements) in &detail.elements {
@@ -530,18 +695,57 @@ pub fn format_instance_detail(detail: &InstanceDetail) -> String {
 /// Format theory detail
 pub fn format_theory_detail(detail: &TheoryDetail) -> String {
     let mut out = String::new();
-    out.push_str(&format!("theory {} {{\n", detail.name));
 
+    // Header with parameters
+    out.push_str("theory ");
+    for (param_name, theory_name) in &detail.params {
+        if theory_name == "Sort" {
+            out.push_str(&format!("({} : Sort) ", param_name));
+        } else {
+            out.push_str(&format!("({} : {} instance) ", param_name, theory_name));
+        }
+    }
+    out.push_str(&format!("{} {{\n", detail.name));
+
+    // Sorts
     for sort in &detail.sorts {
         out.push_str(&format!("  {} : Sort;\n", sort));
     }
 
+    // Functions
     for (name, domain, codomain) in &detail.functions {
         out.push_str(&format!("  {} : {} -> {};\n", name, domain, codomain));
     }
 
-    if detail.num_axioms > 0 {
-        out.push_str(&format!("  // {} axiom(s)\n", detail.num_axioms));
+    // Relations
+    for (name, domain) in &detail.relations {
+        out.push_str(&format!("  {} : {} Relation;\n", name, domain));
+    }
+
+    // Axioms (full details)
+    for axiom in &detail.axioms {
+        // Build the quantifier part
+        let quantified: Vec<String> = axiom
+            .context
+            .iter()
+            .map(|(name, sort)| format!("{} : {}", name, sort))
+            .collect();
+
+        // Format the sequent
+        if axiom.premise == "true" {
+            out.push_str(&format!(
+                "  forall {}. |- {};\n",
+                quantified.join(", "),
+                axiom.conclusion
+            ));
+        } else {
+            out.push_str(&format!(
+                "  forall {}. {} |- {};\n",
+                quantified.join(", "),
+                axiom.premise,
+                axiom.conclusion
+            ));
+        }
     }
 
     out.push_str("}\n");

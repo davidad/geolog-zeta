@@ -11,11 +11,11 @@ use std::collections::HashMap;
 use std::sync::{Arc, OnceLock};
 
 use crate::core::{
-    DerivedSort, ElaboratedTheory, Formula, Sequent, Signature, SortId, Structure,
-    Term, TheoryParam,
+    DerivedSort, ElaboratedTheory, Formula, Sequent, Signature, SortId, Structure, Term,
+    TheoryParam,
 };
+use crate::elaborate::{Env, elaborate_theory};
 use crate::id::Slid;
-use crate::elaborate::{elaborate_theory, Env};
 use crate::naming::NamingIndex;
 use crate::universe::Universe;
 
@@ -29,14 +29,12 @@ static GEOLOG_META: OnceLock<Arc<ElaboratedTheory>> = OnceLock::new();
 pub fn geolog_meta() -> Arc<ElaboratedTheory> {
     GEOLOG_META
         .get_or_init(|| {
-            let file = crate::parse(GEOLOG_META_SOURCE)
-                .expect("GeologMeta.geolog should parse");
+            let file = crate::parse(GEOLOG_META_SOURCE).expect("GeologMeta.geolog should parse");
 
             let mut env = Env::new();
             for decl in &file.declarations {
                 if let crate::ast::Declaration::Theory(t) = &decl.node {
-                    let elab = elaborate_theory(&mut env, t)
-                        .expect("GeologMeta should elaborate");
+                    let elab = elaborate_theory(&mut env, t).expect("GeologMeta should elaborate");
                     return Arc::new(elab);
                 }
             }
@@ -369,11 +367,7 @@ fn convert_formula(
     }
 }
 
-fn convert_term(
-    builder: &mut MetaBuilder,
-    term: &Term,
-    binder_map: &HashMap<String, u32>,
-) -> u32 {
+fn convert_term(builder: &mut MetaBuilder, term: &Term, binder_map: &HashMap<String, u32>) -> u32 {
     match term {
         Term::Var(name, _sort) => {
             let vart_slid = builder.alloc("VarT", name.clone());
@@ -471,7 +465,9 @@ pub fn builder_to_structure(
             slid_map.insert(*internal_slid, struct_slid);
 
             // Register name in NamingIndex (qualified by theory name)
-            let uuid = universe.get(luid).expect("freshly created luid should have uuid");
+            let uuid = universe
+                .get(luid)
+                .expect("freshly created luid should have uuid");
             naming.insert(uuid, vec![theory_name.to_string(), elem_name.clone()]);
         }
     }
@@ -556,20 +552,56 @@ impl<'a> MetaReader<'a> {
         // Pre-cache commonly used function IDs
         // Note: No */name functions - names are in NamingIndex
         let func_names = [
-            "Srt/theory", "Func/theory", "Func/dom", "Func/cod",
-            "Rel/theory", "Rel/dom", "Param/theory", "Param/type",
-            "BaseDS/dsort", "BaseDS/srt", "ProdDS/dsort", "Field/prod", "Field/type",
-            "Sequent/theory", "Sequent/premise", "Sequent/conclusion",
-            "CtxVar/sequent", "CtxVar/binder", "Binder/type",
-            "VarT/term", "VarT/binder", "AppT/term", "AppT/func", "AppT/arg",
-            "RecordT/term", "RecEntry/record", "RecEntry/val", "RecEntry/field",
-            "ProjT/term", "ProjT/base", "ProjT/field",
-            "TrueF/formula", "FalseF/formula", "EqF/formula", "EqF/lhs", "EqF/rhs",
-            "ConjF/formula", "ConjArm/conj", "ConjArm/child",
-            "DisjF/formula", "DisjArm/disj", "DisjArm/child",
-            "ExistsF/formula", "ExistsF/binder", "ExistsF/body",
-            "RelF/formula", "RelF/rel", "RelF/arg",
-            "Term/node", "Formula/node",
+            "Srt/theory",
+            "Func/theory",
+            "Func/dom",
+            "Func/cod",
+            "Rel/theory",
+            "Rel/dom",
+            "Param/theory",
+            "Param/type",
+            "BaseDS/dsort",
+            "BaseDS/srt",
+            "ProdDS/dsort",
+            "Field/prod",
+            "Field/type",
+            "Sequent/theory",
+            "Sequent/premise",
+            "Sequent/conclusion",
+            "CtxVar/sequent",
+            "CtxVar/binder",
+            "Binder/type",
+            "VarT/term",
+            "VarT/binder",
+            "AppT/term",
+            "AppT/func",
+            "AppT/arg",
+            "RecordT/term",
+            "RecEntry/record",
+            "RecEntry/val",
+            "RecEntry/field",
+            "ProjT/term",
+            "ProjT/base",
+            "ProjT/field",
+            "TrueF/formula",
+            "FalseF/formula",
+            "EqF/formula",
+            "EqF/lhs",
+            "EqF/rhs",
+            "ConjF/formula",
+            "ConjArm/conj",
+            "ConjArm/child",
+            "DisjF/formula",
+            "DisjArm/disj",
+            "DisjArm/child",
+            "ExistsF/formula",
+            "ExistsF/binder",
+            "ExistsF/body",
+            "RelF/formula",
+            "RelF/rel",
+            "RelF/arg",
+            "Term/node",
+            "Formula/node",
         ];
 
         let mut func_ids = HashMap::new();
@@ -581,10 +613,10 @@ impl<'a> MetaReader<'a> {
 
         // Note: No "Name" sort - names are in NamingIndex
         let sort_names = [
-            "Theory", "Param", "Srt", "DSort", "BaseDS", "ProdDS", "Field",
-            "Func", "Rel", "Binder", "Term", "VarT", "AppT", "RecordT", "RecEntry", "ProjT",
-            "Formula", "RelF", "TrueF", "FalseF", "EqF", "ConjF", "ConjArm", "DisjF", "DisjArm",
-            "ExistsF", "Sequent", "CtxVar", "Node",
+            "Theory", "Param", "Srt", "DSort", "BaseDS", "ProdDS", "Field", "Func", "Rel",
+            "Binder", "Term", "VarT", "AppT", "RecordT", "RecEntry", "ProjT", "Formula", "RelF",
+            "TrueF", "FalseF", "EqF", "ConjF", "ConjArm", "DisjF", "DisjArm", "ExistsF", "Sequent",
+            "CtxVar", "Node",
         ];
 
         let mut sort_ids = HashMap::new();
@@ -612,7 +644,10 @@ impl<'a> MetaReader<'a> {
         if sort_id == usize::MAX {
             return vec![];
         }
-        self.structure.carriers[sort_id].iter().map(|x| x as Slid).collect()
+        self.structure.carriers[sort_id]
+            .iter()
+            .map(|x| x as Slid)
+            .collect()
     }
 
     /// Follow a function from an element, returning the target Slid if defined
@@ -801,6 +836,5 @@ pub fn structure_to_theory(
 }
 
 use crate::core::RelId;
-
 
 // Unit tests moved to tests/unit_meta.rs

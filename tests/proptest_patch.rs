@@ -2,10 +2,10 @@
 
 mod generators;
 
-use generators::{check_structure_invariants, structures_equivalent, StructureParams};
+use generators::{StructureParams, check_structure_invariants, structures_equivalent};
 use geolog::core::Structure;
 use geolog::naming::NamingIndex;
-use geolog::patch::{apply_patch, diff, to_initial_patch, Patch};
+use geolog::patch::{Patch, apply_patch, diff, to_initial_patch};
 use geolog::universe::Universe;
 use proptest::prelude::*;
 use std::collections::HashSet;

@@ -17,11 +17,17 @@ pub enum ElabError {
     UnknownFunction(String),
     UnknownRel(String),
     UnknownVariable(String),
-    TypeMismatch { expected: DerivedSort, got: DerivedSort },
+    TypeMismatch {
+        expected: DerivedSort,
+        got: DerivedSort,
+    },
     NotASort(String),
     NotAFunction(String),
     NotARecord(String),
-    NoSuchField { record: String, field: String },
+    NoSuchField {
+        record: String,
+        field: String,
+    },
     InvalidPath(String),
     DuplicateDefinition(String),
     UnsupportedFeature(String),
@@ -53,26 +59,51 @@ impl std::fmt::Display for ElabError {
             ElabError::UnknownFunction(s) => write!(f, "unknown function: {}", s),
             ElabError::UnknownRel(s) => write!(f, "unknown relation: {}", s),
             ElabError::UnknownVariable(s) => write!(f, "unknown variable: {}", s),
-            ElabError::TypeMismatch { expected, got } =>
-                write!(f, "type mismatch: expected {}, got {}", expected, got),
+            ElabError::TypeMismatch { expected, got } => {
+                write!(f, "type mismatch: expected {}, got {}", expected, got)
+            }
             ElabError::NotASort(s) => write!(f, "not a sort: {}", s),
             ElabError::NotAFunction(s) => write!(f, "not a function: {}", s),
             ElabError::NotARecord(s) => write!(f, "not a record type: {}", s),
-            ElabError::NoSuchField { record, field } =>
-                write!(f, "no field '{}' in record {}", field, record),
+            ElabError::NoSuchField { record, field } => {
+                write!(f, "no field '{}' in record {}", field, record)
+            }
             ElabError::InvalidPath(s) => write!(f, "invalid path: {}", s),
             ElabError::DuplicateDefinition(s) => write!(f, "duplicate definition: {}", s),
             ElabError::UnsupportedFeature(s) => write!(f, "unsupported feature: {}", s),
-            ElabError::PartialFunction { func_name, missing_elements } => {
-                write!(f, "partial function '{}': missing definitions for {:?}", func_name, missing_elements)
+            ElabError::PartialFunction {
+                func_name,
+                missing_elements,
+            } => {
+                write!(
+                    f,
+                    "partial function '{}': missing definitions for {:?}",
+                    func_name, missing_elements
+                )
             }
-            ElabError::DomainMismatch { func_name, element_name, expected_sort, actual_sort } => {
-                write!(f, "type error: '{}' has sort '{}', but function '{}' expects domain sort '{}'",
-                    element_name, actual_sort, func_name, expected_sort)
+            ElabError::DomainMismatch {
+                func_name,
+                element_name,
+                expected_sort,
+                actual_sort,
+            } => {
+                write!(
+                    f,
+                    "type error: '{}' has sort '{}', but function '{}' expects domain sort '{}'",
+                    element_name, actual_sort, func_name, expected_sort
+                )
             }
-            ElabError::CodomainMismatch { func_name, element_name, expected_sort, actual_sort } => {
-                write!(f, "type error: '{}' has sort '{}', but function '{}' has codomain sort '{}'",
-                    element_name, actual_sort, func_name, expected_sort)
+            ElabError::CodomainMismatch {
+                func_name,
+                element_name,
+                expected_sort,
+                actual_sort,
+            } => {
+                write!(
+                    f,
+                    "type error: '{}' has sort '{}', but function '{}' has codomain sort '{}'",
+                    element_name, actual_sort, func_name, expected_sort
+                )
             }
         }
     }
@@ -111,7 +142,9 @@ impl Env {
 
         // Qualified path — first segment should be a parameter name
         let param_name = &path.segments[0];
-        let param_theory = self.params.iter()
+        let param_theory = self
+            .params
+            .iter()
             .find(|(n, _)| n == param_name)
             .map(|(_, t)| t.clone())
             .ok_or_else(|| ElabError::InvalidPath(path.to_string()))?;
@@ -126,7 +159,10 @@ impl Env {
                 // TODO: proper handling of parameterized sorts
                 return Ok(DerivedSort::Base(id));
             }
-            return Err(ElabError::UnknownSort(format!("{}/{}", param_name, sort_name)));
+            return Err(ElabError::UnknownSort(format!(
+                "{}/{}",
+                param_name, sort_name
+            )));
         }
 
         Err(ElabError::InvalidPath(path.to_string()))
@@ -167,23 +203,24 @@ pub fn elaborate_type(env: &Env, ty: &ast::TypeExpr) -> ElabResult<DerivedSort> 
     match ty {
         ast::TypeExpr::Sort => {
             // "Sort" is the kind of sorts, not a sort itself
-            Err(ElabError::NotASort("Sort is a kind, not a type".to_string()))
+            Err(ElabError::NotASort(
+                "Sort is a kind, not a type".to_string(),
+            ))
         }
-        ast::TypeExpr::Path(path) => {
-            env.resolve_sort_path(path)
-        }
+        ast::TypeExpr::Path(path) => env.resolve_sort_path(path),
         ast::TypeExpr::Record(fields) => {
-            let elab_fields: Result<Vec<_>, _> = fields.iter()
-                .map(|(name, ty)| {
-                    elaborate_type(env, ty).map(|s| (name.clone(), s))
-                })
+            let elab_fields: Result<Vec<_>, _> = fields
+                .iter()
+                .map(|(name, ty)| elaborate_type(env, ty).map(|s| (name.clone(), s)))
                 .collect();
             Ok(DerivedSort::Product(elab_fields?))
         }
         ast::TypeExpr::App(_, _) => {
             // Type application — for things like "N Marking"
             // This is used for parameterized types, which we'll handle later
-            Err(ElabError::UnsupportedFeature("type application".to_string()))
+            Err(ElabError::UnsupportedFeature(
+                "type application".to_string(),
+            ))
         }
         ast::TypeExpr::Arrow(_, _) => {
             // Function types aren't sorts in this sense
@@ -191,17 +228,15 @@ pub fn elaborate_type(env: &Env, ty: &ast::TypeExpr) -> ElabResult<DerivedSort> 
         }
         ast::TypeExpr::Instance(_) => {
             // "T instance" is the type of instances of theory T
-            Err(ElabError::UnsupportedFeature("instance types in sort position".to_string()))
+            Err(ElabError::UnsupportedFeature(
+                "instance types in sort position".to_string(),
+            ))
         }
     }
 }
 
 /// Elaborate a term in a given context
-pub fn elaborate_term(
-    env: &Env,
-    ctx: &Context,
-    term: &ast::Term,
-) -> ElabResult<Term> {
+pub fn elaborate_term(env: &Env, ctx: &Context, term: &ast::Term) -> ElabResult<Term> {
     match term {
         ast::Term::Path(path) => {
             if path.segments.len() == 1 {
@@ -241,7 +276,9 @@ pub fn elaborate_term(
                 }
                 _ => {
                     // Higher-order application — not supported yet
-                    Err(ElabError::UnsupportedFeature("higher-order application".to_string()))
+                    Err(ElabError::UnsupportedFeature(
+                        "higher-order application".to_string(),
+                    ))
                 }
             }
         }
@@ -250,10 +287,9 @@ pub fn elaborate_term(
             Ok(Term::Project(Box::new(elab_base), field.clone()))
         }
         ast::Term::Record(fields) => {
-            let elab_fields: Result<Vec<_>, _> = fields.iter()
-                .map(|(name, term)| {
-                    elaborate_term(env, ctx, term).map(|t| (name.clone(), t))
-                })
+            let elab_fields: Result<Vec<_>, _> = fields
+                .iter()
+                .map(|(name, term)| elaborate_term(env, ctx, term).map(|t| (name.clone(), t)))
                 .collect();
             Ok(Term::Record(elab_fields?))
         }
@@ -261,11 +297,7 @@ pub fn elaborate_term(
 }
 
 /// Elaborate a formula
-pub fn elaborate_formula(
-    env: &Env,
-    ctx: &Context,
-    formula: &ast::Formula,
-) -> ElabResult<Formula> {
+pub fn elaborate_formula(env: &Env, ctx: &Context, formula: &ast::Formula) -> ElabResult<Formula> {
     match formula {
         ast::Formula::True => Ok(Formula::True),
         ast::Formula::False => Ok(Formula::False),
@@ -286,13 +318,15 @@ pub fn elaborate_formula(
             Ok(Formula::Eq(elab_lhs, elab_rhs))
         }
         ast::Formula::And(conjuncts) => {
-            let elab: Result<Vec<_>, _> = conjuncts.iter()
+            let elab: Result<Vec<_>, _> = conjuncts
+                .iter()
                 .map(|f| elaborate_formula(env, ctx, f))
                 .collect();
             Ok(Formula::Conj(elab?))
         }
         ast::Formula::Or(disjuncts) => {
-            let elab: Result<Vec<_>, _> = disjuncts.iter()
+            let elab: Result<Vec<_>, _> = disjuncts
+                .iter()
                 .map(|f| elaborate_formula(env, ctx, f))
                 .collect();
             Ok(Formula::Disj(elab?))
@@ -320,7 +354,9 @@ pub fn elaborate_formula(
         }
         ast::Formula::RelApp(rel_name, arg) => {
             // Look up the relation
-            let rel_id = env.signature.lookup_rel(rel_name)
+            let rel_id = env
+                .signature
+                .lookup_rel(rel_name)
                 .ok_or_else(|| ElabError::UnknownRel(rel_name.clone()))?;
 
             // Elaborate the argument
@@ -361,7 +397,9 @@ pub fn elaborate_theory(env: &mut Env, theory: &ast::TheoryDecl) -> ElabResult<E
                             name: param.name.clone(),
                             theory_name: theory_name.clone(),
                         });
-                        local_env.params.push((param.name.clone(), base_theory.clone()));
+                        local_env
+                            .params
+                            .push((param.name.clone(), base_theory.clone()));
                     } else {
                         return Err(ElabError::UnknownTheory(theory_name));
                     }
@@ -378,9 +416,10 @@ pub fn elaborate_theory(env: &mut Env, theory: &ast::TheoryDecl) -> ElabResult<E
                 });
             }
             _ => {
-                return Err(ElabError::UnsupportedFeature(
-                    format!("parameter type {:?}", param.ty)
-                ));
+                return Err(ElabError::UnsupportedFeature(format!(
+                    "parameter type {:?}",
+                    param.ty
+                )));
             }
         }
     }
@@ -398,7 +437,9 @@ pub fn elaborate_theory(env: &mut Env, theory: &ast::TheoryDecl) -> ElabResult<E
             ast::TheoryItem::Function(f) => {
                 let domain = elaborate_type(&local_env, &f.domain)?;
                 let codomain = elaborate_type(&local_env, &f.codomain)?;
-                local_env.signature.add_function(f.name.to_string(), domain, codomain);
+                local_env
+                    .signature
+                    .add_function(f.name.to_string(), domain, codomain);
             }
             // A Field with a Record type is a relation declaration
             ast::TheoryItem::Field(name, ty @ ast::TypeExpr::Record(_)) => {
@@ -426,7 +467,9 @@ pub fn elaborate_theory(env: &mut Env, theory: &ast::TheoryDecl) -> ElabResult<E
             let premise = if ax.hypotheses.is_empty() {
                 Formula::True
             } else {
-                let hyps: Result<Vec<_>, _> = ax.hypotheses.iter()
+                let hyps: Result<Vec<_>, _> = ax
+                    .hypotheses
+                    .iter()
                     .map(|h| elaborate_formula(&local_env, &ctx, h))
                     .collect();
                 Formula::Conj(hyps?)
@@ -435,7 +478,11 @@ pub fn elaborate_theory(env: &mut Env, theory: &ast::TheoryDecl) -> ElabResult<E
             // Elaborate conclusion
             let conclusion = elaborate_formula(&local_env, &ctx, &ax.conclusion)?;
 
-            axioms.push(Sequent { context: ctx, premise, conclusion });
+            axioms.push(Sequent {
+                context: ctx,
+                premise,
+                conclusion,
+            });
         }
     }
 
@@ -462,7 +509,9 @@ pub fn elaborate_instance(
     // 1. Resolve the theory type
     // For now, handle simple paths only (not `ExampleNet ReachabilityProblem`)
     let theory_name = type_expr_to_theory_name(&instance.theory)?;
-    let theory = env.theories.get(&theory_name)
+    let theory = env
+        .theories
+        .get(&theory_name)
         .ok_or_else(|| ElabError::UnknownTheory(theory_name.clone()))?;
 
     // 2. Initialize structure (functions will be initialized after first pass)
@@ -488,11 +537,14 @@ pub fn elaborate_instance(
 
     // 3b. Initialize function storage now that carrier sizes are known
     // Extract domain sort IDs for each function (None for product domains)
-    let domain_sort_ids: Vec<Option<SortId>> = theory.theory.signature.functions
+    let domain_sort_ids: Vec<Option<SortId>> = theory
+        .theory
+        .signature
+        .functions
         .iter()
         .map(|func| match &func.domain {
             DerivedSort::Base(id) => Some(*id),
-            DerivedSort::Product(_) => None,  // Defer product domains
+            DerivedSort::Product(_) => None, // Defer product domains
         })
         .collect();
     structure.init_functions(&domain_sort_ids);
@@ -502,11 +554,8 @@ pub fn elaborate_instance(
         if let ast::InstanceItem::Equation(lhs, rhs) = &item.node {
             // Decompose lhs: should be `element func_path`
             // e.g., `ab_in in/src` → element="ab_in", func="in/src"
-            let (elem_slid, func_id) = decompose_func_app(
-                lhs,
-                &name_to_slid,
-                &theory.theory.signature,
-            )?;
+            let (elem_slid, func_id) =
+                decompose_func_app(lhs, &name_to_slid, &theory.theory.signature)?;
 
             // Resolve rhs to an element
             let value_slid = resolve_instance_element(rhs, &name_to_slid)?;
@@ -518,7 +567,10 @@ pub fn elaborate_instance(
                 if elem_sort_id != *expected_domain {
                     return Err(ElabError::DomainMismatch {
                         func_name: func.name.clone(),
-                        element_name: slid_to_name.get(&elem_slid).cloned().unwrap_or_else(|| format!("slid_{}", elem_slid)),
+                        element_name: slid_to_name
+                            .get(&elem_slid)
+                            .cloned()
+                            .unwrap_or_else(|| format!("slid_{}", elem_slid)),
                         expected_sort: theory.theory.signature.sorts[*expected_domain].clone(),
                         actual_sort: theory.theory.signature.sorts[elem_sort_id].clone(),
                     });
@@ -531,7 +583,10 @@ pub fn elaborate_instance(
                 if value_sort_id != *expected_codomain {
                     return Err(ElabError::CodomainMismatch {
                         func_name: func.name.clone(),
-                        element_name: slid_to_name.get(&value_slid).cloned().unwrap_or_else(|| format!("slid_{}", value_slid)),
+                        element_name: slid_to_name
+                            .get(&value_slid)
+                            .cloned()
+                            .unwrap_or_else(|| format!("slid_{}", value_slid)),
                         expected_sort: theory.theory.signature.sorts[*expected_codomain].clone(),
                         actual_sort: theory.theory.signature.sorts[value_sort_id].clone(),
                     });
@@ -539,7 +594,8 @@ pub fn elaborate_instance(
             }
 
             // Define the function value
-            structure.define_function(func_id, elem_slid, value_slid)
+            structure
+                .define_function(func_id, elem_slid, value_slid)
                 .map_err(|msg| ElabError::DuplicateDefinition(msg))?;
         }
     }
@@ -548,9 +604,10 @@ pub fn elaborate_instance(
     for item in &instance.body {
         if let ast::InstanceItem::NestedInstance(name, _nested) = &item.node {
             // For now, just note that we're skipping these
-            return Err(ElabError::UnsupportedFeature(
-                format!("nested instance: {}", name)
-            ));
+            return Err(ElabError::UnsupportedFeature(format!(
+                "nested instance: {}",
+                name
+            )));
         }
     }
 
@@ -566,7 +623,9 @@ fn type_expr_to_theory_name(ty: &ast::TypeExpr) -> ElabResult<String> {
         ast::TypeExpr::Path(path) => Ok(path.to_string()),
         ast::TypeExpr::App(_, _) => {
             // For now, don't support parameterized instance types
-            Err(ElabError::UnsupportedFeature("parameterized instance types".to_string()))
+            Err(ElabError::UnsupportedFeature(
+                "parameterized instance types".to_string(),
+            ))
         }
         _ => Err(ElabError::NotASort(format!("{:?}", ty))),
     }
@@ -580,7 +639,10 @@ fn resolve_instance_sort(sig: &Signature, sort_expr: &ast::TypeExpr) -> ElabResu
             sig.lookup_sort(name)
                 .ok_or_else(|| ElabError::UnknownSort(name.clone()))
         }
-        _ => Err(ElabError::UnsupportedFeature(format!("complex sort: {:?}", sort_expr))),
+        _ => Err(ElabError::UnsupportedFeature(format!(
+            "complex sort: {:?}",
+            sort_expr
+        ))),
     }
 }
 
@@ -607,7 +669,10 @@ fn decompose_func_app(
 
             Ok((elem_slid, func_id))
         }
-        _ => Err(ElabError::NotAFunction(format!("expected function application, got {:?}", term))),
+        _ => Err(ElabError::NotAFunction(format!(
+            "expected function application, got {:?}",
+            term
+        ))),
     }
 }
 
@@ -619,11 +684,15 @@ fn resolve_instance_element(
     match term {
         ast::Term::Path(path) if path.segments.len() == 1 => {
             let name = &path.segments[0];
-            name_to_slid.get(name)
+            name_to_slid
+                .get(name)
                 .copied()
                 .ok_or_else(|| ElabError::UnknownVariable(name.clone()))
         }
-        _ => Err(ElabError::UnsupportedFeature(format!("complex element reference: {:?}", term))),
+        _ => Err(ElabError::UnsupportedFeature(format!(
+            "complex element reference: {:?}",
+            term
+        ))),
     }
 }
 

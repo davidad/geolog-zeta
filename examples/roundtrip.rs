@@ -138,7 +138,12 @@ query findTrace {
     }
 
     // Compare declaration types
-    for (i, (d1, d2)) in ast1.declarations.iter().zip(ast2.declarations.iter()).enumerate() {
+    for (i, (d1, d2)) in ast1
+        .declarations
+        .iter()
+        .zip(ast2.declarations.iter())
+        .enumerate()
+    {
         let type1 = match &d1.node {
             geolog::Declaration::Namespace(_) => "namespace",
             geolog::Declaration::Theory(_) => "theory",
@@ -172,7 +177,11 @@ query findTrace {
                     std::process::exit(1);
                 }
                 if t1.body.len() != t2.body.len() {
-                    eprintln!("body length mismatch: {} vs {}", t1.body.len(), t2.body.len());
+                    eprintln!(
+                        "body length mismatch: {} vs {}",
+                        t1.body.len(),
+                        t2.body.len()
+                    );
                     std::process::exit(1);
                 }
                 println!("{} ({} items) ✓", t1.name, t1.body.len());
@@ -183,7 +192,11 @@ query findTrace {
                     std::process::exit(1);
                 }
                 if i1.body.len() != i2.body.len() {
-                    eprintln!("body length mismatch: {} vs {}", i1.body.len(), i2.body.len());
+                    eprintln!(
+                        "body length mismatch: {} vs {}",
+                        i1.body.len(),
+                        i2.body.len()
+                    );
                     std::process::exit(1);
                 }
                 println!("{} ({} items) ✓", i1.name, i1.body.len());

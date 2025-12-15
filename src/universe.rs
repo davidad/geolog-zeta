@@ -11,9 +11,9 @@
 use crate::id::Uuid;
 use indexmap::IndexSet;
 use memmap2::Mmap;
-use rkyv::ser::serializers::AllocSerializer;
 use rkyv::ser::Serializer;
-use rkyv::{check_archived_root, Archive, Deserialize, Serialize};
+use rkyv::ser::serializers::AllocSerializer;
+use rkyv::{Archive, Deserialize, Serialize, check_archived_root};
 use std::fs::{self, File};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -77,8 +77,7 @@ impl Universe {
             return Ok(Self::with_path(path));
         }
 
-        let file = File::open(&path)
-            .map_err(|e| format!("Failed to open universe file: {}", e))?;
+        let file = File::open(&path).map_err(|e| format!("Failed to open universe file: {}", e))?;
 
         // Memory-map the file for zero-copy access
         let mmap = unsafe { Mmap::map(&file) }
@@ -108,7 +107,9 @@ impl Universe {
 
     /// Save the universe to disk
     pub fn save(&mut self) -> Result<(), String> {
-        let path = self.path.as_ref()
+        let path = self
+            .path
+            .as_ref()
             .ok_or("Universe has no persistence path")?;
 
         // Create parent directories if needed
@@ -182,7 +183,10 @@ impl Universe {
 
     /// Iterate over all (Luid, Uuid) pairs
     pub fn iter(&self) -> impl Iterator<Item = (Luid, Uuid)> + '_ {
-        self.index.iter().enumerate().map(|(luid, &uuid)| (luid, uuid))
+        self.index
+            .iter()
+            .enumerate()
+            .map(|(luid, &uuid)| (luid, uuid))
     }
 
     /// Get the persistence path (if any)

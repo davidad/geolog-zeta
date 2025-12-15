@@ -15,6 +15,7 @@ pub mod parser;
 pub mod patch;
 pub mod pretty;
 pub mod repl;
+pub mod tensor;
 pub mod universe;
 pub mod version;
 pub mod workspace;

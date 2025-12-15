@@ -33,17 +33,28 @@ pub fn format_lexer_errors(source: &str, errors: Vec<Simple<char>>) -> String {
 
 /// Format a single lexer error into a readable message
 fn format_lexer_error(error: &Simple<char>) -> String {
-    let found = error.found().map(|c| format!("'{}'", c)).unwrap_or_else(|| "end of input".to_string());
+    let found = error
+        .found()
+        .map(|c| format!("'{}'", c))
+        .unwrap_or_else(|| "end of input".to_string());
 
     if let Some(_expected) = error.expected().next() {
-        format!("Unexpected {}, expected {}", found, format_char_set(error.expected()))
+        format!(
+            "Unexpected {}, expected {}",
+            found,
+            format_char_set(error.expected())
+        )
     } else {
         format!("Unexpected character {}", found)
     }
 }
 
 /// Format parser errors into a user-friendly string
-pub fn format_parser_errors(source: &str, errors: Vec<Simple<Token>>, token_spans: &[(Token, Range<usize>)]) -> String {
+pub fn format_parser_errors(
+    source: &str,
+    errors: Vec<Simple<Token>>,
+    token_spans: &[(Token, Range<usize>)],
+) -> String {
     let mut output = Vec::new();
 
     for error in errors {
@@ -83,7 +94,8 @@ pub fn format_parser_errors(source: &str, errors: Vec<Simple<Token>>, token_span
 
 /// Format a single parser error into a readable message
 fn format_parser_error(error: &Simple<Token>) -> String {
-    let found = error.found()
+    let found = error
+        .found()
         .map(|t| format!("'{}'", format_token(t)))
         .unwrap_or_else(|| "end of input".to_string());
 
@@ -95,11 +107,17 @@ fn format_parser_error(error: &Simple<Token>) -> String {
 
         // Detect common mistakes
         if expected.contains(&"';'".to_string()) && error.found() == Some(&Token::Colon) {
-            return format!("Expected semicolon ';' to end declaration, found '{}'", format_token(error.found().unwrap()));
+            return format!(
+                "Expected semicolon ';' to end declaration, found '{}'",
+                format_token(error.found().unwrap())
+            );
         }
 
         if expected.contains(&"':'".to_string()) && error.found() == Some(&Token::Semicolon) {
-            return format!("Expected colon ':' before type, found '{}'", format_token(error.found().unwrap()));
+            return format!(
+                "Expected colon ':' before type, found '{}'",
+                format_token(error.found().unwrap())
+            );
         }
 
         format!("Unexpected {}, expected one of: {}", found, expected_str)

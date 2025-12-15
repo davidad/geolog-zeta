@@ -3,7 +3,7 @@
 use geolog::core::{ElaboratedTheory, Signature, Structure, Theory};
 use geolog::naming::NamingIndex;
 use geolog::universe::Universe;
-use geolog::workspace::{load_structure, save_structure, Workspace};
+use geolog::workspace::{Workspace, load_structure, save_structure};
 use std::fs;
 use tempfile::tempdir;
 
@@ -63,7 +63,9 @@ fn test_workspace_roundtrip() {
             },
         };
         workspace.add_theory(theory);
-        workspace.save(&mut universe, &mut naming).expect("save should succeed");
+        workspace
+            .save(&mut universe, &mut naming)
+            .expect("save should succeed");
     }
 
     // Reopen and verify

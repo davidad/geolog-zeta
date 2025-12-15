@@ -6,12 +6,12 @@
 use crate::core::Structure;
 use crate::id::Uuid;
 use crate::naming::NamingIndex;
-use crate::patch::{apply_patch, diff, to_initial_patch, Patch};
+use crate::patch::{Patch, apply_patch, diff, to_initial_patch};
 use crate::universe::Universe;
 
-use rkyv::ser::serializers::AllocSerializer;
 use rkyv::ser::Serializer;
-use rkyv::{check_archived_root, Deserialize};
+use rkyv::ser::serializers::AllocSerializer;
+use rkyv::{Deserialize, check_archived_root};
 use std::collections::BTreeMap;
 use std::fs::{self, File};
 use std::io::{Read, Write};
@@ -89,8 +89,7 @@ impl VersionedState {
 
     /// Load a single patch file
     fn load_patch(&mut self, path: &Path) -> Result<(), String> {
-        let mut file =
-            File::open(path).map_err(|e| format!("Failed to open patch file: {}", e))?;
+        let mut file = File::open(path).map_err(|e| format!("Failed to open patch file: {}", e))?;
 
         let mut bytes = Vec::new();
         file.read_to_end(&mut bytes)
@@ -117,11 +116,8 @@ impl VersionedState {
     /// Find the head commit (most recent commit not superseded by another)
     fn find_head(&mut self) {
         // Collect all source commits (commits that have children)
-        let sources: std::collections::HashSet<Uuid> = self
-            .commit_parents
-            .values()
-            .filter_map(|s| *s)
-            .collect();
+        let sources: std::collections::HashSet<Uuid> =
+            self.commit_parents.values().filter_map(|s| *s).collect();
 
         // Head is a commit that is not a source of any other commit
         for &commit in self.commit_parents.keys() {
@@ -237,8 +233,7 @@ impl VersionedState {
         self.save_patch(&patch)?;
 
         // Update in-memory state
-        self.commit_parents
-            .insert(commit_uuid, patch.source_commit);
+        self.commit_parents.insert(commit_uuid, patch.source_commit);
         self.patches.insert(commit_uuid, patch);
         self.head = Some(commit_uuid);
 
@@ -273,6 +268,5 @@ impl VersionedState {
         self.patches.len()
     }
 }
-
 
 // Unit tests moved to tests/unit_version.rs

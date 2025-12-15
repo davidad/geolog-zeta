@@ -1,12 +1,12 @@
 //! Unit tests for theory and instance elaboration
 
-use std::rc::Rc;
 use geolog::ast;
 use geolog::core::DerivedSort;
+use geolog::elaborate::{ElabError, Env, elaborate_instance, elaborate_theory};
 use geolog::id::Slid;
-use geolog::elaborate::{elaborate_instance, elaborate_theory, ElabError, Env};
 use geolog::parse;
 use geolog::universe::Universe;
+use std::rc::Rc;
 
 #[test]
 fn test_elaborate_simple_theory() {
@@ -120,7 +120,7 @@ theory BadIso {
             ElabError::TypeMismatch { expected, got } => {
                 // expected Y (bwd's domain), got X
                 assert_eq!(expected, DerivedSort::Base(1)); // Y
-                assert_eq!(got, DerivedSort::Base(0));      // X
+                assert_eq!(got, DerivedSort::Base(0)); // X
             }
             other => panic!("expected TypeMismatch error, got: {}", other),
         }
@@ -152,7 +152,7 @@ theory BadEq {
             ElabError::TypeMismatch { expected, got } => {
                 // LHS is X, RHS is Y
                 assert_eq!(expected, DerivedSort::Base(0)); // X
-                assert_eq!(got, DerivedSort::Base(1));      // Y
+                assert_eq!(got, DerivedSort::Base(1)); // Y
             }
             other => panic!("expected TypeMismatch error, got: {}", other),
         }
@@ -200,7 +200,8 @@ instance ExampleNet : PetriNet = {
 
     // Then elaborate ExampleNet instance
     if let ast::Declaration::Instance(inst) = &file.declarations[1].node {
-        let structure = elaborate_instance(&env, inst, &mut universe).expect("instance elaboration failed");
+        let structure =
+            elaborate_instance(&env, inst, &mut universe).expect("instance elaboration failed");
 
         // Elements are created in order: A(0), B(1), C(2), ab(3), ab_in(4), ab_out(5)
         assert_eq!(structure.len(), 6); // A, B, C, ab, ab_in, ab_out
@@ -267,7 +268,10 @@ instance PartialNet : PetriNet = {
 
         let err = result.unwrap_err();
         match err {
-            ElabError::PartialFunction { func_name, missing_elements } => {
+            ElabError::PartialFunction {
+                func_name,
+                missing_elements,
+            } => {
                 assert_eq!(func_name, "in/tgt");
                 assert_eq!(missing_elements, vec!["ab_in"]);
             }
@@ -310,7 +314,12 @@ instance BadNet : PetriNet = {
 
         let err = result.unwrap_err();
         match err {
-            ElabError::DomainMismatch { func_name, element_name, expected_sort, actual_sort } => {
+            ElabError::DomainMismatch {
+                func_name,
+                element_name,
+                expected_sort,
+                actual_sort,
+            } => {
                 assert_eq!(func_name, "in/src");
                 assert_eq!(element_name, "ab");
                 assert_eq!(expected_sort, "in");
@@ -356,7 +365,12 @@ instance BadNet : PetriNet = {
 
         let err = result.unwrap_err();
         match err {
-            ElabError::CodomainMismatch { func_name, element_name, expected_sort, actual_sort } => {
+            ElabError::CodomainMismatch {
+                func_name,
+                element_name,
+                expected_sort,
+                actual_sort,
+            } => {
                 assert_eq!(func_name, "in/src");
                 assert_eq!(element_name, "ab");
                 assert_eq!(expected_sort, "P");

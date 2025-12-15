@@ -108,9 +108,7 @@ pub fn lexer() -> impl Parser<char, Vec<(Token, Span)>, Error = Simple<char>> {
     let token = keyword_or_ident.or(punctuation);
 
     // Comments: // to end of line
-    let comment = just("//")
-        .then(take_until(just('\n')))
-        .padded();
+    let comment = just("//").then(take_until(just('\n'))).padded();
 
     token
         .map_with_span(|tok, span| (tok, span))

@@ -35,7 +35,11 @@ fn test_theory_to_structure() {
 
     // Check we have elements in the structure
     // Should have: 1 Theory, 2 Srt, 1 Func, plus DSort/BaseDS elements
-    assert!(structure.len() > 5, "Expected more than 5 elements, got {}", structure.len());
+    assert!(
+        structure.len() > 5,
+        "Expected more than 5 elements, got {}",
+        structure.len()
+    );
 
     // Verify names were registered in naming index
     assert!(naming.lookup_unique("PetriNet").is_some());
@@ -51,9 +55,20 @@ fn test_geolog_meta_parses() {
     assert_eq!(meta.theory.name, "GeologMeta");
 
     // Should have lots of sorts and functions (no Name sort anymore)
-    assert!(meta.theory.signature.sorts.len() >= 25, "Expected many sorts, got {}", meta.theory.signature.sorts.len());
-    assert!(meta.theory.signature.functions.len() >= 40, "Expected many functions, got {}", meta.theory.signature.functions.len());
-    assert!(meta.theory.signature.relations.len() >= 3, "Expected some relations");
+    assert!(
+        meta.theory.signature.sorts.len() >= 25,
+        "Expected many sorts, got {}",
+        meta.theory.signature.sorts.len()
+    );
+    assert!(
+        meta.theory.signature.functions.len() >= 40,
+        "Expected many functions, got {}",
+        meta.theory.signature.functions.len()
+    );
+    assert!(
+        meta.theory.signature.relations.len() >= 3,
+        "Expected some relations"
+    );
 }
 
 #[test]
@@ -96,8 +111,8 @@ fn test_theory_roundtrip() {
     let structure = theory_to_structure(&original, &mut universe, &mut naming);
 
     // Convert back
-    let reconstructed = structure_to_theory(&structure, &universe, &naming)
-        .expect("roundtrip should succeed");
+    let reconstructed =
+        structure_to_theory(&structure, &universe, &naming).expect("roundtrip should succeed");
 
     // Verify basic properties match
     assert_eq!(reconstructed.theory.name, "PetriNet");
@@ -114,5 +129,11 @@ fn test_theory_roundtrip() {
     assert!(reconstructed.theory.signature.lookup_func("tgt").is_some());
 
     // Verify relation name
-    assert!(reconstructed.theory.signature.lookup_rel("enabled").is_some());
+    assert!(
+        reconstructed
+            .theory
+            .signature
+            .lookup_rel("enabled")
+            .is_some()
+    );
 }

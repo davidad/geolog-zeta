@@ -3,12 +3,12 @@
 //! Provides `Strategy` implementations for generating valid instances
 //! of core data types used in property tests.
 
+use geolog::core::{SortId, Structure};
 use geolog::id::{Luid, Uuid};
-use geolog::core::{Structure, SortId};
 use geolog::naming::NamingIndex;
 use geolog::universe::Universe;
-use proptest::prelude::*;
 use proptest::collection::vec;
+use proptest::prelude::*;
 use std::collections::HashSet;
 
 // ============================================================================
@@ -93,21 +93,21 @@ pub fn arb_structure(params: StructureParams) -> impl Strategy<Value = (Structur
 }
 
 /// Generate a structure with specific element count
-pub fn arb_structure_with_elements(num_sorts: usize, total_elements: usize)
-    -> impl Strategy<Value = (Structure, Universe)>
-{
+pub fn arb_structure_with_elements(
+    num_sorts: usize,
+    total_elements: usize,
+) -> impl Strategy<Value = (Structure, Universe)> {
     // Distribute elements randomly across sorts
-    vec(0..num_sorts, total_elements)
-        .prop_map(move |sort_assignments| {
-            let mut universe = Universe::new();
-            let mut structure = Structure::new(num_sorts);
+    vec(0..num_sorts, total_elements).prop_map(move |sort_assignments| {
+        let mut universe = Universe::new();
+        let mut structure = Structure::new(num_sorts);
 
-            for sort_id in sort_assignments {
-                structure.add_element(&mut universe, sort_id as SortId);
-            }
+        for sort_id in sort_assignments {
+            structure.add_element(&mut universe, sort_id as SortId);
+        }
 
-            (structure, universe)
-        })
+        (structure, universe)
+    })
 }
 
 // ============================================================================
@@ -116,8 +116,9 @@ pub fn arb_structure_with_elements(num_sorts: usize, total_elements: usize)
 
 /// Generate a NamingIndex with random entries
 pub fn arb_naming_index(max_entries: usize) -> impl Strategy<Value = NamingIndex> {
-    vec((arb_uuid(), arb_qualified_name()), 0..=max_entries)
-        .prop_filter_map("unique uuids in naming", |entries| {
+    vec((arb_uuid(), arb_qualified_name()), 0..=max_entries).prop_filter_map(
+        "unique uuids in naming",
+        |entries| {
             // Ensure UUIDs are unique
             let uuids: HashSet<_> = entries.iter().map(|(u, _)| u).collect();
             if uuids.len() == entries.len() {
@@ -129,7 +130,8 @@ pub fn arb_naming_index(max_entries: usize) -> impl Strategy<Value = NamingIndex
             } else {
                 None
             }
-        })
+        },
+    )
 }
 
 /// Generate a NamingIndex that matches a Universe (same UUIDs)
@@ -137,14 +139,13 @@ pub fn arb_naming_for_universe(universe: &Universe) -> impl Strategy<Value = Nam
     let uuids: Vec<Uuid> = universe.iter().map(|(_, uuid)| uuid).collect();
     let count = uuids.len();
 
-    vec(arb_qualified_name(), count)
-        .prop_map(move |names| {
-            let mut index = NamingIndex::new();
-            for (uuid, name) in uuids.iter().zip(names.into_iter()) {
-                index.insert(*uuid, name);
-            }
-            index
-        })
+    vec(arb_qualified_name(), count).prop_map(move |names| {
+        let mut index = NamingIndex::new();
+        for (uuid, name) in uuids.iter().zip(names.into_iter()) {
+            index.insert(*uuid, name);
+        }
+        index
+    })
 }
 
 // ============================================================================
@@ -158,10 +159,13 @@ pub enum StructureOp {
 }
 
 /// Generate a sequence of structure operations
-pub fn arb_structure_ops(num_sorts: usize, max_ops: usize) -> impl Strategy<Value = Vec<StructureOp>> {
+pub fn arb_structure_ops(
+    num_sorts: usize,
+    max_ops: usize,
+) -> impl Strategy<Value = Vec<StructureOp>> {
     vec(
         (0..num_sorts).prop_map(|sort_id| StructureOp::AddElement { sort_id }),
-        0..=max_ops
+        0..=max_ops,
     )
 }
 
@@ -183,7 +187,7 @@ pub fn check_structure_invariants(structure: &Structure) -> Result<(), String> {
     // Invariant 2: luid_to_slid is inverse of luids
     for (slid, &luid) in structure.luids.iter().enumerate() {
         match structure.luid_to_slid.get(&luid) {
-            Some(&mapped_slid) if mapped_slid == slid => {},
+            Some(&mapped_slid) if mapped_slid == slid => {}
             Some(&mapped_slid) => {
                 return Err(format!(
                     "luid_to_slid[{}] = {}, but luids[{}] = {}",
@@ -204,7 +208,9 @@ pub fn check_structure_invariants(structure: &Structure) -> Result<(), String> {
         if sort_id >= structure.carriers.len() {
             return Err(format!(
                 "sort_id {} at slid {} >= carriers.len({})",
-                sort_id, slid, structure.carriers.len()
+                sort_id,
+                slid,
+                structure.carriers.len()
             ));
         }
 
@@ -227,13 +233,12 @@ pub fn check_structure_invariants(structure: &Structure) -> Result<(), String> {
     }
 
     // Invariant 4: Total carrier size equals number of elements
-    let total_carrier_size: usize = structure.carriers.iter()
-        .map(|c| c.len() as usize)
-        .sum();
+    let total_carrier_size: usize = structure.carriers.iter().map(|c| c.len() as usize).sum();
     if total_carrier_size != structure.luids.len() {
         return Err(format!(
             "total carrier size {} != luids.len({})",
-            total_carrier_size, structure.luids.len()
+            total_carrier_size,
+            structure.luids.len()
         ));
     }
 
@@ -241,12 +246,7 @@ pub fn check_structure_invariants(structure: &Structure) -> Result<(), String> {
 }
 
 /// Check that two structures are equivalent (same elements and functions)
-pub fn structures_equivalent(
-    s1: &Structure,
-    s2: &Structure,
-    u1: &Universe,
-    u2: &Universe,
-) -> bool {
+pub fn structures_equivalent(s1: &Structure, s2: &Structure, u1: &Universe, u2: &Universe) -> bool {
     // Same number of sorts
     if s1.num_sorts() != s2.num_sorts() {
         return false;
@@ -258,12 +258,8 @@ pub fn structures_equivalent(
     }
 
     // Same UUIDs (via Luid lookup)
-    let uuids1: HashSet<_> = s1.luids.iter()
-        .filter_map(|&luid| u1.get(luid))
-        .collect();
-    let uuids2: HashSet<_> = s2.luids.iter()
-        .filter_map(|&luid| u2.get(luid))
-        .collect();
+    let uuids1: HashSet<_> = s1.luids.iter().filter_map(|&luid| u1.get(luid)).collect();
+    let uuids2: HashSet<_> = s2.luids.iter().filter_map(|&luid| u2.get(luid)).collect();
 
     uuids1 == uuids2
 }

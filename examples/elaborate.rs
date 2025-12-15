@@ -1,6 +1,9 @@
-use std::rc::Rc;
-use geolog::{parse, elaborate::{Env, elaborate_theory, elaborate_instance}};
 use geolog::universe::Universe;
+use geolog::{
+    elaborate::{Env, elaborate_instance, elaborate_theory},
+    parse,
+};
+use std::rc::Rc;
 
 fn main() {
     let input = r#"
@@ -84,12 +87,26 @@ instance ExampleNet : PetriNet = {
                 match elaborate_theory(&mut env, t) {
                     Ok(elab) => {
                         println!("OK!");
-                        println!("  Params: {:?}", elab.params.iter().map(|p| &p.name).collect::<Vec<_>>());
+                        println!(
+                            "  Params: {:?}",
+                            elab.params.iter().map(|p| &p.name).collect::<Vec<_>>()
+                        );
                         println!("  Sorts: {:?}", elab.theory.signature.sorts);
-                        println!("  Functions: {:?}", elab.theory.signature.functions.iter().map(|f| &f.name).collect::<Vec<_>>());
+                        println!(
+                            "  Functions: {:?}",
+                            elab.theory
+                                .signature
+                                .functions
+                                .iter()
+                                .map(|f| &f.name)
+                                .collect::<Vec<_>>()
+                        );
                         println!("  Axioms: {}", elab.theory.axioms.len());
                         for (i, ax) in elab.theory.axioms.iter().enumerate() {
-                            println!("    [{i}] {} vars, premise -> conclusion", ax.context.vars.len());
+                            println!(
+                                "    [{i}] {} vars, premise -> conclusion",
+                                ax.context.vars.len()
+                            );
                         }
                         println!();
 
@@ -104,7 +121,11 @@ instance ExampleNet : PetriNet = {
             geolog::Declaration::Instance(i) => {
                 // Extract theory name from the type expression
                 let theory_name = match &i.theory {
-                    geolog::TypeExpr::Path(p) => p.segments.first().cloned().unwrap_or_else(|| "?".to_string()),
+                    geolog::TypeExpr::Path(p) => p
+                        .segments
+                        .first()
+                        .cloned()
+                        .unwrap_or_else(|| "?".to_string()),
                     _ => "?".to_string(),
                 };
                 print!("Elaborating instance {}... ", i.name);
@@ -114,7 +135,11 @@ instance ExampleNet : PetriNet = {
                         println!("  Theory: {}", theory_name);
                         println!("  Elements: {} total", structure.len());
                         for sort_id in 0..structure.carriers.len() {
-                            println!("    Sort {}: {} elements", sort_id, structure.carrier_size(sort_id));
+                            println!(
+                                "    Sort {}: {} elements",
+                                sort_id,
+                                structure.carrier_size(sort_id)
+                            );
                         }
                         println!("  Functions defined:");
                         for (fid, func_map) in structure.functions.iter().enumerate() {

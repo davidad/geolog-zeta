@@ -38,7 +38,9 @@ pub struct Path {
 
 impl Path {
     pub fn single(name: String) -> Self {
-        Self { segments: vec![name] }
+        Self {
+            segments: vec![name],
+        }
     }
 
     pub fn is_single(&self) -> bool {
@@ -119,7 +121,7 @@ pub enum TheoryItem {
 /// A function/morphism declaration
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FunctionDecl {
-    pub name: Path,  // Can be dotted like `in.src`
+    pub name: Path, // Can be dotted like `in.src`
     pub domain: TypeExpr,
     pub codomain: TypeExpr,
 }
@@ -127,7 +129,7 @@ pub struct FunctionDecl {
 /// An axiom declaration
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AxiomDecl {
-    pub name: Path,  // Can be hierarchical like `ax/anc/base`
+    pub name: Path, // Can be hierarchical like `ax/anc/base`
     pub quantified: Vec<QuantifiedVar>,
     pub hypotheses: Vec<Formula>,
     pub conclusion: Formula,

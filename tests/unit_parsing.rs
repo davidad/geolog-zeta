@@ -1,9 +1,9 @@
 //! Unit tests for lexer and parser
 
-use geolog::lexer::{lexer, Token};
-use geolog::parse;
-use geolog::ast::Declaration;
 use chumsky::Parser;
+use geolog::ast::Declaration;
+use geolog::lexer::{Token, lexer};
+use geolog::parse;
 
 // ============================================================================
 // Lexer tests
