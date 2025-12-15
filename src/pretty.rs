@@ -22,6 +22,12 @@ pub struct Pretty {
     config: PrettyConfig,
 }
 
+impl Default for Pretty {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Pretty {
     pub fn new() -> Self {
         Self {

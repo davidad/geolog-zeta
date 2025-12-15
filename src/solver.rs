@@ -413,7 +413,7 @@ impl SearchTree {
     ///
     /// Returns Ok(()) if all axioms are satisfied, or Err with violations.
     pub fn check_axioms(&self, node: NodeId) -> Result<(), Vec<(usize, Vec<Violation>)>> {
-        let node = self.nodes.get(node).ok_or_else(|| vec![])?;
+        let node = self.nodes.get(node).ok_or_else(Vec::new)?;
         let violations = crate::tensor::check_theory_axioms(
             &self.theory.theory.axioms,
             &node.structure,
@@ -670,12 +670,11 @@ impl Tactic for EnumerateFunctionTactic {
         for slid_u64 in node_ref.structure.carriers[domain_sort].iter() {
             let slid = Slid::from_usize(slid_u64 as usize);
             let sort_slid = node_ref.structure.sort_local_id(slid);
-            if sort_slid.index() < node_ref.structure.functions[self.func_id].len() {
-                if node_ref.structure.functions[self.func_id][sort_slid.index()].is_none() {
+            if sort_slid.index() < node_ref.structure.functions[self.func_id].len()
+                && node_ref.structure.functions[self.func_id][sort_slid.index()].is_none() {
                     undefined_domain = Some(slid);
                     break;
                 }
-            }
         }
 
         let domain_slid = match undefined_domain {

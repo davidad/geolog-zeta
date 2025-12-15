@@ -76,7 +76,7 @@ impl VersionedState {
             let entry = entry.map_err(|e| format!("Failed to read directory entry: {}", e))?;
             let path = entry.path();
 
-            if path.extension().map_or(false, |ext| ext == "patch") {
+            if path.extension().is_some_and(|ext| ext == "patch") {
                 self.load_patch(&path)?;
             }
         }

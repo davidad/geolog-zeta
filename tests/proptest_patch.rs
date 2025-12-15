@@ -134,7 +134,7 @@ proptest! {
     /// Element patch has disjoint additions and deletions
     #[test]
     fn element_patch_disjoint(
-        (old, mut universe) in generators::arb_structure(StructureParams {
+        (old, universe) in generators::arb_structure(StructureParams {
             num_sorts: 2,
             max_elements_per_sort: 5,
         }),

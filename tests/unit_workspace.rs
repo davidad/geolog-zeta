@@ -4,7 +4,6 @@ use geolog::core::{ElaboratedTheory, Signature, Structure, Theory};
 use geolog::naming::NamingIndex;
 use geolog::universe::Universe;
 use geolog::workspace::{Workspace, load_structure, save_structure};
-use std::fs;
 use tempfile::tempdir;
 
 #[test]

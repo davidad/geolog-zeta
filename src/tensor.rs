@@ -1113,7 +1113,7 @@ struct DomainIterator {
 
 impl DomainIterator {
     fn new(dims: &[usize]) -> Self {
-        let done = dims.iter().any(|&d| d == 0);
+        let done = dims.contains(&0);
         Self {
             dims: dims.to_vec(),
             current: vec![0; dims.len()],

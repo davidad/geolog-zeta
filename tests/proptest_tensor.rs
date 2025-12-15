@@ -50,8 +50,8 @@ proptest! {
         let mut tensor = SparseTensor::empty(dims.clone());
 
         // Generate a valid tuple
-        let tuple: Vec<usize> = dims.iter().enumerate()
-            .map(|(_i, &d)| tuple_idx.index(d.max(1)))
+        let tuple: Vec<usize> = dims.iter()
+            .map(|&d| tuple_idx.index(d.max(1)))
             .collect();
 
         prop_assert!(!tensor.contains(&tuple));

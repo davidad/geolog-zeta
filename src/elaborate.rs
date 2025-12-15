@@ -579,8 +579,8 @@ pub fn elaborate_instance(
             // Type checking: verify element sort matches function domain
             let func = &theory.theory.signature.functions[func_id];
             let elem_sort_id = structure.sorts[elem_slid.index()];
-            if let DerivedSort::Base(expected_domain) = &func.domain {
-                if elem_sort_id != *expected_domain {
+            if let DerivedSort::Base(expected_domain) = &func.domain
+                && elem_sort_id != *expected_domain {
                     return Err(ElabError::DomainMismatch {
                         func_name: func.name.clone(),
                         element_name: slid_to_name
@@ -591,12 +591,11 @@ pub fn elaborate_instance(
                         actual_sort: theory.theory.signature.sorts[elem_sort_id].clone(),
                     });
                 }
-            }
 
             // Type checking: verify value sort matches function codomain
             let value_sort_id = structure.sorts[value_slid.index()];
-            if let DerivedSort::Base(expected_codomain) = &func.codomain {
-                if value_sort_id != *expected_codomain {
+            if let DerivedSort::Base(expected_codomain) = &func.codomain
+                && value_sort_id != *expected_codomain {
                     return Err(ElabError::CodomainMismatch {
                         func_name: func.name.clone(),
                         element_name: slid_to_name
@@ -607,12 +606,11 @@ pub fn elaborate_instance(
                         actual_sort: theory.theory.signature.sorts[value_sort_id].clone(),
                     });
                 }
-            }
 
             // Define the function value
             structure
                 .define_function(func_id, elem_slid, value_slid)
-                .map_err(|msg| ElabError::DuplicateDefinition(msg))?;
+                .map_err(ElabError::DuplicateDefinition)?;
         }
     }
 
@@ -678,7 +676,7 @@ fn decompose_func_app(
                 ast::Term::Path(path) => {
                     let func_name = path.to_string();
                     sig.lookup_func(&func_name)
-                        .ok_or_else(|| ElabError::UnknownFunction(func_name))
+                        .ok_or(ElabError::UnknownFunction(func_name))
                 }
                 _ => Err(ElabError::NotAFunction(format!("{:?}", func))),
             }?;

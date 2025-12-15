@@ -278,8 +278,8 @@ impl Workspace {
         if let Ok(entries) = fs::read_dir(&self.path) {
             for entry in entries.flatten() {
                 let path = entry.path();
-                if path.extension().map(|e| e == "theory").unwrap_or(false) {
-                    if let Some(name) = path.file_stem().and_then(|s| s.to_str()) {
+                if path.extension().map(|e| e == "theory").unwrap_or(false)
+                    && let Some(name) = path.file_stem().and_then(|s| s.to_str()) {
                         match self.load_theory_file(&path, universe, naming) {
                             Ok(theory) => {
                                 self.env
@@ -292,7 +292,6 @@ impl Workspace {
                             }
                         }
                     }
-                }
             }
         }
 
@@ -300,8 +299,8 @@ impl Workspace {
         if let Ok(entries) = fs::read_dir(&self.path) {
             for entry in entries.flatten() {
                 let path = entry.path();
-                if path.extension().map(|e| e == "instance").unwrap_or(false) {
-                    if let Some(name) = path.file_stem().and_then(|s| s.to_str()) {
+                if path.extension().map(|e| e == "instance").unwrap_or(false)
+                    && let Some(name) = path.file_stem().and_then(|s| s.to_str()) {
                         match load_structure(&path) {
                             Ok(structure) => {
                                 self.instances.insert(name.to_string(), structure);
@@ -311,7 +310,6 @@ impl Workspace {
                             }
                         }
                     }
-                }
             }
         }
 
@@ -332,7 +330,7 @@ impl Workspace {
     /// Save all theories and instances to disk
     pub fn save(&self, universe: &mut Universe, naming: &mut NamingIndex) -> Result<(), String> {
         // Save theories as GeologMeta structures
-        for (_name, theory) in &self.theories {
+        for theory in self.theories.values() {
             let structure = theory_to_structure(theory, universe, naming);
             let path = self.path.join(format!("{}.theory", theory.theory.name));
             save_structure(&structure, &path)?;

@@ -198,27 +198,25 @@ pub fn diff(
     );
 
     // Find element deletions: elements in old but not in new
-    for (_slid, &luid) in old.luids.iter().enumerate() {
-        if !new.luid_to_slid.contains_key(&luid) {
-            if let Some(uuid) = universe.get(luid) {
+    for &luid in old.luids.iter() {
+        if !new.luid_to_slid.contains_key(&luid)
+            && let Some(uuid) = universe.get(luid) {
                 patch.elements.deletions.insert(uuid);
                 // Also mark name as deleted
                 patch.names.deletions.insert(uuid);
             }
-        }
     }
 
     // Find element additions: elements in new but not in old
     for (slid, &luid) in new.luids.iter().enumerate() {
-        if !old.luid_to_slid.contains_key(&luid) {
-            if let Some(uuid) = universe.get(luid) {
+        if !old.luid_to_slid.contains_key(&luid)
+            && let Some(uuid) = universe.get(luid) {
                 patch.elements.additions.insert(uuid, new.sorts[slid]);
                 // Also add name from new_naming
                 if let Some(name) = new_naming.get(&uuid) {
                     patch.names.additions.insert(uuid, name.clone());
                 }
             }
-        }
     }
 
     // Find name changes for elements that exist in both
@@ -228,11 +226,10 @@ pub fn diff(
             if let Some(uuid) = universe.get(luid) {
                 let old_name = old_naming.get(&uuid);
                 let new_name = new_naming.get(&uuid);
-                if old_name != new_name {
-                    if let Some(name) = new_name {
+                if old_name != new_name
+                    && let Some(name) = new_name {
                         patch.names.additions.insert(uuid, name.clone());
                     }
-                }
             }
         }
     }
@@ -270,14 +267,12 @@ pub fn diff(
                                         let old_codomain_luid = old.luids[old_codomain_slid.index()];
                                         if let Some(old_codomain_uuid) =
                                             universe.get(old_codomain_luid)
-                                        {
-                                            if old_codomain_uuid != new_codomain_uuid {
+                                            && old_codomain_uuid != new_codomain_uuid {
                                                 // Value changed
                                                 old_vals
                                                     .insert(domain_uuid, Some(old_codomain_uuid));
                                                 new_vals.insert(domain_uuid, new_codomain_uuid);
                                             }
-                                        }
                                     }
                                     None => {
                                         // Was undefined, now defined
@@ -309,11 +304,10 @@ fn find_luid_by_sort_slid(structure: &Structure, func_id: usize, sort_slid: usiz
     for (slid_idx, &_sort_id) in structure.sorts.iter().enumerate() {
         let slid = Slid::from_usize(slid_idx);
         let elem_sort_slid = structure.sort_local_id(slid);
-        if elem_sort_slid.index() == sort_slid {
-            if structure.functions[func_id].len() > sort_slid {
+        if elem_sort_slid.index() == sort_slid
+            && structure.functions[func_id].len() > sort_slid {
                 return Some(structure.luids[slid_idx]);
             }
-        }
     }
     None
 }
@@ -414,8 +408,8 @@ pub fn apply_patch(
             for (domain_uuid, codomain_uuid) in changes {
                 let domain_luid = universe.lookup(domain_uuid);
                 let codomain_luid = universe.lookup(codomain_uuid);
-                if let (Some(domain_luid), Some(codomain_luid)) = (domain_luid, codomain_luid) {
-                    if let (Some(&domain_slid), Some(&codomain_slid)) = (
+                if let (Some(domain_luid), Some(codomain_luid)) = (domain_luid, codomain_luid)
+                    && let (Some(&domain_slid), Some(&codomain_slid)) = (
                         result.luid_to_slid.get(&domain_luid),
                         result.luid_to_slid.get(&codomain_luid),
                     ) {
@@ -424,7 +418,6 @@ pub fn apply_patch(
                             result.functions[*func_id][sort_slid.index()] = some_slid(codomain_slid);
                         }
                     }
-                }
             }
         }
     }

@@ -447,7 +447,7 @@ impl Structure {
             .iter()
             .map(|opt_sort_id| {
                 match opt_sort_id {
-                    Some(sort_id) => vec![None; self.carrier_size(*sort_id) as usize],
+                    Some(sort_id) => vec![None; self.carrier_size(*sort_id)],
                     None => Vec::new(), // Product domains deferred
                 }
             })
@@ -540,14 +540,13 @@ impl Structure {
     ) -> Result<(), String> {
         let domain_sort_slid = self.sort_local_id(domain_slid);
 
-        if let Some(existing) = get_slid(self.functions[func_id][domain_sort_slid.index()]) {
-            if existing != codomain_slid {
+        if let Some(existing) = get_slid(self.functions[func_id][domain_sort_slid.index()])
+            && existing != codomain_slid {
                 return Err(format!(
                     "conflicting definition: func {}(slid {}) already defined as slid {}, cannot redefine as slid {}",
                     func_id, domain_slid, existing, codomain_slid
                 ));
             }
-        }
 
         self.functions[func_id][domain_sort_slid.index()] = some_slid(codomain_slid);
         Ok(())

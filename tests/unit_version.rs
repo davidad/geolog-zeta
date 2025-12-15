@@ -1,7 +1,6 @@
 //! Unit tests for version control (commits, checkout, patches)
 
 use geolog::core::Structure;
-use geolog::id::Uuid;
 use geolog::naming::NamingIndex;
 use geolog::version::VersionedState;
 use std::fs;
@@ -10,7 +9,7 @@ use tempfile::tempdir;
 
 fn temp_dir() -> PathBuf {
     let dir = tempdir().unwrap();
-    dir.into_path()
+    dir.keep()
 }
 
 #[test]

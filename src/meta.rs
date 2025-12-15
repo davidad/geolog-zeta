@@ -75,6 +75,12 @@ pub struct MetaBuilder {
     functions: HashMap<String, Vec<(u32, u32)>>,
 }
 
+impl Default for MetaBuilder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl MetaBuilder {
     pub fn new() -> Self {
         Self {
@@ -729,11 +735,10 @@ pub fn structure_to_theory(
         let base_elems = reader.find_by_func("BaseDS/dsort", dsort_elem);
         if !base_elems.is_empty() {
             let base_elem = base_elems[0];
-            if let Some(srt_elem) = reader.follow("BaseDS/srt", base_elem) {
-                if let Some(&sort_id) = slid_to_sort_id.get(&srt_elem) {
+            if let Some(srt_elem) = reader.follow("BaseDS/srt", base_elem)
+                && let Some(&sort_id) = slid_to_sort_id.get(&srt_elem) {
                     return DerivedSort::Base(sort_id);
                 }
-            }
         }
 
         // Check if it's a ProdDS
@@ -750,13 +755,11 @@ pub fn structure_to_theory(
                 // Recursive call would need the full closure; for now, assume base types in products
                 if let Some(type_dsort) = reader.follow("Field/type", field_elem) {
                     let base_elems = reader.find_by_func("BaseDS/dsort", type_dsort);
-                    if !base_elems.is_empty() {
-                        if let Some(srt_elem) = reader.follow("BaseDS/srt", base_elems[0]) {
-                            if let Some(&sort_id) = slid_to_sort_id.get(&srt_elem) {
-                                fields.push((field_name, DerivedSort::Base(sort_id)));
-                            }
+                    if !base_elems.is_empty()
+                        && let Some(srt_elem) = reader.follow("BaseDS/srt", base_elems[0])
+                        && let Some(&sort_id) = slid_to_sort_id.get(&srt_elem) {
+                            fields.push((field_name, DerivedSort::Base(sort_id)));
                         }
-                    }
                 }
             }
             return DerivedSort::Product(fields);
