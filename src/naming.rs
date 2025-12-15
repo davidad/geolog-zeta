@@ -6,6 +6,15 @@
 //!
 //! Following chit's design: "namings are purely a user interface (input/output
 //! for humans and large language models)"
+//!
+//! ## Suffix-based lookup via ReversedPath
+//!
+//! To efficiently look up names by suffix (e.g., find all `*/A` when given just `A`),
+//! we store paths reversed in a BTreeMap. For example:
+//! - `["PetriNet", "P"]` is stored as `ReversedPath(["P", "PetriNet"])`
+//! - A prefix scan for `["A"]` finds all paths ending in `A`
+//!
+//! This enables O(log n + k) suffix lookups where k is the number of matches.
 
 use crate::id::Uuid;
 use indexmap::IndexMap;
@@ -13,13 +22,49 @@ use memmap2::Mmap;
 use rkyv::ser::Serializer;
 use rkyv::ser::serializers::AllocSerializer;
 use rkyv::{Archive, Deserialize, Serialize, check_archived_root};
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::fs::{self, File};
 use std::io::Write;
 use std::path::PathBuf;
 
 /// A qualified name path (e.g., ["PetriNet", "P"] for sort P in theory PetriNet)
 pub type QualifiedName = Vec<String>;
+
+/// A path stored with segments reversed for efficient suffix-based lookup.
+///
+/// `["PetriNet", "P"]` becomes `ReversedPath(["P", "PetriNet"])`.
+/// This allows BTreeMap range queries to find all paths with a given suffix.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ReversedPath(Vec<String>);
+
+impl ReversedPath {
+    /// Create a reversed path from a qualified name.
+    pub fn from_qualified(segments: &[String]) -> Self {
+        Self(segments.iter().rev().cloned().collect())
+    }
+
+    /// Convert back to a qualified name (forward order).
+    pub fn to_qualified(&self) -> QualifiedName {
+        self.0.iter().rev().cloned().collect()
+    }
+
+    /// Create a prefix for range queries (just the suffix segments, reversed).
+    /// For looking up all paths ending in `["A"]`, create `ReversedPath(["A"])`.
+    pub fn from_suffix(suffix: &[String]) -> Self {
+        // Suffix is already in forward order, just reverse it
+        Self(suffix.iter().rev().cloned().collect())
+    }
+
+    /// Check if this path starts with the given prefix (for range iteration).
+    pub fn starts_with(&self, prefix: &ReversedPath) -> bool {
+        self.0.len() >= prefix.0.len() && self.0[..prefix.0.len()] == prefix.0[..]
+    }
+
+    /// Get the inner segments (reversed order).
+    pub fn segments(&self) -> &[String] {
+        &self.0
+    }
+}
 
 /// Serializable form of the naming index
 #[derive(Archive, Deserialize, Serialize, Default)]
@@ -33,12 +78,18 @@ struct NamingData {
 ///
 /// Provides bidirectional mapping between UUIDs and human-readable names.
 /// Names are qualified paths like ["PetriNet", "P"] for sort P in theory PetriNet.
+///
+/// ## Lookup modes
+/// - **By UUID**: O(1) via `uuid_to_name`
+/// - **By exact path**: O(log n) via `path_to_uuid`
+/// - **By suffix**: O(log n + k) via BTreeMap range query on reversed paths
 #[derive(Debug, Default)]
 pub struct NamingIndex {
     /// UUID → qualified name (for display)
     uuid_to_name: IndexMap<Uuid, QualifiedName>,
-    /// Simple name → UUIDs (for lookup; multiple UUIDs may share a simple name)
-    name_to_uuids: HashMap<String, Vec<Uuid>>,
+    /// Reversed path → UUID (for suffix-based lookup)
+    /// Paths are stored reversed so that suffix queries become prefix scans.
+    path_to_uuid: BTreeMap<ReversedPath, Uuid>,
     /// Persistence path
     path: Option<PathBuf>,
     /// Dirty flag
@@ -55,7 +106,7 @@ impl NamingIndex {
     pub fn with_path(path: impl Into<PathBuf>) -> Self {
         Self {
             uuid_to_name: IndexMap::new(),
-            name_to_uuids: HashMap::new(),
+            path_to_uuid: BTreeMap::new(),
             path: Some(path.into()),
             dirty: false,
         }
@@ -138,13 +189,9 @@ impl NamingIndex {
 
     /// Internal insert without setting dirty flag
     fn insert_internal(&mut self, uuid: Uuid, name: QualifiedName) {
-        // Add to reverse index (simple name → UUIDs)
-        if let Some(simple) = name.last() {
-            self.name_to_uuids
-                .entry(simple.clone())
-                .or_default()
-                .push(uuid);
-        }
+        // Add to reverse index (reversed path → UUID)
+        let reversed = ReversedPath::from_qualified(&name);
+        self.path_to_uuid.insert(reversed, uuid);
         self.uuid_to_name.insert(uuid, name);
     }
 
@@ -179,20 +226,59 @@ impl NamingIndex {
             .unwrap_or_else(|| format!("{}", uuid))
     }
 
-    /// Look up UUIDs by simple name
-    pub fn lookup(&self, name: &str) -> Option<&[Uuid]> {
-        self.name_to_uuids.get(name).map(|v| v.as_slice())
+    /// Look up all UUIDs whose qualified name ends with the given suffix.
+    ///
+    /// Examples:
+    /// - `lookup_suffix(&["A"])` returns UUIDs for "ExampleNet/A", "OtherNet/A", etc.
+    /// - `lookup_suffix(&["ExampleNet", "A"])` returns just "ExampleNet/A"
+    ///
+    /// Returns an iterator over matching UUIDs.
+    pub fn lookup_suffix<'a>(&'a self, suffix: &[String]) -> impl Iterator<Item = Uuid> + 'a {
+        let prefix = ReversedPath::from_suffix(suffix);
+        self.path_to_uuid
+            .range(prefix.clone()..)
+            .take_while(move |(k, _)| k.starts_with(&prefix))
+            .map(|(_, &uuid)| uuid)
+    }
+
+    /// Look up UUID by exact qualified path.
+    pub fn lookup_exact(&self, path: &[String]) -> Option<Uuid> {
+        let reversed = ReversedPath::from_qualified(path);
+        self.path_to_uuid.get(&reversed).copied()
+    }
+
+    /// Resolve a path to a UUID.
+    /// - If exact match exists, return it.
+    /// - If suffix matches exactly one UUID, return it.
+    /// - Otherwise return Err with all candidates (empty if not found, multiple if ambiguous).
+    pub fn resolve(&self, path: &[String]) -> Result<Uuid, Vec<Uuid>> {
+        // First try exact match
+        if let Some(uuid) = self.lookup_exact(path) {
+            return Ok(uuid);
+        }
+
+        // Fall back to suffix match
+        let candidates: Vec<Uuid> = self.lookup_suffix(path).collect();
+        match candidates.len() {
+            1 => Ok(candidates[0]),
+            _ => Err(candidates),
+        }
+    }
+
+    /// Look up UUIDs by simple (single-segment) name.
+    /// This is a convenience wrapper around `lookup_suffix` for single names.
+    pub fn lookup(&self, name: &str) -> Vec<Uuid> {
+        self.lookup_suffix(&[name.to_string()]).collect()
     }
 
     /// Look up a unique UUID by simple name (returns None if ambiguous or not found)
     pub fn lookup_unique(&self, name: &str) -> Option<Uuid> {
-        self.name_to_uuids.get(name).and_then(|uuids| {
-            if uuids.len() == 1 {
-                Some(uuids[0])
-            } else {
-                None
-            }
-        })
+        let results: Vec<Uuid> = self.lookup_suffix(&[name.to_string()]).collect();
+        if results.len() == 1 {
+            Some(results[0])
+        } else {
+            None
+        }
     }
 
     /// Check if dirty

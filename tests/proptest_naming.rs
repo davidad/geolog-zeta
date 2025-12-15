@@ -49,8 +49,8 @@ proptest! {
 
         if let Some(simple) = name.last() {
             let results = index.lookup(simple);
-            prop_assert!(results.is_some());
-            prop_assert!(results.unwrap().contains(&uuid));
+            prop_assert!(!results.is_empty());
+            prop_assert!(results.contains(&uuid));
         }
     }
 
@@ -106,7 +106,7 @@ proptest! {
         index.insert(uuid2, vec!["Theory2".to_string(), shared_name.clone()]);
 
         // lookup returns both
-        let results = index.lookup(&shared_name).unwrap();
+        let results = index.lookup(&shared_name);
         prop_assert_eq!(results.len(), 2);
         prop_assert!(results.contains(&uuid1));
         prop_assert!(results.contains(&uuid2));
