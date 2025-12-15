@@ -7,7 +7,8 @@ use std::path::PathBuf;
 
 use crate::ast;
 use crate::core::DerivedSort;
-use crate::elaborate::{Env, elaborate_instance, elaborate_theory};
+use crate::elaborate::{Env, elaborate_instance_ws, elaborate_theory};
+// Note: Env is still used for elaborate_theory
 use crate::id::{NumericId, Slid};
 use crate::workspace::{InstanceEntry, Workspace};
 
@@ -157,13 +158,8 @@ impl ReplState {
                         ));
                     }
 
-                    // TRANSITIONAL: Build an Env from workspace.theories
-                    let env = Env {
-                        theories: self.workspace.theories.clone(),
-                        ..Env::new()
-                    };
-
-                    let structure = elaborate_instance(&env, inst, &mut self.workspace.universe)
+                    // Use workspace-aware elaboration (supports parameterized instances)
+                    let structure = elaborate_instance_ws(&mut self.workspace, inst)
                         .map_err(|e| format!("Elaboration error: {}", e))?;
 
                     let instance_name = inst.name.clone();
@@ -173,23 +169,43 @@ impl ReplState {
                     // Build InstanceEntry with element names
                     let mut entry = InstanceEntry::new(structure, theory_name.clone());
 
-                    // Register element names (same iteration order as elaborate_instance)
-                    let mut slid_counter: usize = 0;
-                    for item in &inst.body {
-                        if let ast::InstanceItem::Element(elem_name, _sort_expr) = &item.node {
-                            let slid = Slid::from_usize(slid_counter);
-                            entry.register_element(elem_name.clone(), slid);
+                    // Register element names for elements declared in THIS instance
+                    // (imported elements from param instances are already registered with qualified names)
 
-                            // Also register in global naming index
-                            let luid = entry.structure.get_luid(slid);
-                            let _ = self.workspace.register_element_name(
-                                &instance_name,
-                                elem_name,
-                                luid,
-                            );
+                    // First, count imported elements (if this is a parameterized instance)
+                    // They come first in the structure before locally declared elements
+                    // For now, we use a simple heuristic: locally declared elements are
+                    // those explicitly listed in inst.body
+                    let local_elements: Vec<_> = inst
+                        .body
+                        .iter()
+                        .filter_map(|item| {
+                            if let ast::InstanceItem::Element(name, _) = &item.node {
+                                Some(name.clone())
+                            } else {
+                                None
+                            }
+                        })
+                        .collect();
 
-                            slid_counter += 1;
-                        }
+                    // The structure contains: [imported elements...] [local elements...]
+                    // We need to skip imported elements when counting
+                    let num_imported = entry.structure.len() - local_elements.len();
+                    let mut slid_counter = num_imported;
+
+                    for elem_name in &local_elements {
+                        let slid = Slid::from_usize(slid_counter);
+                        entry.register_element(elem_name.clone(), slid);
+
+                        // Also register in global naming index
+                        let luid = entry.structure.get_luid(slid);
+                        let _ = self.workspace.register_element_name(
+                            &instance_name,
+                            elem_name,
+                            luid,
+                        );
+
+                        slid_counter += 1;
                     }
 
                     self.workspace.add_instance(instance_name.clone(), entry);
@@ -366,16 +382,21 @@ impl ReplState {
 }
 
 /// Helper to extract theory name from a type expression
+///
+/// For parameterized types like `ExampleNet Trace`, the theory is the rightmost
+/// element (Trace), not the first argument (ExampleNet).
 fn type_expr_to_theory_name(type_expr: &ast::TypeExpr) -> String {
     match type_expr {
         ast::TypeExpr::Sort => "Sort".to_string(),
         ast::TypeExpr::Prop => "Prop".to_string(),
         ast::TypeExpr::Path(path) => path
             .segments
-            .first()
-            .cloned()
-            .unwrap_or_else(|| "Unknown".to_string()),
-        ast::TypeExpr::App(base, _) => type_expr_to_theory_name(base),
+            .join("/"),
+        ast::TypeExpr::App(_base, arg) => {
+            // For App(base, arg), the arg is the theory, base contains earlier arguments
+            // E.g., App(ExampleNet, Trace) -> Trace
+            type_expr_to_theory_name(arg)
+        }
         ast::TypeExpr::Arrow(_, _) => "Arrow".to_string(),
         ast::TypeExpr::Record(_) => "Record".to_string(),
         ast::TypeExpr::Instance(inner) => type_expr_to_theory_name(inner),
