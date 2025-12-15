@@ -4,6 +4,7 @@ mod generators;
 
 use generators::{StructureOp, StructureParams, check_structure_invariants};
 use geolog::core::Structure;
+use geolog::id::{NumericId, Slid};
 use geolog::universe::Universe;
 use proptest::prelude::*;
 
@@ -43,17 +44,17 @@ proptest! {
         let (slid, luid) = structure.add_element(&mut universe, sort_id);
 
         // Forward: slid → luid
-        prop_assert_eq!(structure.luids[slid], luid);
+        prop_assert_eq!(structure.luids[slid.index()], luid);
 
         // Reverse: luid → slid
         prop_assert_eq!(structure.luid_to_slid.get(&luid), Some(&slid));
         prop_assert_eq!(structure.lookup_luid(luid), Some(slid));
 
         // Sort is correct
-        prop_assert_eq!(structure.sorts[slid], sort_id);
+        prop_assert_eq!(structure.sorts[slid.index()], sort_id);
 
         // Carrier contains the element
-        prop_assert!(structure.carriers[sort_id].contains(slid as u64));
+        prop_assert!(structure.carriers[sort_id].contains(slid.index() as u64));
     }
 
     /// Carrier membership is exclusive (element in exactly one carrier)
@@ -100,14 +101,15 @@ proptest! {
             max_elements_per_sort: 8,
         })
     ) {
-        for slid in 0..structure.len() {
-            let sort_id = structure.sorts[slid];
+        for slid_idx in 0..structure.len() {
+            let slid = Slid::from_usize(slid_idx);
+            let sort_id = structure.sorts[slid_idx];
             let sort_slid = structure.sort_local_id(slid);
 
             // sort_slid should be in range [0, carrier_size)
             let carrier_size = structure.carrier_size(sort_id);
             prop_assert!(
-                sort_slid < carrier_size,
+                sort_slid.index() < carrier_size,
                 "sort_slid {} should be < carrier_size {}",
                 sort_slid, carrier_size
             );
@@ -143,7 +145,7 @@ proptest! {
         let slid2 = structure2.add_element_with_luid(luid1, 0);
 
         // Should have same luid
-        prop_assert_eq!(structure2.luids[slid2], luid1);
+        prop_assert_eq!(structure2.luids[slid2.index()], luid1);
         prop_assert_eq!(structure2.lookup_luid(luid1), Some(slid2));
 
         // Both structures should maintain invariants
@@ -161,9 +163,10 @@ proptest! {
             max_elements_per_sort: 10,
         })
     ) {
-        for slid in 0..structure.len() {
+        for slid_idx in 0..structure.len() {
+            let slid = Slid::from_usize(slid_idx);
             let luid = structure.get_luid(slid);
-            prop_assert_eq!(structure.luids[slid], luid);
+            prop_assert_eq!(structure.luids[slid_idx], luid);
             prop_assert_eq!(structure.lookup_luid(luid), Some(slid));
         }
     }
@@ -188,19 +191,19 @@ proptest! {
     fn sequential_slids(ops in generators::arb_structure_ops(3, 15)) {
         let mut universe = Universe::new();
         let mut structure = Structure::new(3);
-        let mut expected_slid = 0;
+        let mut expected_slid_idx: usize = 0;
 
         for op in ops {
             match op {
                 StructureOp::AddElement { sort_id } => {
                     let (slid, _) = structure.add_element(&mut universe, sort_id);
-                    prop_assert_eq!(slid, expected_slid);
-                    expected_slid += 1;
+                    prop_assert_eq!(slid, Slid::from_usize(expected_slid_idx));
+                    expected_slid_idx += 1;
                 }
             }
         }
 
-        prop_assert_eq!(structure.len(), expected_slid);
+        prop_assert_eq!(structure.len(), expected_slid_idx);
     }
 }
 

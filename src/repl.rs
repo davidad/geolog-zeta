@@ -10,7 +10,7 @@ use std::rc::Rc;
 use crate::ast;
 use crate::core::Structure;
 use crate::elaborate::{Env, elaborate_instance, elaborate_theory};
-use crate::id::Slid;
+use crate::id::{NumericId, Slid};
 use crate::naming::NamingIndex;
 use crate::universe::Universe;
 
@@ -180,10 +180,10 @@ impl ReplState {
 
                     // Build element_names from AST (same iteration as elaborate_instance)
                     let mut element_names = HashMap::new();
-                    let mut slid_counter: Slid = 0;
+                    let mut slid_counter: usize = 0;
                     for item in &inst.body {
                         if let ast::InstanceItem::Element(elem_name, _sort_expr) = &item.node {
-                            element_names.insert(slid_counter, elem_name.clone());
+                            element_names.insert(Slid::from_usize(slid_counter), elem_name.clone());
                             slid_counter += 1;
                         }
                     }
@@ -308,11 +308,12 @@ impl ReplState {
         for (sort_id, sort_name) in signature.sorts.iter().enumerate() {
             let elements: Vec<String> = data.structure.carriers[sort_id]
                 .iter()
-                .map(|slid| {
+                .map(|slid_u64| {
+                    let slid = Slid::from_usize(slid_u64 as usize);
                     data.element_names
-                        .get(&(slid as Slid))
+                        .get(&slid)
                         .cloned()
-                        .unwrap_or_else(|| format!("#{}", slid))
+                        .unwrap_or_else(|| format!("#{}", slid_u64))
                 })
                 .collect();
             if !elements.is_empty() {
@@ -337,21 +338,21 @@ impl ReplState {
 
             // Get the domain sort ID from the function signature
             if let crate::core::DerivedSort::Base(domain_sort_id) = &func_sym.domain {
-                for slid in data.structure.carriers[*domain_sort_id].iter() {
-                    let slid_usize = slid as usize;
-                    let sort_slid = data.structure.sort_local_id(slid_usize);
-                    if sort_slid < data.structure.functions[func_id].len() {
+                for slid_u64 in data.structure.carriers[*domain_sort_id].iter() {
+                    let slid = Slid::from_usize(slid_u64 as usize);
+                    let sort_slid = data.structure.sort_local_id(slid);
+                    if sort_slid.index() < data.structure.functions[func_id].len() {
                         if let Some(codomain_slid) =
-                            crate::id::get_slid(data.structure.functions[func_id][sort_slid])
+                            crate::id::get_slid(data.structure.functions[func_id][sort_slid.index()])
                         {
                             let domain_name = data
                                 .element_names
-                                .get(&(slid as Slid))
+                                .get(&slid)
                                 .cloned()
-                                .unwrap_or_else(|| format!("#{}", slid));
+                                .unwrap_or_else(|| format!("#{}", slid_u64));
                             let codomain_name = data
                                 .element_names
-                                .get(&(codomain_slid as Slid))
+                                .get(&codomain_slid)
                                 .cloned()
                                 .unwrap_or_else(|| format!("#{}", codomain_slid));
                             values.push(format!(

@@ -119,7 +119,7 @@ impl Signature {
 
 // ============ Relation Storage ============
 
-use crate::id::Slid;
+use crate::id::{NumericId, Slid};
 use roaring::RoaringTreemap;
 
 /// Tuple ID: index into the append-only tuple log
@@ -507,12 +507,12 @@ impl Structure {
 
     /// Add an element with a specific Luid (used when applying patches or loading)
     pub fn add_element_with_luid(&mut self, luid: Luid, sort_id: SortId) -> Slid {
-        let slid = self.luids.len();
+        let slid = Slid::from_usize(self.luids.len());
 
         self.luids.push(luid);
         self.luid_to_slid.insert(luid, slid);
         self.sorts.push(sort_id);
-        self.carriers[sort_id].insert(slid as u64);
+        self.carriers[sort_id].insert(slid.index() as u64);
 
         slid
     }
@@ -540,7 +540,7 @@ impl Structure {
     ) -> Result<(), String> {
         let domain_sort_slid = self.sort_local_id(domain_slid);
 
-        if let Some(existing) = get_slid(self.functions[func_id][domain_sort_slid]) {
+        if let Some(existing) = get_slid(self.functions[func_id][domain_sort_slid.index()]) {
             if existing != codomain_slid {
                 return Err(format!(
                     "conflicting definition: func {}(slid {}) already defined as slid {}, cannot redefine as slid {}",
@@ -549,13 +549,13 @@ impl Structure {
             }
         }
 
-        self.functions[func_id][domain_sort_slid] = some_slid(codomain_slid);
+        self.functions[func_id][domain_sort_slid.index()] = some_slid(codomain_slid);
         Ok(())
     }
 
     /// Get a function value by SortSlid index (for iteration/lookup)
     pub fn get_function(&self, func_id: FuncId, domain_sort_slid: SortSlid) -> Option<Slid> {
-        get_slid(self.functions[func_id][domain_sort_slid])
+        get_slid(self.functions[func_id][domain_sort_slid.index()])
     }
 
     /// Get the sort-local index for an element (0-based position within its carrier).
@@ -565,8 +565,8 @@ impl Structure {
     /// For a bitmap containing {4}: rank(3)=0, rank(4)=1, rank(5)=1.
     /// So 0-based index = rank(x) - 1.
     pub fn sort_local_id(&self, slid: Slid) -> SortSlid {
-        let sort_id = self.sorts[slid];
-        (self.carriers[sort_id].rank(slid as u64) - 1) as SortSlid
+        let sort_id = self.sorts[slid.index()];
+        SortSlid::from_usize((self.carriers[sort_id].rank(slid.index() as u64) - 1) as usize)
     }
 
     /// Look up element by Luid
@@ -576,12 +576,12 @@ impl Structure {
 
     /// Get the Luid for a Slid
     pub fn get_luid(&self, slid: Slid) -> Luid {
-        self.luids[slid]
+        self.luids[slid.index()]
     }
 
     /// Get the UUID for a Slid (requires Universe lookup)
     pub fn get_uuid(&self, slid: Slid, universe: &Universe) -> Option<Uuid> {
-        universe.get(self.luids[slid])
+        universe.get(self.luids[slid.index()])
     }
 
     /// Get element count

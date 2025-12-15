@@ -8,7 +8,7 @@
 
 use crate::core::{ElaboratedTheory, RelationStorage, SortId, Structure, TupleId, VecRelation};
 use crate::elaborate::Env;
-use crate::id::{Luid, Slid, get_slid, some_slid};
+use crate::id::{Luid, NumericId, Slid, get_slid, some_slid};
 use crate::meta::{structure_to_theory, theory_to_structure};
 use crate::naming::NamingIndex;
 use crate::universe::Universe;
@@ -97,7 +97,7 @@ impl StructureData {
         let functions = structure
             .functions
             .iter()
-            .map(|func_vec| func_vec.iter().map(|&opt| get_slid(opt)).collect())
+            .map(|func_vec| func_vec.iter().map(|&opt| get_slid(opt).map(|s| s.index())).collect())
             .collect();
 
         let relations = structure
@@ -124,9 +124,9 @@ impl StructureData {
         let mut structure = Structure::new(self.num_sorts);
 
         // Rebuild elements (also rebuilds carriers and luid_to_slid)
-        for (slid, (&luid, &sort_id)) in self.luids.iter().zip(self.sorts.iter()).enumerate() {
+        for (slid_idx, (&luid, &sort_id)) in self.luids.iter().zip(self.sorts.iter()).enumerate() {
             let added_slid = structure.add_element_with_luid(luid, sort_id);
-            debug_assert_eq!(added_slid, slid);
+            debug_assert_eq!(added_slid, Slid::from_usize(slid_idx));
         }
 
         // Convert Option<usize> -> OptSlid
@@ -136,7 +136,7 @@ impl StructureData {
             .map(|func_vec| {
                 func_vec
                     .iter()
-                    .map(|&opt| opt.and_then(some_slid))
+                    .map(|&opt| opt.map(Slid::from_usize).and_then(some_slid))
                     .collect()
             })
             .collect();

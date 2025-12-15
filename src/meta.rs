@@ -15,7 +15,7 @@ use crate::core::{
     TheoryParam,
 };
 use crate::elaborate::{Env, elaborate_theory};
-use crate::id::Slid;
+use crate::id::{NumericId, Slid};
 use crate::naming::NamingIndex;
 use crate::universe::Universe;
 
@@ -646,7 +646,7 @@ impl<'a> MetaReader<'a> {
         }
         self.structure.carriers[sort_id]
             .iter()
-            .map(|x| x as Slid)
+            .map(|x| Slid::from_usize(x as usize))
             .collect()
     }
 
@@ -682,7 +682,7 @@ impl<'a> MetaReader<'a> {
         // Iterate through all elements of the domain sort
         let mut results = vec![];
         for elem in self.structure.carriers[*domain_sort].iter() {
-            let elem = elem as Slid;
+            let elem = Slid::from_usize(elem as usize);
             if self.follow(func_name, elem) == Some(target) {
                 results.push(elem);
             }

@@ -1,29 +1,35 @@
 //! Unit tests for relation storage
 
 use geolog::core::{RelationStorage, Structure, VecRelation};
+use geolog::id::{NumericId, Slid};
 use geolog::universe::Universe;
 use geolog::workspace::{load_structure, save_structure};
 use tempfile::tempdir;
+
+/// Helper to create Slid from integer
+fn slid(n: usize) -> Slid {
+    Slid::from_usize(n)
+}
 
 #[test]
 fn test_vec_relation_basic() {
     let mut rel = VecRelation::new(2);
 
     // Insert a tuple
-    assert!(rel.insert(vec![0, 1]));
+    assert!(rel.insert(vec![slid(0), slid(1)]));
     assert_eq!(rel.len(), 1);
 
     // Check containment
-    assert!(rel.contains(&[0, 1]));
-    assert!(!rel.contains(&[1, 0]));
-    assert!(!rel.contains(&[0, 0]));
+    assert!(rel.contains(&[slid(0), slid(1)]));
+    assert!(!rel.contains(&[slid(1), slid(0)]));
+    assert!(!rel.contains(&[slid(0), slid(0)]));
 
     // Insert another tuple
-    assert!(rel.insert(vec![1, 0]));
+    assert!(rel.insert(vec![slid(1), slid(0)]));
     assert_eq!(rel.len(), 2);
 
     // Duplicate insert returns false
-    assert!(!rel.insert(vec![0, 1]));
+    assert!(!rel.insert(vec![slid(0), slid(1)]));
     assert_eq!(rel.len(), 2);
 }
 
@@ -31,39 +37,39 @@ fn test_vec_relation_basic() {
 fn test_vec_relation_remove() {
     let mut rel = VecRelation::new(2);
 
-    rel.insert(vec![0, 1]);
-    rel.insert(vec![1, 2]);
+    rel.insert(vec![slid(0), slid(1)]);
+    rel.insert(vec![slid(1), slid(2)]);
     assert_eq!(rel.len(), 2);
 
     // Remove existing tuple
-    assert!(rel.remove(&[0, 1]));
+    assert!(rel.remove(&[slid(0), slid(1)]));
     assert_eq!(rel.len(), 1);
-    assert!(!rel.contains(&[0, 1]));
-    assert!(rel.contains(&[1, 2]));
+    assert!(!rel.contains(&[slid(0), slid(1)]));
+    assert!(rel.contains(&[slid(1), slid(2)]));
 
     // Remove non-existent tuple
-    assert!(!rel.remove(&[0, 1]));
+    assert!(!rel.remove(&[slid(0), slid(1)]));
     assert_eq!(rel.len(), 1);
 
     // Re-insert removed tuple (should reuse tuple ID)
-    assert!(rel.insert(vec![0, 1]));
+    assert!(rel.insert(vec![slid(0), slid(1)]));
     assert_eq!(rel.len(), 2);
-    assert!(rel.contains(&[0, 1]));
+    assert!(rel.contains(&[slid(0), slid(1)]));
 }
 
 #[test]
 fn test_vec_relation_iter() {
     let mut rel = VecRelation::new(2);
 
-    rel.insert(vec![0, 1]);
-    rel.insert(vec![1, 2]);
-    rel.insert(vec![2, 3]);
+    rel.insert(vec![slid(0), slid(1)]);
+    rel.insert(vec![slid(1), slid(2)]);
+    rel.insert(vec![slid(2), slid(3)]);
 
     let tuples: Vec<_> = rel.iter().collect();
     assert_eq!(tuples.len(), 3);
 
     // Remove middle tuple
-    rel.remove(&[1, 2]);
+    rel.remove(&[slid(1), slid(2)]);
 
     let tuples: Vec<_> = rel.iter().collect();
     assert_eq!(tuples.len(), 2);
@@ -154,12 +160,12 @@ fn test_relation_file_roundtrip() {
 fn test_unary_relation() {
     let mut rel = VecRelation::new(1);
 
-    rel.insert(vec![42]);
-    rel.insert(vec![100]);
+    rel.insert(vec![slid(42)]);
+    rel.insert(vec![slid(100)]);
 
-    assert!(rel.contains(&[42]));
-    assert!(rel.contains(&[100]));
-    assert!(!rel.contains(&[0]));
+    assert!(rel.contains(&[slid(42)]));
+    assert!(rel.contains(&[slid(100)]));
+    assert!(!rel.contains(&[slid(0)]));
     assert_eq!(rel.len(), 2);
 }
 
@@ -167,11 +173,11 @@ fn test_unary_relation() {
 fn test_ternary_relation() {
     let mut rel = VecRelation::new(3);
 
-    rel.insert(vec![1, 2, 3]);
-    rel.insert(vec![4, 5, 6]);
+    rel.insert(vec![slid(1), slid(2), slid(3)]);
+    rel.insert(vec![slid(4), slid(5), slid(6)]);
 
-    assert!(rel.contains(&[1, 2, 3]));
-    assert!(rel.contains(&[4, 5, 6]));
-    assert!(!rel.contains(&[1, 2, 4]));
+    assert!(rel.contains(&[slid(1), slid(2), slid(3)]));
+    assert!(rel.contains(&[slid(4), slid(5), slid(6)]));
+    assert!(!rel.contains(&[slid(1), slid(2), slid(4)]));
     assert_eq!(rel.len(), 2);
 }

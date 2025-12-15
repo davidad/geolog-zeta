@@ -2,7 +2,7 @@
 
 mod generators;
 
-use geolog::id::Uuid;
+use geolog::id::{Luid, NumericId, Uuid};
 use geolog::universe::Universe;
 use proptest::prelude::*;
 use std::collections::HashSet;
@@ -75,7 +75,7 @@ proptest! {
         for i in 0..count {
             let uuid = Uuid::now_v7();
             let luid = universe.intern(uuid);
-            prop_assert_eq!(luid, i, "Luid {} should be {}", luid, i);
+            prop_assert_eq!(luid, Luid::from_usize(i), "Luid {} should be {}", luid, i);
         }
     }
 
@@ -142,7 +142,7 @@ proptest! {
         prop_assert_eq!(iter_results.len(), uuids.len());
 
         for (i, (luid, uuid)) in iter_results.iter().enumerate() {
-            prop_assert_eq!(*luid, i);
+            prop_assert_eq!(*luid, Luid::from_usize(i));
             prop_assert_eq!(*uuid, uuids[i]);
         }
     }

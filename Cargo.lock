@@ -362,6 +362,7 @@ version = "0.1.0"
 dependencies = [
  "ariadne",
  "chumsky",
+ "egglog-numeric-id",
  "egglog-union-find",
  "indexmap 2.12.1",
  "insta",

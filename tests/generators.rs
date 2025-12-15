@@ -6,7 +6,7 @@
 #![allow(dead_code)]
 
 use geolog::core::{SortId, Structure};
-use geolog::id::Uuid;
+use geolog::id::{NumericId, Slid, Uuid};
 use geolog::naming::NamingIndex;
 use geolog::universe::Universe;
 use proptest::collection::vec;
@@ -187,7 +187,8 @@ pub fn check_structure_invariants(structure: &Structure) -> Result<(), String> {
     }
 
     // Invariant 2: luid_to_slid is inverse of luids
-    for (slid, &luid) in structure.luids.iter().enumerate() {
+    for (slid_idx, &luid) in structure.luids.iter().enumerate() {
+        let slid = Slid::from_usize(slid_idx);
         match structure.luid_to_slid.get(&luid) {
             Some(&mapped_slid) if mapped_slid == slid => {}
             Some(&mapped_slid) => {

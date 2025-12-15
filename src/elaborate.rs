@@ -8,6 +8,7 @@ use std::rc::Rc;
 
 use crate::ast;
 use crate::core::*;
+use crate::id::NumericId;
 
 /// Elaboration errors
 #[derive(Clone, Debug)]
@@ -562,7 +563,7 @@ pub fn elaborate_instance(
 
             // Type checking: verify element sort matches function domain
             let func = &theory.theory.signature.functions[func_id];
-            let elem_sort_id = structure.sorts[elem_slid];
+            let elem_sort_id = structure.sorts[elem_slid.index()];
             if let DerivedSort::Base(expected_domain) = &func.domain {
                 if elem_sort_id != *expected_domain {
                     return Err(ElabError::DomainMismatch {
@@ -578,7 +579,7 @@ pub fn elaborate_instance(
             }
 
             // Type checking: verify value sort matches function codomain
-            let value_sort_id = structure.sorts[value_slid];
+            let value_sort_id = structure.sorts[value_slid.index()];
             if let DerivedSort::Base(expected_codomain) = &func.codomain {
                 if value_sort_id != *expected_codomain {
                     return Err(ElabError::CodomainMismatch {
@@ -718,9 +719,11 @@ fn validate_totality(
             if opt_slid.is_none() {
                 // Reverse lookup: sort_slid → slid
                 // Find the slid that has this sort_slid in this domain sort
-                let slid = structure.carriers[domain_sort_id]
-                    .select(sort_slid as u64)
-                    .expect("sort_slid should be valid") as Slid;
+                let slid = Slid::from_usize(
+                    structure.carriers[domain_sort_id]
+                        .select(sort_slid as u64)
+                        .expect("sort_slid should be valid") as usize
+                );
                 // Look up element name if available, otherwise fallback to slid
                 let name = slid_to_name
                     .get(&slid)

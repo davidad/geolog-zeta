@@ -3,7 +3,7 @@
 use geolog::ast;
 use geolog::core::DerivedSort;
 use geolog::elaborate::{ElabError, Env, elaborate_instance, elaborate_theory};
-use geolog::id::Slid;
+use geolog::id::{NumericId, Slid};
 use geolog::parse;
 use geolog::universe::Universe;
 use std::rc::Rc;
@@ -214,9 +214,9 @@ instance ExampleNet : PetriNet = {
 
         // Check function definitions using the new columnar API
         // Elements by slid: A=0, B=1, C=2, ab=3, ab_in=4, ab_out=5
-        let a_slid: Slid = 0;
-        let ab_slid: Slid = 3;
-        let ab_in_slid: Slid = 4;
+        let a_slid = Slid::from_usize(0);
+        let ab_slid = Slid::from_usize(3);
+        let ab_in_slid = Slid::from_usize(4);
 
         // Get the sort-local ID for ab_in
         let ab_in_sort_slid = structure.sort_local_id(ab_in_slid);

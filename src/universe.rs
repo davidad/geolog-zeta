@@ -8,7 +8,7 @@
 //! - Uuid: 128-bit globally unique identifier (for persistence, cross-system)
 //! - Luid: Local index into this installation's universe (for computation)
 
-use crate::id::Uuid;
+use crate::id::{Luid, NumericId, Uuid};
 use indexmap::IndexSet;
 use memmap2::Mmap;
 use rkyv::ser::Serializer;
@@ -17,12 +17,6 @@ use rkyv::{Archive, Deserialize, Serialize, check_archived_root};
 use std::fs::{self, File};
 use std::io::Write;
 use std::path::{Path, PathBuf};
-
-/// Locally Universal ID: index into the global universe (0..N-1)
-///
-/// Unlike Slid (structure-local), Luid is stable across the entire installation
-/// and persists across sessions.
-pub type Luid = usize;
 
 /// The global universe of all UUIDs known to this installation.
 ///
@@ -149,21 +143,21 @@ impl Universe {
 
     /// Intern a UUID, returning its Luid (creating if new)
     pub fn intern(&mut self, uuid: Uuid) -> Luid {
-        let (luid, inserted) = self.index.insert_full(uuid);
+        let (idx, inserted) = self.index.insert_full(uuid);
         if inserted {
             self.dirty = true;
         }
-        luid
+        Luid::from_usize(idx)
     }
 
     /// Get the UUID for a Luid
     pub fn get(&self, luid: Luid) -> Option<Uuid> {
-        self.index.get_index(luid).copied()
+        self.index.get_index(luid.index()).copied()
     }
 
     /// Look up the Luid for a UUID (if known)
     pub fn lookup(&self, uuid: &Uuid) -> Option<Luid> {
-        self.index.get_index_of(uuid)
+        self.index.get_index_of(uuid).map(Luid::from_usize)
     }
 
     /// Get the number of UUIDs in the universe
@@ -186,7 +180,7 @@ impl Universe {
         self.index
             .iter()
             .enumerate()
-            .map(|(luid, &uuid)| (luid, uuid))
+            .map(|(idx, &uuid)| (Luid::from_usize(idx), uuid))
     }
 
     /// Get the persistence path (if any)

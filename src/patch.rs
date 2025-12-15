@@ -5,7 +5,7 @@
 //! creates a new patch that can be applied to recreate the structure.
 
 use crate::core::SortId;
-use crate::id::Uuid;
+use crate::id::{NumericId, Slid, Uuid};
 use rkyv::{Archive, Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -254,7 +254,7 @@ pub fn diff(
             if let Some(new_codomain_slid) = get_slid(*opt_codomain) {
                 let domain_uuid = find_uuid_by_sort_slid(new, universe, func_id, sort_slid);
                 if let Some(domain_uuid) = domain_uuid {
-                    let new_codomain_luid = new.luids[new_codomain_slid];
+                    let new_codomain_luid = new.luids[new_codomain_slid.index()];
                     let new_codomain_uuid = universe.get(new_codomain_luid);
 
                     if let Some(new_codomain_uuid) = new_codomain_uuid {
@@ -263,11 +263,11 @@ pub fn diff(
                         if let Some(domain_luid) = domain_luid {
                             if let Some(&old_domain_slid) = old.luid_to_slid.get(&domain_luid) {
                                 let old_sort_slid = old.sort_local_id(old_domain_slid);
-                                let old_codomain = get_slid(old.functions[func_id][old_sort_slid]);
+                                let old_codomain = get_slid(old.functions[func_id][old_sort_slid.index()]);
 
                                 match old_codomain {
                                     Some(old_codomain_slid) => {
-                                        let old_codomain_luid = old.luids[old_codomain_slid];
+                                        let old_codomain_luid = old.luids[old_codomain_slid.index()];
                                         if let Some(old_codomain_uuid) =
                                             universe.get(old_codomain_luid)
                                         {
@@ -306,11 +306,12 @@ pub fn diff(
 
 /// Helper to find the Luid of an element given its func_id and sort_slid in a structure
 fn find_luid_by_sort_slid(structure: &Structure, func_id: usize, sort_slid: usize) -> Option<Luid> {
-    for (slid, &_sort_id) in structure.sorts.iter().enumerate() {
+    for (slid_idx, &_sort_id) in structure.sorts.iter().enumerate() {
+        let slid = Slid::from_usize(slid_idx);
         let elem_sort_slid = structure.sort_local_id(slid);
-        if elem_sort_slid == sort_slid {
+        if elem_sort_slid.index() == sort_slid {
             if structure.functions[func_id].len() > sort_slid {
-                return Some(structure.luids[slid]);
+                return Some(structure.luids[slid_idx]);
             }
         }
     }
@@ -393,11 +394,11 @@ pub fn apply_patch(
                     // Check if domain element still exists in result
                     if let Some(&new_domain_slid) = result.luid_to_slid.get(&domain_luid) {
                         // Check if codomain element still exists
-                        let codomain_luid = base.luids[old_codomain_slid];
+                        let codomain_luid = base.luids[old_codomain_slid.index()];
                         if let Some(&new_codomain_slid) = result.luid_to_slid.get(&codomain_luid) {
                             let new_sort_slid = result.sort_local_id(new_domain_slid);
-                            if new_sort_slid < result.functions[func_id].len() {
-                                result.functions[func_id][new_sort_slid] =
+                            if new_sort_slid.index() < result.functions[func_id].len() {
+                                result.functions[func_id][new_sort_slid.index()] =
                                     some_slid(new_codomain_slid);
                             }
                         }
@@ -419,8 +420,8 @@ pub fn apply_patch(
                         result.luid_to_slid.get(&codomain_luid),
                     ) {
                         let sort_slid = result.sort_local_id(domain_slid);
-                        if sort_slid < result.functions[*func_id].len() {
-                            result.functions[*func_id][sort_slid] = some_slid(codomain_slid);
+                        if sort_slid.index() < result.functions[*func_id].len() {
+                            result.functions[*func_id][sort_slid.index()] = some_slid(codomain_slid);
                         }
                     }
                 }

@@ -538,7 +538,7 @@ pub fn disjunction_all(tensors: Vec<(TensorExpr, Vec<String>)>) -> (TensorExpr, 
 // ============================================================================
 
 use crate::core::{Context, DerivedSort, Formula, RelId, Signature, Structure, Term};
-use crate::id::Slid;
+use crate::id::{NumericId, Slid};
 
 /// Context for formula compilation, tracking variable names and their dimensions.
 #[derive(Clone, Debug)]
@@ -605,7 +605,7 @@ pub fn build_carrier_index(structure: &Structure, sort_id: usize) -> HashMap<Sli
     structure.carriers[sort_id]
         .iter()
         .enumerate()
-        .map(|(idx, slid)| (slid as Slid, idx))
+        .map(|(idx, slid_u64)| (Slid::from_usize(slid_u64 as usize), idx))
         .collect()
 }
 
@@ -1236,6 +1236,11 @@ mod tests {
         TensorExpr::leaf(t)
     }
 
+    /// Helper to create Slid from integer
+    fn slid(n: usize) -> Slid {
+        Slid::from_usize(n)
+    }
+
     #[test]
     fn test_sparse_tensor_basic() {
         let mut t = SparseTensor::empty(vec![3, 2]);
@@ -1595,8 +1600,8 @@ mod tests {
         structure.init_relations(&[2]); // One binary relation
 
         // Add edges: 0→1, 1→2
-        structure.assert_relation(0, vec![0, 1]);
-        structure.assert_relation(0, vec![1, 2]);
+        structure.assert_relation(0, vec![slid(0), slid(1)]);
+        structure.assert_relation(0, vec![slid(1), slid(2)]);
 
         (structure, sig)
     }
@@ -1931,9 +1936,9 @@ mod tests {
         structure.init_relations(&[2]);
 
         // Add edges: 0→1, 1→2, AND 0→2 (transitive closure)
-        structure.assert_relation(0, vec![0, 1]);
-        structure.assert_relation(0, vec![1, 2]);
-        structure.assert_relation(0, vec![0, 2]); // Closure!
+        structure.assert_relation(0, vec![slid(0), slid(1)]);
+        structure.assert_relation(0, vec![slid(1), slid(2)]);
+        structure.assert_relation(0, vec![slid(0), slid(2)]); // Closure!
 
         let ctx = Context {
             vars: vec![

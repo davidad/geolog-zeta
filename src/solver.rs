@@ -57,7 +57,7 @@
 use std::rc::Rc;
 
 use crate::core::{ElaboratedTheory, RelationStorage, Signature, Structure};
-use crate::id::{Luid, Slid, Uuid};
+use crate::id::{Luid, NumericId, Slid, Uuid};
 use crate::tensor::{CheckResult, Violation};
 use crate::universe::Universe;
 
@@ -608,7 +608,7 @@ impl Tactic for CheckTactic {
                             // Convert variable assignment to (name, sort_id, slid)
                             // For now, we don't have sort info in Violation, so approximate
                             assignment: v.variable_names.iter().zip(v.assignment.iter())
-                                .map(|(name, &idx)| (name.clone(), 0, idx)) // sort_id=0 is placeholder
+                                .map(|(name, &idx)| (name.clone(), 0, Slid::from_usize(idx))) // sort_id=0 is placeholder
                                 .collect(),
                             description: format!(
                                 "Axiom {} needs consequent witnessed for assignment {:?}",
@@ -667,11 +667,12 @@ impl Tactic for EnumerateFunctionTactic {
 
         // Find first undefined domain element
         let mut undefined_domain: Option<Slid> = None;
-        for slid in node_ref.structure.carriers[domain_sort].iter() {
-            let sort_slid = node_ref.structure.sort_local_id(slid as usize);
-            if sort_slid < node_ref.structure.functions[self.func_id].len() {
-                if node_ref.structure.functions[self.func_id][sort_slid].is_none() {
-                    undefined_domain = Some(slid as Slid);
+        for slid_u64 in node_ref.structure.carriers[domain_sort].iter() {
+            let slid = Slid::from_usize(slid_u64 as usize);
+            let sort_slid = node_ref.structure.sort_local_id(slid);
+            if sort_slid.index() < node_ref.structure.functions[self.func_id].len() {
+                if node_ref.structure.functions[self.func_id][sort_slid.index()].is_none() {
+                    undefined_domain = Some(slid);
                     break;
                 }
             }
@@ -688,7 +689,7 @@ impl Tactic for EnumerateFunctionTactic {
         // Enumerate codomain values
         let codomain_elements: Vec<Slid> = node_ref.structure.carriers[codomain_sort]
             .iter()
-            .map(|x| x as Slid)
+            .map(|x| Slid::from_usize(x as usize))
             .collect();
 
         if codomain_elements.is_empty() {
@@ -878,8 +879,8 @@ mod tests {
         let (slid1, _luid1) = tree.add_element(0, 0).unwrap();
         let (slid2, _luid2) = tree.add_element(0, 0).unwrap();
 
-        assert_eq!(slid1, 0);
-        assert_eq!(slid2, 1);
+        assert_eq!(slid1, Slid::from_usize(0));
+        assert_eq!(slid2, Slid::from_usize(1));
         assert_eq!(tree.nodes[0].structure.carrier_size(0), 2);
     }
 
@@ -916,32 +917,35 @@ mod tests {
     fn test_union_find_with_slid() {
         use crate::id::Slid;
 
+        // Helper for cleaner syntax
+        fn s(n: usize) -> Slid { Slid::from_usize(n) }
+
         // Verify egglog's union-find works with our Slid type (which is usize)
         let mut uf: UnionFind<Slid> = UnionFind::default();
 
         // Union some elements
-        let (parent, child) = uf.union(0, 1);
-        assert_eq!(parent, 0); // union-by-min: smaller id becomes parent
-        assert_eq!(child, 1);
+        let (parent, child) = uf.union(s(0), s(1));
+        assert_eq!(parent, s(0)); // union-by-min: smaller id becomes parent
+        assert_eq!(child, s(1));
 
         // Find should return canonical representative
-        assert_eq!(uf.find(0), 0);
-        assert_eq!(uf.find(1), 0);
+        assert_eq!(uf.find(s(0)), s(0));
+        assert_eq!(uf.find(s(1)), s(0));
 
         // Add more elements and union
-        let (parent2, child2) = uf.union(2, 3);
-        assert_eq!(parent2, 2);
-        assert_eq!(child2, 3);
+        let (parent2, child2) = uf.union(s(2), s(3));
+        assert_eq!(parent2, s(2));
+        assert_eq!(child2, s(3));
 
         // Union the two equivalence classes
-        let (parent3, child3) = uf.union(1, 3);
+        let (parent3, child3) = uf.union(s(1), s(3));
         // Now 0, 1, 2, 3 should all be in same class with 0 as root
-        assert_eq!(parent3, 0); // find(1) = 0, find(3) = 2, min(0,2) = 0
-        assert_eq!(child3, 2);
+        assert_eq!(parent3, s(0)); // find(1) = 0, find(3) = 2, min(0,2) = 0
+        assert_eq!(child3, s(2));
 
-        assert_eq!(uf.find(0), 0);
-        assert_eq!(uf.find(1), 0);
-        assert_eq!(uf.find(2), 0);
-        assert_eq!(uf.find(3), 0);
+        assert_eq!(uf.find(s(0)), s(0));
+        assert_eq!(uf.find(s(1)), s(0));
+        assert_eq!(uf.find(s(2)), s(0));
+        assert_eq!(uf.find(s(3)), s(0));
     }
 }
