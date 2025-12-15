@@ -38,7 +38,7 @@ fn main() {
     // Initialize state
     let mut state = ReplState::new();
     if let Some(ref path) = workspace_path {
-        state.workspace_path = Some(path.clone());
+        state.workspace.path = Some(path.clone());
         println!("Workspace: {}", path.display());
     }
 

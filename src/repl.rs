@@ -3,41 +3,22 @@
 //! Provides an interactive environment for defining theories and instances,
 //! inspecting structures, and managing workspaces.
 
-use std::collections::HashMap;
 use std::path::PathBuf;
-use std::rc::Rc;
 
 use crate::ast;
-use crate::core::Structure;
+use crate::core::DerivedSort;
 use crate::elaborate::{Env, elaborate_instance, elaborate_theory};
 use crate::id::{NumericId, Slid};
-use crate::naming::NamingIndex;
-use crate::universe::Universe;
+use crate::workspace::{InstanceEntry, Workspace};
 
-/// Metadata stored alongside each instance
-struct InstanceData {
-    /// The structure itself
-    structure: Structure,
-    /// Name of the theory this instance is of
-    theory_name: String,
-    /// Local names for elements (Slid -> name)
-    element_names: HashMap<Slid, String>,
-}
-
-/// REPL state - holds all session data
+/// REPL state - now a thin wrapper around Workspace
 pub struct ReplState {
-    /// Elaboration environment (theories in scope)
-    pub env: Env,
-    /// Named instances (Structure values with metadata)
-    instances: HashMap<String, InstanceData>,
-    /// Universe for UUID<->Luid mapping
-    pub universe: Universe,
-    /// Global naming index (for persistence)
-    pub naming: NamingIndex,
-    /// Current workspace path (None = ephemeral session)
-    pub workspace_path: Option<PathBuf>,
+    /// The unified workspace (owns universe, naming, theories, instances)
+    pub workspace: Workspace,
+
     /// Multi-line input buffer
     pub input_buffer: String,
+
     /// Bracket depth for multi-line detection
     pub bracket_depth: i32,
 }
@@ -49,14 +30,10 @@ impl Default for ReplState {
 }
 
 impl ReplState {
-    /// Create a new REPL state with empty environment
+    /// Create a new REPL state with empty workspace
     pub fn new() -> Self {
         Self {
-            env: Env::new(),
-            instances: HashMap::new(),
-            universe: Universe::new(),
-            naming: NamingIndex::new(),
-            workspace_path: None,
+            workspace: Workspace::new(),
             input_buffer: String::new(),
             bracket_depth: 0,
         }
@@ -64,17 +41,14 @@ impl ReplState {
 
     /// Reset to initial state (clear all theories and instances)
     pub fn reset(&mut self) {
-        self.env = Env::new();
-        self.instances.clear();
-        self.universe = Universe::new();
-        self.naming = NamingIndex::new();
+        self.workspace = Workspace::new();
         self.input_buffer.clear();
         self.bracket_depth = 0;
     }
 
     /// Get a structure by instance name
-    pub fn get_structure(&self, name: &str) -> Option<&Structure> {
-        self.instances.get(name).map(|data| &data.structure)
+    pub fn get_structure(&self, name: &str) -> Option<&crate::core::Structure> {
+        self.workspace.get_structure(name)
     }
 
     /// Process a line of input, handling multi-line bracket matching
@@ -144,19 +118,29 @@ impl ReplState {
                 }
                 ast::Declaration::Theory(t) => {
                     // Check for duplicate theory name
-                    if self.env.theories.contains_key(&t.name) {
+                    if self.workspace.theories.contains_key(&t.name) {
                         return Err(format!(
                             "Theory '{}' already exists. Use a different name or :reset to clear.",
                             t.name
                         ));
                     }
-                    let elab = elaborate_theory(&mut self.env, t)
+
+                    // TRANSITIONAL: Build an Env from workspace.theories for elaborate_theory
+                    let mut env = Env::new();
+                    for (name, theory) in &self.workspace.theories {
+                        env.theories.insert(name.clone(), theory.clone());
+                    }
+
+                    let elab = elaborate_theory(&mut env, t)
                         .map_err(|e| format!("Elaboration error: {}", e))?;
+
                     let name = elab.theory.name.clone();
                     let num_sorts = elab.theory.signature.sorts.len();
                     let num_functions = elab.theory.signature.functions.len();
                     let num_relations = elab.theory.signature.relations.len();
-                    self.env.theories.insert(name.clone(), Rc::new(elab));
+
+                    self.workspace.add_theory(elab);
+
                     results.push(ExecuteResult::Theory {
                         name,
                         num_sorts,
@@ -166,36 +150,50 @@ impl ReplState {
                 }
                 ast::Declaration::Instance(inst) => {
                     // Check for duplicate instance name
-                    if self.instances.contains_key(&inst.name) {
+                    if self.workspace.instances.contains_key(&inst.name) {
                         return Err(format!(
                             "Instance '{}' already exists. Use a different name or :reset to clear.",
                             inst.name
                         ));
                     }
-                    let structure = elaborate_instance(&self.env, inst, &mut self.universe)
+
+                    // TRANSITIONAL: Build an Env from workspace.theories
+                    let env = Env {
+                        theories: self.workspace.theories.clone(),
+                        ..Env::new()
+                    };
+
+                    let structure = elaborate_instance(&env, inst, &mut self.workspace.universe)
                         .map_err(|e| format!("Elaboration error: {}", e))?;
+
                     let instance_name = inst.name.clone();
                     let theory_name = type_expr_to_theory_name(&inst.theory);
                     let num_elements = structure.len();
 
-                    // Build element_names from AST (same iteration as elaborate_instance)
-                    let mut element_names = HashMap::new();
+                    // Build InstanceEntry with element names
+                    let mut entry = InstanceEntry::new(structure, theory_name.clone());
+
+                    // Register element names (same iteration order as elaborate_instance)
                     let mut slid_counter: usize = 0;
                     for item in &inst.body {
                         if let ast::InstanceItem::Element(elem_name, _sort_expr) = &item.node {
-                            element_names.insert(Slid::from_usize(slid_counter), elem_name.clone());
+                            let slid = Slid::from_usize(slid_counter);
+                            entry.register_element(elem_name.clone(), slid);
+
+                            // Also register in global naming index
+                            let luid = entry.structure.get_luid(slid);
+                            let _ = self.workspace.register_element_name(
+                                &instance_name,
+                                elem_name,
+                                luid,
+                            );
+
                             slid_counter += 1;
                         }
                     }
 
-                    self.instances.insert(
-                        instance_name.clone(),
-                        InstanceData {
-                            structure,
-                            theory_name: theory_name.clone(),
-                            element_names,
-                        },
-                    );
+                    self.workspace.add_instance(instance_name.clone(), entry);
+
                     results.push(ExecuteResult::Instance {
                         name: instance_name,
                         theory_name,
@@ -217,7 +215,7 @@ impl ReplState {
 
     /// List all theories
     pub fn list_theories(&self) -> Vec<TheoryInfo> {
-        self.env
+        self.workspace
             .theories
             .iter()
             .map(|(name, theory)| TheoryInfo {
@@ -232,12 +230,13 @@ impl ReplState {
 
     /// List all instances
     pub fn list_instances(&self) -> Vec<InstanceInfo> {
-        self.instances
+        self.workspace
+            .instances
             .iter()
-            .map(|(name, data)| InstanceInfo {
+            .map(|(name, entry)| InstanceInfo {
                 name: name.clone(),
-                theory_name: data.theory_name.clone(),
-                num_elements: data.structure.len(),
+                theory_name: entry.theory_name.clone(),
+                num_elements: entry.structure.len(),
             })
             .collect()
     }
@@ -245,7 +244,7 @@ impl ReplState {
     /// Inspect a theory or instance by name
     pub fn inspect(&self, name: &str) -> Option<InspectResult> {
         // Check theories first
-        if let Some(theory) = self.env.theories.get(name) {
+        if let Some(theory) = self.workspace.theories.get(name) {
             return Some(InspectResult::Theory(TheoryDetail {
                 name: name.to_string(),
                 params: theory
@@ -285,13 +284,13 @@ impl ReplState {
         }
 
         // Check instances
-        if let Some(data) = self.instances.get(name) {
-            let theory = self.env.theories.get(&data.theory_name)?;
+        if let Some(entry) = self.workspace.instances.get(name) {
+            let theory = self.workspace.theories.get(&entry.theory_name)?;
             return Some(InspectResult::Instance(InstanceDetail {
                 name: name.to_string(),
-                theory_name: data.theory_name.clone(),
-                elements: self.collect_elements(data, &theory.theory.signature),
-                functions: self.collect_function_values(data, &theory.theory.signature),
+                theory_name: entry.theory_name.clone(),
+                elements: self.collect_elements(entry, &theory.theory.signature),
+                functions: self.collect_function_values(entry, &theory.theory.signature),
             }));
         }
 
@@ -301,18 +300,20 @@ impl ReplState {
     /// Collect elements grouped by sort
     fn collect_elements(
         &self,
-        data: &InstanceData,
+        entry: &InstanceEntry,
         signature: &crate::core::Signature,
     ) -> Vec<(String, Vec<String>)> {
         let mut result = Vec::new();
         for (sort_id, sort_name) in signature.sorts.iter().enumerate() {
-            let elements: Vec<String> = data.structure.carriers[sort_id]
+            let elements: Vec<String> = entry
+                .structure
+                .carriers[sort_id]
                 .iter()
                 .map(|slid_u64| {
                     let slid = Slid::from_usize(slid_u64 as usize);
-                    data.element_names
-                        .get(&slid)
-                        .cloned()
+                    entry
+                        .get_name(slid)
+                        .map(|s| s.to_string())
                         .unwrap_or_else(|| format!("#{}", slid_u64))
                 })
                 .collect();
@@ -326,31 +327,28 @@ impl ReplState {
     /// Collect function values as "domain func = codomain"
     fn collect_function_values(
         &self,
-        data: &InstanceData,
+        entry: &InstanceEntry,
         signature: &crate::core::Signature,
     ) -> Vec<(String, Vec<String>)> {
         let mut result = Vec::new();
         for (func_id, func_sym) in signature.functions.iter().enumerate() {
-            if func_id >= data.structure.functions.len() {
+            if func_id >= entry.structure.functions.len() {
                 continue;
             }
             let mut values = Vec::new();
 
-            // Get the domain sort ID from the function signature
-            if let crate::core::DerivedSort::Base(domain_sort_id) = &func_sym.domain {
-                for slid_u64 in data.structure.carriers[*domain_sort_id].iter() {
+            if let DerivedSort::Base(domain_sort_id) = &func_sym.domain {
+                for slid_u64 in entry.structure.carriers[*domain_sort_id].iter() {
                     let slid = Slid::from_usize(slid_u64 as usize);
-                    let sort_slid = data.structure.sort_local_id(slid);
-                    if let Some(codomain_slid) = data.structure.get_function(func_id, sort_slid) {
-                        let domain_name = data
-                            .element_names
-                            .get(&slid)
-                            .cloned()
+                    let sort_slid = entry.structure.sort_local_id(slid);
+                    if let Some(codomain_slid) = entry.structure.get_function(func_id, sort_slid) {
+                        let domain_name = entry
+                            .get_name(slid)
+                            .map(|s| s.to_string())
                             .unwrap_or_else(|| format!("#{}", slid_u64));
-                        let codomain_name = data
-                            .element_names
-                            .get(&codomain_slid)
-                            .cloned()
+                        let codomain_name = entry
+                            .get_name(codomain_slid)
+                            .map(|s| s.to_string())
                             .unwrap_or_else(|| format!("#{}", codomain_slid));
                         values.push(format!(
                             "{} {} = {}",
@@ -372,13 +370,11 @@ fn type_expr_to_theory_name(type_expr: &ast::TypeExpr) -> String {
     match type_expr {
         ast::TypeExpr::Sort => "Sort".to_string(),
         ast::TypeExpr::Prop => "Prop".to_string(),
-        ast::TypeExpr::Path(path) => {
-            // Just take the first component as the theory name
-            path.segments
-                .first()
-                .cloned()
-                .unwrap_or_else(|| "Unknown".to_string())
-        }
+        ast::TypeExpr::Path(path) => path
+            .segments
+            .first()
+            .cloned()
+            .unwrap_or_else(|| "Unknown".to_string()),
         ast::TypeExpr::App(base, _) => type_expr_to_theory_name(base),
         ast::TypeExpr::Arrow(_, _) => "Arrow".to_string(),
         ast::TypeExpr::Record(_) => "Record".to_string(),
@@ -387,14 +383,14 @@ fn type_expr_to_theory_name(type_expr: &ast::TypeExpr) -> String {
 }
 
 /// Format a DerivedSort as a string using sort names from the signature
-fn format_derived_sort(ds: &crate::core::DerivedSort, sig: &crate::core::Signature) -> String {
+fn format_derived_sort(ds: &DerivedSort, sig: &crate::core::Signature) -> String {
     match ds {
-        crate::core::DerivedSort::Base(sort_id) => sig
+        DerivedSort::Base(sort_id) => sig
             .sorts
             .get(*sort_id)
             .cloned()
             .unwrap_or_else(|| format!("Sort#{}", sort_id)),
-        crate::core::DerivedSort::Product(fields) => {
+        DerivedSort::Product(fields) => {
             if fields.is_empty() {
                 "Unit".to_string()
             } else {
@@ -489,7 +485,6 @@ fn format_core_formula(formula: &crate::core::Formula, sig: &crate::core::Signat
                     .iter()
                     .map(|f| {
                         let s = format_core_formula(f, sig);
-                        // Wrap in parens if it contains disjunction or conjunction
                         if matches!(
                             f,
                             crate::core::Formula::Conj(_) | crate::core::Formula::Disj(_)
@@ -517,13 +512,9 @@ fn format_core_formula(formula: &crate::core::Formula, sig: &crate::core::Signat
 /// Result of processing a line of input
 #[derive(Debug)]
 pub enum InputResult {
-    /// Meta-command to execute
     MetaCommand(MetaCommand),
-    /// Complete geolog input ready to elaborate
     GeologInput(String),
-    /// Incomplete input (waiting for more lines)
     Incomplete,
-    /// Empty line (no action needed)
     Empty,
 }
 
@@ -541,7 +532,6 @@ pub enum MetaCommand {
 }
 
 impl MetaCommand {
-    /// Parse a meta-command from input (line starts with ':')
     pub fn parse(input: &str) -> Self {
         let input = input.trim_start_matches(':').trim();
         let mut parts = input.split_whitespace();
@@ -580,7 +570,6 @@ impl MetaCommand {
     }
 }
 
-/// Target for :list command
 #[derive(Debug)]
 pub enum ListTarget {
     Theories,
@@ -588,7 +577,6 @@ pub enum ListTarget {
     All,
 }
 
-/// Result of executing geolog code
 #[derive(Debug)]
 pub enum ExecuteResult {
     Namespace(String),
@@ -605,7 +593,6 @@ pub enum ExecuteResult {
     },
 }
 
-/// Info about a theory (for listing)
 #[derive(Debug)]
 pub struct TheoryInfo {
     pub name: String,
@@ -615,7 +602,6 @@ pub struct TheoryInfo {
     pub num_axioms: usize,
 }
 
-/// Info about an instance (for listing)
 #[derive(Debug)]
 pub struct InstanceInfo {
     pub name: String,
@@ -623,37 +609,31 @@ pub struct InstanceInfo {
     pub num_elements: usize,
 }
 
-/// Detailed info about a theory (for inspection)
 #[derive(Debug)]
 pub struct TheoryDetail {
     pub name: String,
-    pub params: Vec<(String, String)>, // (param_name, theory_name or "Sort")
+    pub params: Vec<(String, String)>,
     pub sorts: Vec<String>,
-    pub functions: Vec<(String, String, String)>, // (name, domain, codomain)
-    pub relations: Vec<(String, String)>,         // (name, domain)
-    pub axioms: Vec<AxiomDetail>,                 // full axiom details
+    pub functions: Vec<(String, String, String)>,
+    pub relations: Vec<(String, String)>,
+    pub axioms: Vec<AxiomDetail>,
 }
 
-/// Detailed info about an axiom (for inspection)
 #[derive(Debug)]
 pub struct AxiomDetail {
-    pub context: Vec<(String, String)>, // (var_name, sort)
-    pub premise: String,                // formatted premise formula
-    pub conclusion: String,             // formatted conclusion formula
+    pub context: Vec<(String, String)>,
+    pub premise: String,
+    pub conclusion: String,
 }
 
-/// Detailed info about an instance (for inspection)
 #[derive(Debug)]
 pub struct InstanceDetail {
     pub name: String,
     pub theory_name: String,
-    /// Elements grouped by sort: (sort_name, [element_names])
     pub elements: Vec<(String, Vec<String>)>,
-    /// Function values grouped by function: (func_name, ["domain func = codomain"])
     pub functions: Vec<(String, Vec<String>)>,
 }
 
-/// Result of inspecting a name
 #[derive(Debug)]
 pub enum InspectResult {
     Theory(TheoryDetail),
@@ -668,7 +648,6 @@ pub fn format_instance_detail(detail: &InstanceDetail) -> String {
         detail.name, detail.theory_name
     ));
 
-    // Elements by sort
     for (sort_name, elements) in &detail.elements {
         out.push_str(&format!("  // {} ({}):\n", sort_name, elements.len()));
         for elem in elements {
@@ -676,7 +655,6 @@ pub fn format_instance_detail(detail: &InstanceDetail) -> String {
         }
     }
 
-    // Function values
     for (func_name, values) in &detail.functions {
         if !values.is_empty() {
             out.push_str(&format!("  // {}:\n", func_name));
@@ -694,7 +672,6 @@ pub fn format_instance_detail(detail: &InstanceDetail) -> String {
 pub fn format_theory_detail(detail: &TheoryDetail) -> String {
     let mut out = String::new();
 
-    // Header with parameters
     out.push_str("theory ");
     for (param_name, theory_name) in &detail.params {
         if theory_name == "Sort" {
@@ -705,31 +682,25 @@ pub fn format_theory_detail(detail: &TheoryDetail) -> String {
     }
     out.push_str(&format!("{} {{\n", detail.name));
 
-    // Sorts
     for sort in &detail.sorts {
         out.push_str(&format!("  {} : Sort;\n", sort));
     }
 
-    // Functions
     for (name, domain, codomain) in &detail.functions {
         out.push_str(&format!("  {} : {} -> {};\n", name, domain, codomain));
     }
 
-    // Relations
     for (name, domain) in &detail.relations {
         out.push_str(&format!("  {} : {} -> Prop;\n", name, domain));
     }
 
-    // Axioms (full details)
     for axiom in &detail.axioms {
-        // Build the quantifier part
         let quantified: Vec<String> = axiom
             .context
             .iter()
             .map(|(name, sort)| format!("{} : {}", name, sort))
             .collect();
 
-        // Format the sequent
         if axiom.premise == "true" {
             out.push_str(&format!(
                 "  forall {}. |- {};\n",
