@@ -695,7 +695,7 @@ fn relation_column_sorts(sig: &Signature, rel_id: RelId) -> Vec<usize> {
 /// Returns the expression and the list of free variables in order.
 pub fn compile_formula(
     formula: &Formula,
-    ctx: &CompileContext,
+    _ctx: &CompileContext,
     structure: &Structure,
     sig: &Signature,
 ) -> (TensorExpr, Vec<String>) {
@@ -757,7 +757,7 @@ pub fn compile_formula(
 
             let compiled: Vec<(TensorExpr, Vec<String>)> = formulas
                 .iter()
-                .map(|f| compile_formula(f, ctx, structure, sig))
+                .map(|f| compile_formula(f, _ctx, structure, sig))
                 .collect();
 
             conjunction_all(compiled)
@@ -770,7 +770,7 @@ pub fn compile_formula(
 
             let compiled: Vec<(TensorExpr, Vec<String>)> = formulas
                 .iter()
-                .map(|f| compile_formula(f, ctx, structure, sig))
+                .map(|f| compile_formula(f, _ctx, structure, sig))
                 .collect();
 
             disjunction_all(compiled)
@@ -778,7 +778,7 @@ pub fn compile_formula(
 
         Formula::Exists(var_name, _sort, inner) => {
             // Compile inner formula
-            let (inner_expr, inner_vars) = compile_formula(inner, ctx, structure, sig);
+            let (inner_expr, inner_vars) = compile_formula(inner, _ctx, structure, sig);
 
             // Apply existential (sum over the variable)
             exists(inner_expr, &inner_vars, var_name)

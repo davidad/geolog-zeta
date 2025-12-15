@@ -856,6 +856,8 @@ fn validate_totality(
     sig: &Signature,
     slid_to_name: &HashMap<Slid, String>,
 ) -> ElabResult<()> {
+    use crate::core::FunctionColumn;
+
     for (func_id, func_sym) in sig.functions.iter().enumerate() {
         // Get the domain sort (only handle base sorts for now)
         let domain_sort_id = match &func_sym.domain {
@@ -868,21 +870,42 @@ fn validate_totality(
 
         // Check that every slot in the columnar function storage is defined
         let mut missing = Vec::new();
-        for (sort_slid, opt_slid) in structure.functions[func_id].iter().enumerate() {
-            if opt_slid.is_none() {
-                // Reverse lookup: sort_slid → slid
-                // Find the slid that has this sort_slid in this domain sort
-                let slid = Slid::from_usize(
-                    structure.carriers[domain_sort_id]
-                        .select(sort_slid as u64)
-                        .expect("sort_slid should be valid") as usize
-                );
-                // Look up element name if available, otherwise fallback to slid
-                let name = slid_to_name
-                    .get(&slid)
-                    .cloned()
-                    .unwrap_or_else(|| format!("element#{}", slid));
-                missing.push(name);
+        let func_col = &structure.functions[func_id];
+
+        match func_col {
+            FunctionColumn::Local(col) => {
+                for (sort_slid, opt_slid) in col.iter().enumerate() {
+                    if opt_slid.is_none() {
+                        // Reverse lookup: sort_slid → slid
+                        let slid = Slid::from_usize(
+                            structure.carriers[domain_sort_id]
+                                .select(sort_slid as u64)
+                                .expect("sort_slid should be valid") as usize,
+                        );
+                        let name = slid_to_name
+                            .get(&slid)
+                            .cloned()
+                            .unwrap_or_else(|| format!("element#{}", slid));
+                        missing.push(name);
+                    }
+                }
+            }
+            FunctionColumn::External(col) => {
+                // For external codomains, check that all Luid refs are defined
+                for (sort_slid, opt_luid) in col.iter().enumerate() {
+                    if opt_luid.is_none() {
+                        let slid = Slid::from_usize(
+                            structure.carriers[domain_sort_id]
+                                .select(sort_slid as u64)
+                                .expect("sort_slid should be valid") as usize,
+                        );
+                        let name = slid_to_name
+                            .get(&slid)
+                            .cloned()
+                            .unwrap_or_else(|| format!("element#{}", slid));
+                        missing.push(name);
+                    }
+                }
             }
         }
 

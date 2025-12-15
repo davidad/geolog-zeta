@@ -341,25 +341,22 @@ impl ReplState {
                 for slid_u64 in data.structure.carriers[*domain_sort_id].iter() {
                     let slid = Slid::from_usize(slid_u64 as usize);
                     let sort_slid = data.structure.sort_local_id(slid);
-                    if sort_slid.index() < data.structure.functions[func_id].len()
-                        && let Some(codomain_slid) =
-                            crate::id::get_slid(data.structure.functions[func_id][sort_slid.index()])
-                        {
-                            let domain_name = data
-                                .element_names
-                                .get(&slid)
-                                .cloned()
-                                .unwrap_or_else(|| format!("#{}", slid_u64));
-                            let codomain_name = data
-                                .element_names
-                                .get(&codomain_slid)
-                                .cloned()
-                                .unwrap_or_else(|| format!("#{}", codomain_slid));
-                            values.push(format!(
-                                "{} {} = {}",
-                                domain_name, func_sym.name, codomain_name
-                            ));
-                        }
+                    if let Some(codomain_slid) = data.structure.get_function(func_id, sort_slid) {
+                        let domain_name = data
+                            .element_names
+                            .get(&slid)
+                            .cloned()
+                            .unwrap_or_else(|| format!("#{}", slid_u64));
+                        let codomain_name = data
+                            .element_names
+                            .get(&codomain_slid)
+                            .cloned()
+                            .unwrap_or_else(|| format!("#{}", codomain_slid));
+                        values.push(format!(
+                            "{} {} = {}",
+                            domain_name, func_sym.name, codomain_name
+                        ));
+                    }
                 }
             }
             if !values.is_empty() {

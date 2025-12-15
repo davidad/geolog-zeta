@@ -464,13 +464,16 @@ impl SearchTree {
                 }
             };
 
-            // Check all domain elements have values
-            if node.structure.functions[func_id].len() < domain_size {
+            // Check all domain elements have values (local functions only for now)
+            let func_col = &node.structure.functions[func_id];
+            if func_col.len() < domain_size {
                 return Ok(false);
             }
-            for opt in &node.structure.functions[func_id] {
-                if opt.is_none() {
-                    return Ok(false);
+            if let Some(local_col) = func_col.as_local() {
+                for opt in local_col {
+                    if opt.is_none() {
+                        return Ok(false);
+                    }
                 }
             }
         }
@@ -665,16 +668,15 @@ impl Tactic for EnumerateFunctionTactic {
             return TacticResult::Error("Function storage not initialized".to_string());
         }
 
-        // Find first undefined domain element
+        // Find first undefined domain element (for local functions)
         let mut undefined_domain: Option<Slid> = None;
         for slid_u64 in node_ref.structure.carriers[domain_sort].iter() {
             let slid = Slid::from_usize(slid_u64 as usize);
             let sort_slid = node_ref.structure.sort_local_id(slid);
-            if sort_slid.index() < node_ref.structure.functions[self.func_id].len()
-                && node_ref.structure.functions[self.func_id][sort_slid.index()].is_none() {
-                    undefined_domain = Some(slid);
-                    break;
-                }
+            if node_ref.structure.get_function(self.func_id, sort_slid).is_none() {
+                undefined_domain = Some(slid);
+                break;
+            }
         }
 
         let domain_slid = match undefined_domain {
@@ -787,7 +789,10 @@ impl SearchTree {
             label: node.label.clone(),
             carrier_sizes: node.structure.carriers.iter().map(|c| c.len() as usize).collect(),
             num_function_values: node.structure.functions.iter().map(|f| {
-                f.iter().filter(|opt| opt.is_some()).count()
+                match f {
+                    crate::core::FunctionColumn::Local(col) => col.iter().filter(|opt| opt.is_some()).count(),
+                    crate::core::FunctionColumn::External(col) => col.iter().filter(|opt| opt.is_some()).count(),
+                }
             }).collect(),
             num_relation_tuples: node.structure.relations.iter().map(|r| r.len()).collect(),
             conflicts: node.conflicts.clone(),

@@ -246,7 +246,11 @@ pub fn diff(
         let mut new_vals: BTreeMap<Uuid, Uuid> = BTreeMap::new();
 
         // Iterate over elements in the new structure's function domain
-        for (sort_slid, opt_codomain) in new.functions[func_id].iter().enumerate() {
+        // Note: patches only work with local functions currently
+        let Some(new_func_col) = new.functions[func_id].as_local() else { continue };
+        let Some(old_func_col) = old.functions[func_id].as_local() else { continue };
+
+        for (sort_slid, opt_codomain) in new_func_col.iter().enumerate() {
             // Find the UUID for this domain element
             if let Some(new_codomain_slid) = get_slid(*opt_codomain) {
                 let domain_uuid = find_uuid_by_sort_slid(new, universe, func_id, sort_slid);
@@ -260,7 +264,7 @@ pub fn diff(
                         if let Some(domain_luid) = domain_luid {
                             if let Some(&old_domain_slid) = old.luid_to_slid.get(&domain_luid) {
                                 let old_sort_slid = old.sort_local_id(old_domain_slid);
-                                let old_codomain = get_slid(old.functions[func_id][old_sort_slid.index()]);
+                                let old_codomain = get_slid(old_func_col[old_sort_slid.index()]);
 
                                 match old_codomain {
                                     Some(old_codomain_slid) => {
@@ -301,13 +305,13 @@ pub fn diff(
 
 /// Helper to find the Luid of an element given its func_id and sort_slid in a structure
 fn find_luid_by_sort_slid(structure: &Structure, func_id: usize, sort_slid: usize) -> Option<Luid> {
+    let func_col_len = structure.functions[func_id].len();
     for (slid_idx, &_sort_id) in structure.sorts.iter().enumerate() {
         let slid = Slid::from_usize(slid_idx);
         let elem_sort_slid = structure.sort_local_id(slid);
-        if elem_sort_slid.index() == sort_slid
-            && structure.functions[func_id].len() > sort_slid {
-                return Some(structure.luids[slid_idx]);
-            }
+        if elem_sort_slid.index() == sort_slid && func_col_len > sort_slid {
+            return Some(structure.luids[slid_idx]);
+        }
     }
     None
 }
@@ -366,8 +370,9 @@ pub fn apply_patch(
     let domain_sort_ids: Vec<Option<SortId>> = (0..patch.num_functions)
         .map(|func_id| {
             if func_id < base.functions.len() && !base.functions[func_id].is_empty() {
+                let func_len = base.functions[func_id].len();
                 for (sort_id, carrier) in base.carriers.iter().enumerate() {
-                    if carrier.len() as usize == base.functions[func_id].len() {
+                    if carrier.len() as usize == func_len {
                         return Some(sort_id);
                     }
                 }
@@ -379,8 +384,15 @@ pub fn apply_patch(
     result.init_functions(&domain_sort_ids);
 
     // Copy function values from base (for non-deleted elements)
+    // Note: patches only work with local functions currently
     for func_id in 0..base.num_functions().min(result.num_functions()) {
-        for (old_sort_slid, opt_codomain) in base.functions[func_id].iter().enumerate() {
+        let Some(base_func_col) = base.functions[func_id].as_local() else { continue };
+        if !result.functions[func_id].is_local() { continue };
+
+        // Collect all the updates we need to make (to avoid borrow checker issues)
+        let mut updates: Vec<(usize, Slid)> = Vec::new();
+
+        for (old_sort_slid, opt_codomain) in base_func_col.iter().enumerate() {
             if let Some(old_codomain_slid) = get_slid(*opt_codomain) {
                 // Find the domain element's Luid
                 let domain_luid = find_luid_by_sort_slid(base, func_id, old_sort_slid);
@@ -391,20 +403,29 @@ pub fn apply_patch(
                         let codomain_luid = base.luids[old_codomain_slid.index()];
                         if let Some(&new_codomain_slid) = result.luid_to_slid.get(&codomain_luid) {
                             let new_sort_slid = result.sort_local_id(new_domain_slid);
-                            if new_sort_slid.index() < result.functions[func_id].len() {
-                                result.functions[func_id][new_sort_slid.index()] =
-                                    some_slid(new_codomain_slid);
-                            }
+                            updates.push((new_sort_slid.index(), new_codomain_slid));
                         }
                     }
+                }
+            }
+        }
+
+        // Apply updates
+        if let Some(result_func_col) = result.functions[func_id].as_local_mut() {
+            for (idx, codomain_slid) in updates {
+                if idx < result_func_col.len() {
+                    result_func_col[idx] = some_slid(codomain_slid);
                 }
             }
         }
     }
 
     // Apply function value changes from patch (using UUIDs → Luids)
+    // Note: patches only work with local functions currently
     for (func_id, changes) in &patch.functions.new_values {
-        if *func_id < result.num_functions() {
+        if *func_id < result.num_functions() && result.functions[*func_id].is_local() {
+            // Collect updates first to avoid borrow checker issues
+            let mut updates: Vec<(usize, Slid)> = Vec::new();
             for (domain_uuid, codomain_uuid) in changes {
                 let domain_luid = universe.lookup(domain_uuid);
                 let codomain_luid = universe.lookup(codomain_uuid);
@@ -412,12 +433,20 @@ pub fn apply_patch(
                     && let (Some(&domain_slid), Some(&codomain_slid)) = (
                         result.luid_to_slid.get(&domain_luid),
                         result.luid_to_slid.get(&codomain_luid),
-                    ) {
-                        let sort_slid = result.sort_local_id(domain_slid);
-                        if sort_slid.index() < result.functions[*func_id].len() {
-                            result.functions[*func_id][sort_slid.index()] = some_slid(codomain_slid);
-                        }
+                    )
+                {
+                    let sort_slid = result.sort_local_id(domain_slid);
+                    updates.push((sort_slid.index(), codomain_slid));
+                }
+            }
+
+            // Apply updates
+            if let Some(result_func_col) = result.functions[*func_id].as_local_mut() {
+                for (idx, codomain_slid) in updates {
+                    if idx < result_func_col.len() {
+                        result_func_col[idx] = some_slid(codomain_slid);
                     }
+                }
             }
         }
     }

@@ -87,9 +87,10 @@ struct NamingData {
 pub struct NamingIndex {
     /// UUID → qualified name (for display)
     uuid_to_name: IndexMap<Uuid, QualifiedName>,
-    /// Reversed path → UUID (for suffix-based lookup)
+    /// Reversed path → UUIDs (for suffix-based lookup)
     /// Paths are stored reversed so that suffix queries become prefix scans.
-    path_to_uuid: BTreeMap<ReversedPath, Uuid>,
+    /// Multiple UUIDs can share the same path (ambiguous names).
+    path_to_uuid: BTreeMap<ReversedPath, Vec<Uuid>>,
     /// Persistence path
     path: Option<PathBuf>,
     /// Dirty flag
@@ -189,9 +190,12 @@ impl NamingIndex {
 
     /// Internal insert without setting dirty flag
     fn insert_internal(&mut self, uuid: Uuid, name: QualifiedName) {
-        // Add to reverse index (reversed path → UUID)
+        // Add to reverse index (reversed path → UUIDs)
         let reversed = ReversedPath::from_qualified(&name);
-        self.path_to_uuid.insert(reversed, uuid);
+        self.path_to_uuid
+            .entry(reversed)
+            .or_default()
+            .push(uuid);
         self.uuid_to_name.insert(uuid, name);
     }
 
@@ -238,13 +242,17 @@ impl NamingIndex {
         self.path_to_uuid
             .range(prefix.clone()..)
             .take_while(move |(k, _)| k.starts_with(&prefix))
-            .map(|(_, &uuid)| uuid)
+            .flat_map(|(_, uuids)| uuids.iter().copied())
     }
 
     /// Look up UUID by exact qualified path.
+    /// Returns None if ambiguous (multiple UUIDs share the exact path).
     pub fn lookup_exact(&self, path: &[String]) -> Option<Uuid> {
         let reversed = ReversedPath::from_qualified(path);
-        self.path_to_uuid.get(&reversed).copied()
+        match self.path_to_uuid.get(&reversed) {
+            Some(uuids) if uuids.len() == 1 => Some(uuids[0]),
+            _ => None,
+        }
     }
 
     /// Resolve a path to a UUID.

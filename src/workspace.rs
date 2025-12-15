@@ -76,10 +76,20 @@ pub struct RelationData {
     pub extent: Vec<TupleId>,
 }
 
+/// Serializable form of a function column
+#[derive(Archive, Deserialize, Serialize)]
+#[archive(check_bytes)]
+pub enum FunctionColumnData {
+    /// Local codomain: values are Slids (stored as usize indices)
+    Local(Vec<Option<usize>>),
+    /// External codomain: values are Luids
+    External(Vec<Option<usize>>),
+}
+
 /// Serializable form of a Structure
 ///
 /// Strips out RoaringTreemap carriers and luid_to_slid HashMap (rebuilt on load).
-/// Functions use Option<usize> instead of OptSlid for rkyv compatibility.
+/// Functions use Option<usize> instead of OptSlid/OptLuid for rkyv compatibility.
 /// Note: Human-readable names are stored separately in the global NamingIndex.
 #[derive(Archive, Deserialize, Serialize)]
 #[archive(check_bytes)]
@@ -87,17 +97,27 @@ pub struct StructureData {
     pub num_sorts: usize,
     pub luids: Vec<Luid>,
     pub sorts: Vec<SortId>,
-    pub functions: Vec<Vec<Option<usize>>>,
+    pub functions: Vec<FunctionColumnData>,
     pub relations: Vec<RelationData>,
 }
 
 impl StructureData {
     /// Create serializable data from a Structure
     pub fn from_structure(structure: &Structure) -> Self {
+        use crate::core::FunctionColumn;
+        use crate::id::get_luid;
+
         let functions = structure
             .functions
             .iter()
-            .map(|func_vec| func_vec.iter().map(|&opt| get_slid(opt).map(|s| s.index())).collect())
+            .map(|func_col| match func_col {
+                FunctionColumn::Local(col) => {
+                    FunctionColumnData::Local(col.iter().map(|&opt| get_slid(opt).map(|s| s.index())).collect())
+                }
+                FunctionColumn::External(col) => {
+                    FunctionColumnData::External(col.iter().map(|&opt| get_luid(opt).map(|l| l.index())).collect())
+                }
+            })
             .collect();
 
         let relations = structure
@@ -121,6 +141,9 @@ impl StructureData {
 
     /// Rebuild a Structure from serialized data
     pub fn to_structure(&self) -> Structure {
+        use crate::core::FunctionColumn;
+        use crate::id::{some_luid, Luid};
+
         let mut structure = Structure::new(self.num_sorts);
 
         // Rebuild elements (also rebuilds carriers and luid_to_slid)
@@ -129,15 +152,25 @@ impl StructureData {
             debug_assert_eq!(added_slid, Slid::from_usize(slid_idx));
         }
 
-        // Convert Option<usize> -> OptSlid
+        // Convert FunctionColumnData -> FunctionColumn
         structure.functions = self
             .functions
             .iter()
-            .map(|func_vec| {
-                func_vec
-                    .iter()
-                    .map(|&opt| opt.map(Slid::from_usize).and_then(some_slid))
-                    .collect()
+            .map(|func_data| match func_data {
+                FunctionColumnData::Local(col) => {
+                    FunctionColumn::Local(
+                        col.iter()
+                            .map(|&opt| opt.map(Slid::from_usize).and_then(some_slid))
+                            .collect(),
+                    )
+                }
+                FunctionColumnData::External(col) => {
+                    FunctionColumn::External(
+                        col.iter()
+                            .map(|&opt| opt.map(Luid::from_usize).and_then(some_luid))
+                            .collect(),
+                    )
+                }
             })
             .collect();
 

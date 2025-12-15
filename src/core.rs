@@ -369,8 +369,92 @@ pub struct ElaboratedTheory {
 
 // ============ Structures (instances/models) ============
 
-use crate::id::{Luid, OptSlid, SortSlid, Uuid, get_slid, some_slid};
+use crate::id::{Luid, OptLuid, OptSlid, SortSlid, Uuid, get_slid, some_slid};
 use crate::universe::Universe;
+
+/// A function column: either local (Slid) or external (Luid) references.
+///
+/// For functions with local codomain (e.g., `src : in -> P` where P is local),
+/// we use `Local(Vec<OptSlid>)` for tight columnar storage.
+///
+/// For functions with external codomain (e.g., `token/of : token -> N/P` where
+/// N/P comes from a parent instance), we use `External(Vec<OptLuid>)` to
+/// reference elements in the parent by their Luid.
+#[derive(Clone, Debug)]
+pub enum FunctionColumn {
+    /// Codomain is local: values are Slids within this structure
+    Local(Vec<OptSlid>),
+    /// Codomain is external (from parent): values are Luids (globally unique)
+    External(Vec<OptLuid>),
+}
+
+impl FunctionColumn {
+    /// Get the length of this column
+    pub fn len(&self) -> usize {
+        match self {
+            FunctionColumn::Local(v) => v.len(),
+            FunctionColumn::External(v) => v.len(),
+        }
+    }
+
+    /// Check if empty
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// Check if this is a local column
+    pub fn is_local(&self) -> bool {
+        matches!(self, FunctionColumn::Local(_))
+    }
+
+    /// Get local value at index (panics if external or out of bounds)
+    pub fn get_local(&self, idx: usize) -> OptSlid {
+        match self {
+            FunctionColumn::Local(v) => v[idx],
+            FunctionColumn::External(_) => panic!("get_local called on external column"),
+        }
+    }
+
+    /// Get external value at index (panics if local or out of bounds)
+    pub fn get_external(&self, idx: usize) -> OptLuid {
+        match self {
+            FunctionColumn::External(v) => v[idx],
+            FunctionColumn::Local(_) => panic!("get_external called on local column"),
+        }
+    }
+
+    /// Iterate over local values (panics if external)
+    pub fn iter_local(&self) -> impl Iterator<Item = &OptSlid> {
+        match self {
+            FunctionColumn::Local(v) => v.iter(),
+            FunctionColumn::External(_) => panic!("iter_local called on external column"),
+        }
+    }
+
+    /// Iterate over external values (panics if local)
+    pub fn iter_external(&self) -> impl Iterator<Item = &OptLuid> {
+        match self {
+            FunctionColumn::External(v) => v.iter(),
+            FunctionColumn::Local(_) => panic!("iter_external called on local column"),
+        }
+    }
+
+    /// Get as local column (returns None if external)
+    pub fn as_local(&self) -> Option<&Vec<OptSlid>> {
+        match self {
+            FunctionColumn::Local(v) => Some(v),
+            FunctionColumn::External(_) => None,
+        }
+    }
+
+    /// Get as mutable local column (returns None if external)
+    pub fn as_local_mut(&mut self) -> Option<&mut Vec<OptSlid>> {
+        match self {
+            FunctionColumn::Local(v) => Some(v),
+            FunctionColumn::External(_) => None,
+        }
+    }
+}
 
 /// A structure: interpretation of a signature in FinSet
 ///
@@ -403,16 +487,28 @@ pub struct Structure {
     /// Carriers: SortId → RoaringTreemap of Slids in that sort
     pub carriers: Vec<RoaringTreemap>,
 
-    /// Functions: FuncId → Vec indexed by domain SortSlid
-    /// Each Vec[sort_slid] contains the codomain Slid (or None if undefined)
-    /// Using OptSlid (Option<NonMaxUsize>) which is same size as usize
-    pub functions: Vec<Vec<OptSlid>>,
+    /// Functions: FuncId → FunctionColumn
+    /// Each column is indexed by domain SortSlid and contains codomain references.
+    /// Local codomains use Slid; external codomains (from parents) use Luid.
+    pub functions: Vec<FunctionColumn>,
 
     /// Relations: RelId → VecRelation (append-only tuple log + membership bitmap)
     pub relations: Vec<VecRelation>,
 
+    /// Parent instances for parameterized theories (virtual import).
+    /// Maps param name → UUID of immutable parent instance.
+    /// E.g., for `problem0 : ExampleNet ReachabilityProblem`, this contains {"N": uuid_of_ExampleNet}
+    pub parents: HashMap<String, Uuid>,
+
     /// Nested structures (for instance-valued fields)
     pub nested: HashMap<Luid, Structure>,
+}
+
+/// Function init info: domain sort ID and whether codomain is external
+#[derive(Clone, Debug)]
+pub struct FunctionInitInfo {
+    pub domain_sort_id: Option<SortId>,
+    pub codomain_is_external: bool,
 }
 
 impl Structure {
@@ -428,6 +524,7 @@ impl Structure {
             carriers: vec![RoaringTreemap::new(); num_sorts],
             functions: Vec::new(), // Initialized later via init_functions()
             relations: Vec::new(), // Initialized later via init_relations()
+            parents: HashMap::new(),
             nested: HashMap::new(),
         }
     }
@@ -442,13 +539,35 @@ impl Structure {
 
     /// Initialize function storage based on domain carrier sizes.
     /// Must be called after all elements are added.
+    ///
+    /// For simple (non-parameterized) instances, use `init_functions_local()`.
+    /// For parameterized instances with external codomains, use this method.
+    pub fn init_functions_ext(&mut self, func_info: &[FunctionInitInfo]) {
+        self.functions = func_info
+            .iter()
+            .map(|info| {
+                let size = match info.domain_sort_id {
+                    Some(sort_id) => self.carrier_size(sort_id),
+                    None => 0, // Product domains deferred
+                };
+                if info.codomain_is_external {
+                    FunctionColumn::External(vec![None; size])
+                } else {
+                    FunctionColumn::Local(vec![None; size])
+                }
+            })
+            .collect();
+    }
+
+    /// Initialize function storage for simple (non-parameterized) instances.
+    /// All codomains are assumed to be local.
     pub fn init_functions(&mut self, domain_sort_ids: &[Option<SortId>]) {
         self.functions = domain_sort_ids
             .iter()
             .map(|opt_sort_id| {
                 match opt_sort_id {
-                    Some(sort_id) => vec![None; self.carrier_size(*sort_id)],
-                    None => Vec::new(), // Product domains deferred
+                    Some(sort_id) => FunctionColumn::Local(vec![None; self.carrier_size(*sort_id)]),
+                    None => FunctionColumn::Local(Vec::new()), // Product domains deferred
                 }
             })
             .collect();
@@ -530,7 +649,7 @@ impl Structure {
         (slid, luid)
     }
 
-    /// Define a function value: f(domain_elem) = codomain_elem
+    /// Define a function value for a local codomain (Slid → Slid).
     /// Uses SortSlid indexing into the columnar function storage.
     pub fn define_function(
         &mut self,
@@ -540,21 +659,72 @@ impl Structure {
     ) -> Result<(), String> {
         let domain_sort_slid = self.sort_local_id(domain_slid);
 
-        if let Some(existing) = get_slid(self.functions[func_id][domain_sort_slid.index()])
-            && existing != codomain_slid {
-                return Err(format!(
-                    "conflicting definition: func {}(slid {}) already defined as slid {}, cannot redefine as slid {}",
-                    func_id, domain_slid, existing, codomain_slid
-                ));
+        match &mut self.functions[func_id] {
+            FunctionColumn::Local(col) => {
+                if let Some(existing) = get_slid(col[domain_sort_slid.index()])
+                    && existing != codomain_slid
+                {
+                    return Err(format!(
+                        "conflicting definition: func {}(slid {}) already defined as slid {}, cannot redefine as slid {}",
+                        func_id, domain_slid, existing, codomain_slid
+                    ));
+                }
+                col[domain_sort_slid.index()] = some_slid(codomain_slid);
+                Ok(())
             }
-
-        self.functions[func_id][domain_sort_slid.index()] = some_slid(codomain_slid);
-        Ok(())
+            FunctionColumn::External(_) => Err(format!(
+                "func {} has external codomain, use define_function_ext",
+                func_id
+            )),
+        }
     }
 
-    /// Get a function value by SortSlid index (for iteration/lookup)
+    /// Define a function value for an external codomain (Slid → Luid).
+    /// Used for functions referencing parent instance elements.
+    pub fn define_function_ext(
+        &mut self,
+        func_id: FuncId,
+        domain_slid: Slid,
+        codomain_luid: Luid,
+    ) -> Result<(), String> {
+        use crate::id::{get_luid, some_luid};
+        let domain_sort_slid = self.sort_local_id(domain_slid);
+
+        match &mut self.functions[func_id] {
+            FunctionColumn::External(col) => {
+                if let Some(existing) = get_luid(col[domain_sort_slid.index()])
+                    && existing != codomain_luid
+                {
+                    return Err(format!(
+                        "conflicting definition: func {}(slid {}) already defined as luid {}, cannot redefine as luid {}",
+                        func_id, domain_slid, existing, codomain_luid
+                    ));
+                }
+                col[domain_sort_slid.index()] = some_luid(codomain_luid);
+                Ok(())
+            }
+            FunctionColumn::Local(_) => Err(format!(
+                "func {} has local codomain, use define_function",
+                func_id
+            )),
+        }
+    }
+
+    /// Get function value for local codomain.
     pub fn get_function(&self, func_id: FuncId, domain_sort_slid: SortSlid) -> Option<Slid> {
-        get_slid(self.functions[func_id][domain_sort_slid.index()])
+        match &self.functions[func_id] {
+            FunctionColumn::Local(col) => get_slid(col[domain_sort_slid.index()]),
+            FunctionColumn::External(_) => None,
+        }
+    }
+
+    /// Get function value for external codomain (returns Luid).
+    pub fn get_function_ext(&self, func_id: FuncId, domain_sort_slid: SortSlid) -> Option<Luid> {
+        use crate::id::get_luid;
+        match &self.functions[func_id] {
+            FunctionColumn::External(col) => get_luid(col[domain_sort_slid.index()]),
+            FunctionColumn::Local(_) => None,
+        }
     }
 
     /// Get the sort-local index for an element (0-based position within its carrier).

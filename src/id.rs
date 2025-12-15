@@ -95,3 +95,19 @@ pub fn some_slid(slid: Slid) -> OptSlid {
 pub fn get_slid(opt: OptSlid) -> Option<Slid> {
     opt.map(|n| Slid::from_usize(n.get()))
 }
+
+/// A Luid that can be stored in Option without doubling size.
+/// Analogous to OptSlid but for cross-instance references.
+pub type OptLuid = Option<NonMaxUsize>;
+
+/// Convert a Luid to OptLuid.
+#[inline]
+pub fn some_luid(luid: Luid) -> OptLuid {
+    NonMaxUsize::new(luid.index())
+}
+
+/// Extract a Luid from OptLuid.
+#[inline]
+pub fn get_luid(opt: OptLuid) -> Option<Luid> {
+    opt.map(|n| Luid::from_usize(n.get()))
+}
