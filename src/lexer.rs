@@ -17,6 +17,8 @@ pub enum Token {
     Prop,
     Forall,
     Exists,
+    True,
+    False,
 
     // Identifiers
     Ident(String),
@@ -51,6 +53,8 @@ impl std::fmt::Display for Token {
             Token::Prop => write!(f, "Prop"),
             Token::Forall => write!(f, "forall"),
             Token::Exists => write!(f, "exists"),
+            Token::True => write!(f, "true"),
+            Token::False => write!(f, "false"),
             Token::Ident(s) => write!(f, "{}", s),
             Token::LBrace => write!(f, "{{"),
             Token::RBrace => write!(f, "}}"),
@@ -86,6 +90,8 @@ pub fn lexer() -> impl Parser<char, Vec<(Token, Span)>, Error = Simple<char>> {
         "Prop" => Token::Prop,
         "forall" => Token::Forall,
         "exists" => Token::Exists,
+        "true" => Token::True,
+        "false" => Token::False,
         _ => Token::Ident(s),
     });
 

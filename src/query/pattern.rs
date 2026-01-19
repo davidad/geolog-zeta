@@ -1,0 +1,124 @@
+//! Pattern-based query representation.
+//!
+//! This represents the common pattern from bootstrap_queries:
+//! "find all X : Sort where X.func₁ = Y₁ ∧ X.func₂ = Y₂ ∧ ..."
+//!
+//! In query semantics terms, this is an ∀-style query with an open result sort:
+//! ```text
+//! theory Query extends Base {
+//!     Result : Sort;                           // Open (no constants)
+//!     elem : Result → Sort;                    // Projection to base
+//!     axiom { r : Result ⊢ elem(r).func₁ = Y₁ ∧ elem(r).func₂ = Y₂ }
+//! }
+//! ```
+//!
+//! The unique maximal element (cofree model) is the set of all elements
+//! satisfying the constraint.
+
+use crate::id::Slid;
+
+/// A pattern query: find all elements of a sort matching constraints.
+///
+/// Equivalent to SQL: `SELECT elem FROM Sort WHERE func₁(elem) = v₁ AND ...`
+///
+/// Uses `usize` for sort/function IDs (internal indices) and `Slid` for
+/// element values (external references).
+#[derive(Debug, Clone)]
+pub struct Pattern {
+    /// The sort to scan (sort index)
+    pub source_sort: usize,
+    /// Constraints: each is (func_index, expected_value)
+    pub constraints: Vec<Constraint>,
+    /// What to project/return
+    pub projection: Projection,
+}
+
+/// A constraint: func(elem) must equal expected_value
+#[derive(Debug, Clone)]
+pub struct Constraint {
+    /// Function index to apply to the scanned element
+    pub func: usize,
+    /// Expected value (must match)
+    pub expected: Slid,
+}
+
+/// What to return from the query
+#[derive(Debug, Clone)]
+pub enum Projection {
+    /// Return the element itself
+    Element,
+    /// Return the value of a function applied to the element
+    Func(usize),
+    /// Return a tuple of function values
+    Tuple(Vec<usize>),
+}
+
+impl Pattern {
+    /// Create a new pattern query.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// // Find all Srt where Srt.theory == theory_slid
+    /// let pattern = Pattern::new(store.sort_ids.srt.unwrap())
+    ///     .filter(store.func_ids.srt_theory.unwrap(), theory_slid);
+    /// ```
+    pub fn new(source_sort: usize) -> Self {
+        Self {
+            source_sort,
+            constraints: Vec::new(),
+            projection: Projection::Element,
+        }
+    }
+
+    /// Add a constraint: func(elem) must equal value.
+    pub fn filter(mut self, func: usize, value: Slid) -> Self {
+        self.constraints.push(Constraint {
+            func,
+            expected: value,
+        });
+        self
+    }
+
+    /// Project a function value instead of the element.
+    pub fn project(mut self, func: usize) -> Self {
+        self.projection = Projection::Func(func);
+        self
+    }
+
+    /// Project a tuple of function values.
+    pub fn project_tuple(mut self, funcs: Vec<usize>) -> Self {
+        self.projection = Projection::Tuple(funcs);
+        self
+    }
+}
+
+/// Builder for more complex queries (joins, etc.)
+///
+/// This is a stepping stone toward full theory-extension queries.
+#[derive(Debug, Clone)]
+pub struct QueryBuilder {
+    /// Patterns to match (implicit conjunction)
+    patterns: Vec<Pattern>,
+}
+
+impl QueryBuilder {
+    pub fn new() -> Self {
+        Self { patterns: Vec::new() }
+    }
+
+    pub fn scan(mut self, pattern: Pattern) -> Self {
+        self.patterns.push(pattern);
+        self
+    }
+
+    pub fn patterns(&self) -> &[Pattern] {
+        &self.patterns
+    }
+}
+
+impl Default for QueryBuilder {
+    fn default() -> Self {
+        Self::new()
+    }
+}

@@ -225,7 +225,9 @@ fn formula() -> impl Parser<Token, Formula, Error = Simple<Token>> + Clone {
             .then(type_expr())
             .map(|(names, ty)| QuantifiedVar { names, ty });
 
-        // Existential: exists x : T. phi
+        // Existential: exists x : T. phi1, phi2, ...
+        // The body is a conjunction of formulas (comma-separated).
+        // This is standard geometric logic syntax.
         let exists = just(Token::Exists)
             .ignore_then(
                 quantified_var
@@ -234,8 +236,15 @@ fn formula() -> impl Parser<Token, Formula, Error = Simple<Token>> + Clone {
                     .at_least(1),
             )
             .then_ignore(just(Token::Dot))
-            .then(formula.clone())
-            .map(|(vars, body)| Formula::Exists(vars, Box::new(body)));
+            .then(formula.clone().separated_by(just(Token::Comma)).at_least(1))
+            .map(|(vars, body_conjuncts)| {
+                let body = if body_conjuncts.len() == 1 {
+                    body_conjuncts.into_iter().next().unwrap()
+                } else {
+                    Formula::And(body_conjuncts)
+                };
+                Formula::Exists(vars, Box::new(body))
+            });
 
         // Parenthesized formula
         let paren_formula = formula
@@ -267,7 +276,11 @@ fn formula() -> impl Parser<Token, Formula, Error = Simple<Token>> + Clone {
                 }
             });
 
-        let atom = choice((exists, paren_formula, term_based));
+        // Literals
+        let true_lit = just(Token::True).to(Formula::True);
+        let false_lit = just(Token::False).to(Formula::False);
+
+        let atom = choice((true_lit, false_lit, exists, paren_formula, term_based));
 
         // Disjunction: phi \/ psi
         atom.clone()
@@ -392,16 +405,34 @@ fn theory_decl() -> impl Parser<Token, TheoryDecl, Error = Simple<Token>> + Clon
         .repeated()
         .map(|groups| groups.into_iter().flatten().collect());
 
+    // Optional `extends ParentTheory`
+    let extends_clause = ident()
+        .try_map(|s, span| {
+            if s == "extends" {
+                Ok(())
+            } else {
+                Err(Simple::custom(span, "expected 'extends'"))
+            }
+        })
+        .ignore_then(path())
+        .or_not();
+
     just(Token::Theory)
         .ignore_then(params)
         .then(ident())
+        .then(extends_clause)
         .then(
             theory_item()
                 .map_with_span(|item, span| Spanned::new(item, to_span(span)))
                 .repeated()
                 .delimited_by(just(Token::LBrace), just(Token::RBrace)),
         )
-        .map(|((params, name), body)| TheoryDecl { params, name, body })
+        .map(|(((params, name), extends), body)| TheoryDecl {
+            params,
+            name,
+            extends,
+            body,
+        })
 }
 
 fn instance_item() -> impl Parser<Token, InstanceItem, Error = Simple<Token>> + Clone {

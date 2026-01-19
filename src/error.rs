@@ -139,6 +139,8 @@ fn format_token(token: &Token) -> String {
         Token::Prop => "Prop".to_string(),
         Token::Forall => "forall".to_string(),
         Token::Exists => "exists".to_string(),
+        Token::True => "true".to_string(),
+        Token::False => "false".to_string(),
         Token::Ident(s) => s.clone(),
         Token::LBrace => "{".to_string(),
         Token::RBrace => "}".to_string(),

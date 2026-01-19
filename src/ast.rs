@@ -86,10 +86,13 @@ pub enum Declaration {
 
 /// A theory declaration
 /// e.g., `theory (N : PetriNet instance) Marking { ... }`
+/// or `theory Foo extends Bar { ... }`
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TheoryDecl {
     pub params: Vec<Param>,
     pub name: String,
+    /// Optional parent theory to extend
+    pub extends: Option<Path>,
     pub body: Vec<Spanned<TheoryItem>>,
 }
 
@@ -190,6 +193,9 @@ pub enum Term {
 /// Formulas (geometric logic)
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Formula {
+    /// False/Bottom (⊥): inconsistency, empty disjunction
+    False,
+
     /// Relation application: `rel(term)` or `rel([field: value, ...])`
     RelApp(String, Term),
 
@@ -207,9 +213,6 @@ pub enum Formula {
 
     /// Truth
     True,
-
-    /// Falsity (for completeness, though geometric logic rarely uses it)
-    False,
 }
 
 /// An instance declaration

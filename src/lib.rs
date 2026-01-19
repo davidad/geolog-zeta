@@ -15,6 +15,7 @@ pub mod overlay;
 pub mod parser;
 pub mod patch;
 pub mod pretty;
+pub mod query;
 pub mod repl;
 pub mod serialize;
 pub mod solver;

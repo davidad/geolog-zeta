@@ -1,0 +1,453 @@
+// RelAlgIR: String Diagram IR for Relational Algebra
+//
+// Query plans are instances of this theory. The string diagram structure:
+// - Wire elements are edges (carrying typed data streams)
+// - Op elements are boxes (transforming data)
+// - Composition is implicit via wire sharing (same Wire as output of one Op and input of another)
+// - Cycles are allowed; well-formedness axioms ensure they contain delays
+//
+// See loose_thoughts/2026-01-19_19:45_relalg_ir_design.md for full design.
+//
+// NOTE: Once `extends` is implemented in the elaborator, this theory should
+// extend GeologMeta to get Srt, Func, Elem, etc. For now, we define them locally.
+
+theory RelAlgIR {
+
+  // ============================================================
+  // EXTERNAL REFERENCES (from GeologMeta - defined locally for now)
+  // ============================================================
+  // These should come from GeologMeta via `extends` once that's implemented.
+
+  Srt : Sort;   // Sort elements from the target theory
+  Func : Sort;  // Function elements from the target theory
+  Elem : Sort;  // Element references in the target instance
+
+  // ============================================================
+  // SCHEMAS (types of data on wires)
+  // ============================================================
+  // Schemas describe the "shape" of tuples flowing on a wire.
+  // They mirror DSort but are specific to the relational algebra context.
+
+  Schema : Sort;
+
+  // Unit schema: empty tuple (for sources with no input)
+  UnitSchema : Sort;
+  UnitSchema/schema : UnitSchema -> Schema;
+
+  // Base schema: single column of a given sort
+  BaseSchema : Sort;
+  BaseSchema/schema : BaseSchema -> Schema;
+  BaseSchema/srt : BaseSchema -> Srt;
+
+  // Product schema: S ⊗ T (concatenation of columns)
+  ProdSchema : Sort;
+  ProdSchema/schema : ProdSchema -> Schema;
+  ProdSchema/left : ProdSchema -> Schema;
+  ProdSchema/right : ProdSchema -> Schema;
+
+  // ============================================================
+  // WIRES (edges in the string diagram)
+  // ============================================================
+  // Wires are first-class citizens. Each wire carries a stream of
+  // tuples with a given schema. Composition is encoded by the same
+  // Wire appearing as output of one Op and input of another.
+
+  Wire : Sort;
+  Wire/schema : Wire -> Schema;
+
+  // ============================================================
+  // OPERATIONS (boxes in the string diagram)
+  // ============================================================
+
+  Op : Sort;
+
+  // ------------------------------------------------------------
+  // Sources (no input wires)
+  // ------------------------------------------------------------
+
+  // Scan: emit all elements of a sort
+  // () → BaseSchema(srt)
+  ScanOp : Sort;
+  ScanOp/op : ScanOp -> Op;
+  ScanOp/srt : ScanOp -> Srt;
+  ScanOp/out : ScanOp -> Wire;
+
+  // Constant: emit a single known element
+  // () → BaseSchema(elem's sort)
+  ConstOp : Sort;
+  ConstOp/op : ConstOp -> Op;
+  ConstOp/elem : ConstOp -> Elem;
+  ConstOp/out : ConstOp -> Wire;
+
+  // Empty: emit nothing (identity for union)
+  // () → S
+  EmptyOp : Sort;
+  EmptyOp/op : EmptyOp -> Op;
+  EmptyOp/out : EmptyOp -> Wire;
+
+  // ------------------------------------------------------------
+  // Unary operations (one input wire, one output wire)
+  // ------------------------------------------------------------
+
+  // Filter: keep tuples satisfying a predicate
+  // S → S
+  FilterOp : Sort;
+  FilterOp/op : FilterOp -> Op;
+  FilterOp/in : FilterOp -> Wire;
+  FilterOp/out : FilterOp -> Wire;
+  FilterOp/pred : FilterOp -> Pred;
+
+  // Project: select and reorder columns
+  // S → T
+  ProjectOp : Sort;
+  ProjectOp/op : ProjectOp -> Op;
+  ProjectOp/in : ProjectOp -> Wire;
+  ProjectOp/out : ProjectOp -> Wire;
+  ProjectOp/mapping : ProjectOp -> ProjMapping;
+
+  // Distinct: deduplicate tuples (collapse multiplicities to 0/1)
+  // S → S
+  DistinctOp : Sort;
+  DistinctOp/op : DistinctOp -> Op;
+  DistinctOp/in : DistinctOp -> Wire;
+  DistinctOp/out : DistinctOp -> Wire;
+
+  // Negate: flip multiplicities (for computing differences)
+  // S → S
+  NegateOp : Sort;
+  NegateOp/op : NegateOp -> Op;
+  NegateOp/in : NegateOp -> Wire;
+  NegateOp/out : NegateOp -> Wire;
+
+  // Apply function: add a column by applying a function
+  // S → S ⊗ BaseSchema(cod)
+  ApplyOp : Sort;
+  ApplyOp/op : ApplyOp -> Op;
+  ApplyOp/in : ApplyOp -> Wire;
+  ApplyOp/out : ApplyOp -> Wire;
+  ApplyOp/func : ApplyOp -> Func;
+  ApplyOp/arg_col : ApplyOp -> ColRef;
+
+  // ------------------------------------------------------------
+  // Binary operations (two input wires, one output wire)
+  // ------------------------------------------------------------
+
+  // Join: combine tuples from two sources where condition holds
+  // S × T → S ⊗ T (filtered)
+  JoinOp : Sort;
+  JoinOp/op : JoinOp -> Op;
+  JoinOp/left_in : JoinOp -> Wire;
+  JoinOp/right_in : JoinOp -> Wire;
+  JoinOp/out : JoinOp -> Wire;
+  JoinOp/cond : JoinOp -> JoinCond;
+
+  // Union: combine tuples from two sources (Z-set addition)
+  // S × S → S
+  UnionOp : Sort;
+  UnionOp/op : UnionOp -> Op;
+  UnionOp/left_in : UnionOp -> Wire;
+  UnionOp/right_in : UnionOp -> Wire;
+  UnionOp/out : UnionOp -> Wire;
+
+  // ------------------------------------------------------------
+  // DBSP Temporal Operators
+  // ------------------------------------------------------------
+  // These operate on streams over discrete time.
+  // They are essential for incremental computation and feedback loops.
+
+  // Delay: z⁻¹, output at time t is input at time t-1
+  // S → S
+  // IMPORTANT: Delays break instantaneous cycles, making feedback well-founded.
+  DelayOp : Sort;
+  DelayOp/op : DelayOp -> Op;
+  DelayOp/in : DelayOp -> Wire;
+  DelayOp/out : DelayOp -> Wire;
+
+  // Differentiate: δ = 1 - z⁻¹, compute changes since last timestep
+  // S → S (output is the delta/diff of input)
+  DiffOp : Sort;
+  DiffOp/op : DiffOp -> Op;
+  DiffOp/in : DiffOp -> Wire;
+  DiffOp/out : DiffOp -> Wire;
+
+  // Integrate: ∫ = Σ, accumulate all inputs over time
+  // S → S (output is running sum of all inputs)
+  // NOTE: Has implicit delay semantics, also breaks instantaneous cycles.
+  IntegrateOp : Sort;
+  IntegrateOp/op : IntegrateOp -> Op;
+  IntegrateOp/in : IntegrateOp -> Wire;
+  IntegrateOp/out : IntegrateOp -> Wire;
+
+  // ============================================================
+  // PREDICATES (for filter conditions)
+  // ============================================================
+
+  Pred : Sort;
+
+  // True: always satisfied
+  TruePred : Sort;
+  TruePred/pred : TruePred -> Pred;
+
+  // False: never satisfied
+  FalsePred : Sort;
+  FalsePred/pred : FalsePred -> Pred;
+
+  // Column equality: col_i = col_j
+  ColEqPred : Sort;
+  ColEqPred/pred : ColEqPred -> Pred;
+  ColEqPred/left : ColEqPred -> ColRef;
+  ColEqPred/right : ColEqPred -> ColRef;
+
+  // Constant equality: col = constant element
+  ConstEqPred : Sort;
+  ConstEqPred/pred : ConstEqPred -> Pred;
+  ConstEqPred/col : ConstEqPred -> ColRef;
+  ConstEqPred/val : ConstEqPred -> Elem;
+
+  // Function result equality: f(col_arg) = col_result
+  FuncEqPred : Sort;
+  FuncEqPred/pred : FuncEqPred -> Pred;
+  FuncEqPred/func : FuncEqPred -> Func;
+  FuncEqPred/arg : FuncEqPred -> ColRef;
+  FuncEqPred/result : FuncEqPred -> ColRef;
+
+  // Conjunction: p ∧ q
+  AndPred : Sort;
+  AndPred/pred : AndPred -> Pred;
+  AndPred/left : AndPred -> Pred;
+  AndPred/right : AndPred -> Pred;
+
+  // Disjunction: p ∨ q
+  OrPred : Sort;
+  OrPred/pred : OrPred -> Pred;
+  OrPred/left : OrPred -> Pred;
+  OrPred/right : OrPred -> Pred;
+
+  // ============================================================
+  // JOIN CONDITIONS
+  // ============================================================
+
+  JoinCond : Sort;
+
+  // Equijoin: left.col_i = right.col_j
+  EquiJoinCond : Sort;
+  EquiJoinCond/cond : EquiJoinCond -> JoinCond;
+  EquiJoinCond/left_col : EquiJoinCond -> ColRef;
+  EquiJoinCond/right_col : EquiJoinCond -> ColRef;
+
+  // Cross join: cartesian product (no condition)
+  CrossJoinCond : Sort;
+  CrossJoinCond/cond : CrossJoinCond -> JoinCond;
+
+  // General predicate join
+  PredJoinCond : Sort;
+  PredJoinCond/cond : PredJoinCond -> JoinCond;
+  PredJoinCond/pred : PredJoinCond -> Pred;
+
+  // ============================================================
+  // COLUMN REFERENCES
+  // ============================================================
+  // References to specific columns within a schema.
+  // Used in predicates and projections.
+
+  ColRef : Sort;
+  ColRef/wire : ColRef -> Wire;     // which wire's schema we're referencing
+  ColRef/path : ColRef -> ColPath;  // path into the schema
+
+  // Column path: navigate into nested product schemas
+  ColPath : Sort;
+
+  // Here: we're at the target
+  HerePath : Sort;
+  HerePath/path : HerePath -> ColPath;
+
+  // Left: descend into left of product
+  LeftPath : Sort;
+  LeftPath/path : LeftPath -> ColPath;
+  LeftPath/rest : LeftPath -> ColPath;
+
+  // Right: descend into right of product
+  RightPath : Sort;
+  RightPath/path : RightPath -> ColPath;
+  RightPath/rest : RightPath -> ColPath;
+
+  // ============================================================
+  // PROJECTION MAPPINGS
+  // ============================================================
+  // Specifies how to construct output columns from input columns.
+
+  ProjMapping : Sort;
+
+  // Projection entries (which input columns become which output columns)
+  ProjEntry : Sort;
+  ProjEntry/mapping : ProjEntry -> ProjMapping;
+  ProjEntry/source : ProjEntry -> ColRef;
+  ProjEntry/target_path : ProjEntry -> ColPath;
+
+  // ============================================================
+  // REACHABILITY RELATIONS (for cycle analysis)
+  // ============================================================
+
+  // w1 reaches w2 via some path through operations
+  reaches : [from: Wire, to: Wire] -> Prop;
+
+  // Reachability through each operation type
+  ax/reaches/scan : forall s : ScanOp, w : Wire.
+    s ScanOp/out = w |- [from: w, to: w] reaches;  // trivial self-reach for source
+
+  ax/reaches/filter : forall f : FilterOp, w1 : Wire, w2 : Wire.
+    f FilterOp/in = w1, f FilterOp/out = w2 |- [from: w1, to: w2] reaches;
+
+  ax/reaches/project : forall p : ProjectOp, w1 : Wire, w2 : Wire.
+    p ProjectOp/in = w1, p ProjectOp/out = w2 |- [from: w1, to: w2] reaches;
+
+  ax/reaches/distinct : forall d : DistinctOp, w1 : Wire, w2 : Wire.
+    d DistinctOp/in = w1, d DistinctOp/out = w2 |- [from: w1, to: w2] reaches;
+
+  ax/reaches/negate : forall n : NegateOp, w1 : Wire, w2 : Wire.
+    n NegateOp/in = w1, n NegateOp/out = w2 |- [from: w1, to: w2] reaches;
+
+  ax/reaches/apply : forall a : ApplyOp, w1 : Wire, w2 : Wire.
+    a ApplyOp/in = w1, a ApplyOp/out = w2 |- [from: w1, to: w2] reaches;
+
+  ax/reaches/join/left : forall j : JoinOp, w1 : Wire, w2 : Wire.
+    j JoinOp/left_in = w1, j JoinOp/out = w2 |- [from: w1, to: w2] reaches;
+
+  ax/reaches/join/right : forall j : JoinOp, w1 : Wire, w2 : Wire.
+    j JoinOp/right_in = w1, j JoinOp/out = w2 |- [from: w1, to: w2] reaches;
+
+  ax/reaches/union/left : forall u : UnionOp, w1 : Wire, w2 : Wire.
+    u UnionOp/left_in = w1, u UnionOp/out = w2 |- [from: w1, to: w2] reaches;
+
+  ax/reaches/union/right : forall u : UnionOp, w1 : Wire, w2 : Wire.
+    u UnionOp/right_in = w1, u UnionOp/out = w2 |- [from: w1, to: w2] reaches;
+
+  ax/reaches/delay : forall d : DelayOp, w1 : Wire, w2 : Wire.
+    d DelayOp/in = w1, d DelayOp/out = w2 |- [from: w1, to: w2] reaches;
+
+  ax/reaches/diff : forall d : DiffOp, w1 : Wire, w2 : Wire.
+    d DiffOp/in = w1, d DiffOp/out = w2 |- [from: w1, to: w2] reaches;
+
+  ax/reaches/integrate : forall i : IntegrateOp, w1 : Wire, w2 : Wire.
+    i IntegrateOp/in = w1, i IntegrateOp/out = w2 |- [from: w1, to: w2] reaches;
+
+  // Transitive closure
+  ax/reaches/trans : forall w1 : Wire, w2 : Wire, w3 : Wire.
+    [from: w1, to: w2] reaches, [from: w2, to: w3] reaches |-
+      [from: w1, to: w3] reaches;
+
+  // ============================================================
+  // INSTANTANEOUS REACHABILITY (paths without delay)
+  // ============================================================
+  // This relation tracks paths that do NOT go through DelayOp or IntegrateOp.
+  // Used to detect "bad" feedback loops that would require instantaneous computation.
+
+  reaches_instant : [from: Wire, to: Wire] -> Prop;
+
+  // Same axioms as reaches, EXCEPT for DelayOp and IntegrateOp
+  ax/reaches_instant/filter : forall f : FilterOp, w1 : Wire, w2 : Wire.
+    f FilterOp/in = w1, f FilterOp/out = w2 |- [from: w1, to: w2] reaches_instant;
+
+  ax/reaches_instant/project : forall p : ProjectOp, w1 : Wire, w2 : Wire.
+    p ProjectOp/in = w1, p ProjectOp/out = w2 |- [from: w1, to: w2] reaches_instant;
+
+  ax/reaches_instant/distinct : forall d : DistinctOp, w1 : Wire, w2 : Wire.
+    d DistinctOp/in = w1, d DistinctOp/out = w2 |- [from: w1, to: w2] reaches_instant;
+
+  ax/reaches_instant/negate : forall n : NegateOp, w1 : Wire, w2 : Wire.
+    n NegateOp/in = w1, n NegateOp/out = w2 |- [from: w1, to: w2] reaches_instant;
+
+  ax/reaches_instant/apply : forall a : ApplyOp, w1 : Wire, w2 : Wire.
+    a ApplyOp/in = w1, a ApplyOp/out = w2 |- [from: w1, to: w2] reaches_instant;
+
+  ax/reaches_instant/join/left : forall j : JoinOp, w1 : Wire, w2 : Wire.
+    j JoinOp/left_in = w1, j JoinOp/out = w2 |- [from: w1, to: w2] reaches_instant;
+
+  ax/reaches_instant/join/right : forall j : JoinOp, w1 : Wire, w2 : Wire.
+    j JoinOp/right_in = w1, j JoinOp/out = w2 |- [from: w1, to: w2] reaches_instant;
+
+  ax/reaches_instant/union/left : forall u : UnionOp, w1 : Wire, w2 : Wire.
+    u UnionOp/left_in = w1, u UnionOp/out = w2 |- [from: w1, to: w2] reaches_instant;
+
+  ax/reaches_instant/union/right : forall u : UnionOp, w1 : Wire, w2 : Wire.
+    u UnionOp/right_in = w1, u UnionOp/out = w2 |- [from: w1, to: w2] reaches_instant;
+
+  // NOTE: No axioms for DelayOp or IntegrateOp!
+  // They break instantaneous reachability.
+
+  // DiffOp is instantaneous (it uses delay internally but outputs immediately)
+  ax/reaches_instant/diff : forall d : DiffOp, w1 : Wire, w2 : Wire.
+    d DiffOp/in = w1, d DiffOp/out = w2 |- [from: w1, to: w2] reaches_instant;
+
+  // Transitive closure
+  ax/reaches_instant/trans : forall w1 : Wire, w2 : Wire, w3 : Wire.
+    [from: w1, to: w2] reaches_instant, [from: w2, to: w3] reaches_instant |-
+      [from: w1, to: w3] reaches_instant;
+
+  // ============================================================
+  // WELL-FORMEDNESS: NO INSTANTANEOUS CYCLES
+  // ============================================================
+  // Every cycle must contain at least one DelayOp or IntegrateOp.
+  // This ensures feedback loops are computable via iteration.
+
+  ax/wf/no_instant_cycle : forall w : Wire.
+    [from: w, to: w] reaches_instant |- false;
+
+  // ============================================================
+  // WELL-FORMEDNESS: SCHEMA CONSISTENCY
+  // ============================================================
+  // Operations must connect wires with compatible schemas.
+
+  // Filter preserves schema
+  ax/wf/filter_schema : forall f : FilterOp, w1 : Wire, w2 : Wire.
+    f FilterOp/in = w1, f FilterOp/out = w2 |-
+      w1 Wire/schema = w2 Wire/schema;
+
+  // Distinct preserves schema
+  ax/wf/distinct_schema : forall d : DistinctOp, w1 : Wire, w2 : Wire.
+    d DistinctOp/in = w1, d DistinctOp/out = w2 |-
+      w1 Wire/schema = w2 Wire/schema;
+
+  // Negate preserves schema
+  ax/wf/negate_schema : forall n : NegateOp, w1 : Wire, w2 : Wire.
+    n NegateOp/in = w1, n NegateOp/out = w2 |-
+      w1 Wire/schema = w2 Wire/schema;
+
+  // Delay preserves schema
+  ax/wf/delay_schema : forall d : DelayOp, w1 : Wire, w2 : Wire.
+    d DelayOp/in = w1, d DelayOp/out = w2 |-
+      w1 Wire/schema = w2 Wire/schema;
+
+  // Diff preserves schema
+  ax/wf/diff_schema : forall d : DiffOp, w1 : Wire, w2 : Wire.
+    d DiffOp/in = w1, d DiffOp/out = w2 |-
+      w1 Wire/schema = w2 Wire/schema;
+
+  // Integrate preserves schema
+  ax/wf/integrate_schema : forall i : IntegrateOp, w1 : Wire, w2 : Wire.
+    i IntegrateOp/in = w1, i IntegrateOp/out = w2 |-
+      w1 Wire/schema = w2 Wire/schema;
+
+  // Union requires same schema on both inputs
+  ax/wf/union_schema_left : forall u : UnionOp, wl : Wire, wr : Wire, wo : Wire.
+    u UnionOp/left_in = wl, u UnionOp/right_in = wr, u UnionOp/out = wo |-
+      wl Wire/schema = wo Wire/schema;
+
+  ax/wf/union_schema_right : forall u : UnionOp, wl : Wire, wr : Wire, wo : Wire.
+    u UnionOp/left_in = wl, u UnionOp/right_in = wr, u UnionOp/out = wo |-
+      wr Wire/schema = wo Wire/schema;
+
+  // Scan output schema must be BaseSchema of the scanned sort
+  // (This requires existential in conclusion, which geometric logic supports)
+  ax/wf/scan_schema : forall s : ScanOp, srt : Srt, w : Wire.
+    s ScanOp/srt = srt, s ScanOp/out = w |-
+      exists bs : BaseSchema. bs BaseSchema/srt = srt, w Wire/schema = bs BaseSchema/schema;
+
+  // Join output schema is product of input schemas
+  ax/wf/join_schema : forall j : JoinOp, wl : Wire, wr : Wire, wo : Wire.
+    j JoinOp/left_in = wl, j JoinOp/right_in = wr, j JoinOp/out = wo |-
+      exists ps : ProdSchema.
+        ps ProdSchema/left = wl Wire/schema,
+        ps ProdSchema/right = wr Wire/schema,
+        wo Wire/schema = ps ProdSchema/schema;
+}
