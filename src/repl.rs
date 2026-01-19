@@ -75,14 +75,24 @@ impl ReplState {
         // Reconstruct theories from persisted GeologMeta
         let theories = store.reconstruct_all_theories();
 
-        // TODO: Reconstruct instances from Store's GeologMeta
-        // This requires building Structure objects from persisted Elem/FuncVal/RelTuple
-        // For now, instances need to be recreated each session.
+        // Reconstruct instances from persisted GeologMeta
+        let reconstructed = store.reconstruct_all_instances();
+        let instances: HashMap<String, InstanceEntry> = reconstructed
+            .into_iter()
+            .map(|(name, ri)| {
+                let mut entry = InstanceEntry::new(ri.structure, ri.theory_name);
+                // Populate element names
+                for (slid, elem_name) in ri.element_names {
+                    entry.register_element(elem_name, slid);
+                }
+                (name, entry)
+            })
+            .collect();
 
         Self {
             store,
             theories,
-            instances: HashMap::new(),
+            instances,
             input_buffer: String::new(),
             bracket_depth: 0,
         }
@@ -272,13 +282,28 @@ impl ReplState {
                         slid_counter += 1;
                     }
 
+                    // Register in Store and persist instance data
+                    if let Some((theory_slid, _)) = self.store.resolve_name(&theory_name) {
+                        let instance_slid = self.store.create_instance(&instance_name, theory_slid)?;
+
+                        // Build element name map (Slid -> String) for persistence
+                        let elem_names: HashMap<Slid, String> = entry
+                            .slid_to_name
+                            .iter()
+                            .map(|(&slid, name)| (slid, name.clone()))
+                            .collect();
+
+                        // Persist all instance data to GeologMeta
+                        self.store.persist_instance_data(
+                            instance_slid,
+                            theory_slid,
+                            &entry.structure,
+                            &elem_names,
+                        )?;
+                    }
+
                     // Store in transitional HashMap
                     self.instances.insert(instance_name.clone(), entry);
-
-                    // Also register in Store (need to find the theory slid)
-                    if let Some((theory_slid, _)) = self.store.resolve_name(&theory_name) {
-                        let _ = self.store.create_instance(&instance_name, theory_slid);
-                    }
 
                     results.push(ExecuteResult::Instance {
                         name: instance_name,

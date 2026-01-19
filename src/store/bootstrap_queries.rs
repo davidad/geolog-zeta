@@ -301,6 +301,42 @@ impl Store {
             .collect()
     }
 
+    /// Get all theories in GeologMeta (regardless of commit status).
+    ///
+    /// This is useful for reconstruction when loading from disk,
+    /// where we want to restore all data, not just committed data.
+    pub fn query_all_theories(&self) -> Vec<(String, Slid)> {
+        let Some(theory_sort) = self.sort_ids.theory else {
+            return vec![];
+        };
+
+        self.elements_of_sort(theory_sort)
+            .into_iter()
+            .map(|slid| {
+                let name = self.get_element_name(slid);
+                (name, slid)
+            })
+            .collect()
+    }
+
+    /// Get all instances in GeologMeta (regardless of commit status).
+    ///
+    /// This is useful for reconstruction when loading from disk,
+    /// where we want to restore all data, not just committed data.
+    pub fn query_all_instances(&self) -> Vec<(String, Slid)> {
+        let Some(instance_sort) = self.sort_ids.instance else {
+            return vec![];
+        };
+
+        self.elements_of_sort(instance_sort)
+            .into_iter()
+            .map(|slid| {
+                let name = self.get_element_name(slid);
+                (name, slid)
+            })
+            .collect()
+    }
+
     /// Reconstruct an ElaboratedTheory from persisted GeologMeta data.
     ///
     /// This is a bootstrap method that will be replaced by proper query engine.
@@ -361,11 +397,292 @@ impl Store {
         &self,
     ) -> std::collections::HashMap<String, std::rc::Rc<ElaboratedTheory>> {
         let mut result = std::collections::HashMap::new();
-        for (name, slid) in self.query_committed_theories() {
+        // Use query_all_theories to restore ALL theories from disk,
+        // not just committed ones
+        for (name, slid) in self.query_all_theories() {
             if let Some(theory) = self.reconstruct_theory(slid) {
                 result.insert(name, std::rc::Rc::new(theory));
             }
         }
         result
     }
+
+    // ========================================================================
+    // Instance queries and reconstruction
+    // ========================================================================
+
+    /// Query all elements belonging to an instance.
+    pub fn query_instance_elems(&self, instance_slid: Slid) -> Vec<ElemInfo> {
+        let Some(elem_sort) = self.sort_ids.elem else {
+            return vec![];
+        };
+        let Some(instance_func) = self.func_ids.elem_instance else {
+            return vec![];
+        };
+        let Some(sort_func) = self.func_ids.elem_sort else {
+            return vec![];
+        };
+
+        let mut result = Vec::new();
+        for elem_slid in self.elements_of_sort(elem_sort) {
+            if self.get_func(instance_func, elem_slid) == Some(instance_slid) {
+                let name = self.get_element_name(elem_slid);
+                let short_name = name.rsplit('/').next().unwrap_or(&name).to_string();
+                let srt_slid = self.get_func(sort_func, elem_slid);
+
+                result.push(ElemInfo {
+                    name: short_name,
+                    slid: elem_slid,
+                    srt_slid,
+                });
+            }
+        }
+        result
+    }
+
+    /// Query all function values in an instance.
+    pub fn query_instance_func_vals(&self, instance_slid: Slid) -> Vec<FuncValInfo> {
+        let Some(fv_sort) = self.sort_ids.func_val else {
+            return vec![];
+        };
+        let Some(instance_func) = self.func_ids.func_val_instance else {
+            return vec![];
+        };
+        let Some(func_func) = self.func_ids.func_val_func else {
+            return vec![];
+        };
+        let Some(arg_func) = self.func_ids.func_val_arg else {
+            return vec![];
+        };
+        let Some(result_func) = self.func_ids.func_val_result else {
+            return vec![];
+        };
+
+        let mut result = Vec::new();
+        for fv_slid in self.elements_of_sort(fv_sort) {
+            if self.get_func(instance_func, fv_slid) == Some(instance_slid) {
+                result.push(FuncValInfo {
+                    slid: fv_slid,
+                    func_slid: self.get_func(func_func, fv_slid),
+                    arg_slid: self.get_func(arg_func, fv_slid),
+                    result_slid: self.get_func(result_func, fv_slid),
+                });
+            }
+        }
+        result
+    }
+
+    /// Query all relation tuples in an instance.
+    pub fn query_instance_rel_tuples(&self, instance_slid: Slid) -> Vec<RelTupleInfo> {
+        let Some(rt_sort) = self.sort_ids.rel_tuple else {
+            return vec![];
+        };
+        let Some(instance_func) = self.func_ids.rel_tuple_instance else {
+            return vec![];
+        };
+        let Some(rel_func) = self.func_ids.rel_tuple_rel else {
+            return vec![];
+        };
+        let Some(arg_func) = self.func_ids.rel_tuple_arg else {
+            return vec![];
+        };
+
+        let mut result = Vec::new();
+        for rt_slid in self.elements_of_sort(rt_sort) {
+            if self.get_func(instance_func, rt_slid) == Some(instance_slid) {
+                result.push(RelTupleInfo {
+                    slid: rt_slid,
+                    rel_slid: self.get_func(rel_func, rt_slid),
+                    arg_slid: self.get_func(arg_func, rt_slid),
+                });
+            }
+        }
+        result
+    }
+
+    /// Reconstruct an instance (Structure + metadata) from persisted GeologMeta data.
+    pub fn reconstruct_instance(
+        &self,
+        instance_slid: Slid,
+    ) -> Option<ReconstructedInstance> {
+        let theory_slid = self.get_instance_theory(instance_slid)?;
+        let theory = self.reconstruct_theory(theory_slid)?;
+
+        let instance_name = self.get_element_name(instance_slid);
+        let num_sorts = theory.theory.signature.sorts.len();
+
+        // Query elements
+        let elem_infos = self.query_instance_elems(instance_slid);
+        let sort_infos = self.query_theory_sorts(theory_slid);
+
+        // Build Srt Slid -> sort index mapping
+        let srt_to_idx: HashMap<Slid, usize> = sort_infos
+            .iter()
+            .enumerate()
+            .map(|(idx, info)| (info.slid, idx))
+            .collect();
+
+        // Build Elem Slid -> Structure Slid mapping
+        // Structure Slids are assigned sequentially as we add elements
+        let mut elem_to_structure_slid: HashMap<Slid, Slid> = HashMap::new();
+        let mut structure = crate::core::Structure::new(num_sorts);
+        let mut element_names: HashMap<Slid, String> = HashMap::new();
+
+        // Group elements by sort and add to structure
+        for elem_info in &elem_infos {
+            if let Some(srt_slid) = elem_info.srt_slid {
+                if let Some(&sort_idx) = srt_to_idx.get(&srt_slid) {
+                    // Add element to structure
+                    let (structure_slid, _luid) =
+                        structure.add_element(&mut crate::universe::Universe::new(), sort_idx);
+                    elem_to_structure_slid.insert(elem_info.slid, structure_slid);
+                    element_names.insert(structure_slid, elem_info.name.clone());
+                }
+            }
+        }
+
+        // Build srt_slid -> sort index mapping for remapping DerivedSorts
+        let srt_slid_to_idx: HashMap<usize, usize> = sort_infos
+            .iter()
+            .enumerate()
+            .map(|(idx, info)| (info.slid.index(), idx))
+            .collect();
+
+        // Initialize functions
+        let func_infos = self.query_theory_funcs(theory_slid);
+        let domain_sort_ids: Vec<Option<usize>> = func_infos
+            .iter()
+            .map(|f| {
+                // Remap the domain from Slid indices to sort indices
+                let remapped = remap_derived_sort(&f.domain, &srt_slid_to_idx);
+                match remapped {
+                    DerivedSort::Base(idx) => Some(idx),
+                    DerivedSort::Product(_) => None,
+                }
+            })
+            .collect();
+        structure.init_functions(&domain_sort_ids);
+
+        // Initialize relations
+        let rel_infos = self.query_theory_rels(theory_slid);
+        let arities: Vec<usize> = rel_infos
+            .iter()
+            .map(|r| {
+                // Remap to get correct arity
+                let remapped = remap_derived_sort(&r.domain, &srt_slid_to_idx);
+                remapped.arity()
+            })
+            .collect();
+        structure.init_relations(&arities);
+
+        // Build Func Slid -> func index mapping
+        let func_to_idx: HashMap<Slid, usize> = func_infos
+            .iter()
+            .enumerate()
+            .map(|(idx, info)| (info.slid, idx))
+            .collect();
+
+        // Build Rel Slid -> rel index mapping
+        let rel_to_idx: HashMap<Slid, usize> = rel_infos
+            .iter()
+            .enumerate()
+            .map(|(idx, info)| (info.slid, idx))
+            .collect();
+
+        // Populate function values
+        let func_vals = self.query_instance_func_vals(instance_slid);
+        for fv in func_vals {
+            if let (Some(func_slid), Some(arg_slid), Some(result_slid)) =
+                (fv.func_slid, fv.arg_slid, fv.result_slid)
+            {
+                if let Some(&func_idx) = func_to_idx.get(&func_slid) {
+                    if let (Some(&arg_struct), Some(&result_struct)) = (
+                        elem_to_structure_slid.get(&arg_slid),
+                        elem_to_structure_slid.get(&result_slid),
+                    ) {
+                        let _ = structure.define_function(func_idx, arg_struct, result_struct);
+                    }
+                }
+            }
+        }
+
+        // Populate relation tuples
+        // NOTE: Currently only reconstructs unary relations.
+        // Product domain relations are skipped during persistence.
+        let rel_tuples = self.query_instance_rel_tuples(instance_slid);
+        for rt in rel_tuples {
+            if let (Some(rel_slid), Some(arg_slid)) = (rt.rel_slid, rt.arg_slid) {
+                if let Some(&rel_idx) = rel_to_idx.get(&rel_slid) {
+                    // Check if this is a product-domain relation
+                    let is_product = rel_infos
+                        .get(rel_idx)
+                        .map(|r| r.domain.arity() > 1)
+                        .unwrap_or(false);
+
+                    if is_product {
+                        // Skip - product domain relations not yet supported
+                        continue;
+                    }
+
+                    if let Some(&arg_struct) = elem_to_structure_slid.get(&arg_slid) {
+                        structure.assert_relation(rel_idx, vec![arg_struct]);
+                    }
+                }
+            }
+        }
+
+        Some(ReconstructedInstance {
+            name: instance_name,
+            theory_name: theory.theory.name.clone(),
+            structure,
+            element_names,
+        })
+    }
+
+    /// Reconstruct all persisted instances.
+    pub fn reconstruct_all_instances(&self) -> HashMap<String, ReconstructedInstance> {
+        let mut result = HashMap::new();
+        // Use query_all_instances to restore ALL instances from disk,
+        // not just committed ones
+        for (name, slid) in self.query_all_instances() {
+            if let Some(instance) = self.reconstruct_instance(slid) {
+                result.insert(name, instance);
+            }
+        }
+        result
+    }
+}
+
+/// Information about an element in an instance
+#[derive(Debug, Clone)]
+pub struct ElemInfo {
+    pub name: String,
+    pub slid: Slid,
+    pub srt_slid: Option<Slid>,
+}
+
+/// Information about a function value
+#[derive(Debug, Clone)]
+pub struct FuncValInfo {
+    pub slid: Slid,
+    pub func_slid: Option<Slid>,
+    pub arg_slid: Option<Slid>,
+    pub result_slid: Option<Slid>,
+}
+
+/// Information about a relation tuple
+#[derive(Debug, Clone)]
+pub struct RelTupleInfo {
+    pub slid: Slid,
+    pub rel_slid: Option<Slid>,
+    pub arg_slid: Option<Slid>,
+}
+
+/// A reconstructed instance with its structure and metadata
+#[derive(Debug)]
+pub struct ReconstructedInstance {
+    pub name: String,
+    pub theory_name: String,
+    pub structure: crate::core::Structure,
+    pub element_names: HashMap<Slid, String>,
 }

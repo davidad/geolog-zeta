@@ -96,6 +96,10 @@ fn main() {
                 if let Some(source) = state.force_submit() {
                     handle_geolog(&mut state, &source);
                 } else {
+                    // Save store before quitting
+                    if let Err(e) = state.store.save() {
+                        eprintln!("Warning: Failed to save store: {}", e);
+                    }
                     println!("\nGoodbye!");
                     break;
                 }
@@ -123,6 +127,10 @@ fn handle_command(state: &mut ReplState, cmd: MetaCommand) -> bool {
             print_help(topic.as_deref());
         }
         MetaCommand::Quit => {
+            // Save store before quitting
+            if let Err(e) = state.store.save() {
+                eprintln!("Warning: Failed to save store: {}", e);
+            }
             println!("Goodbye!");
             return false;
         }
