@@ -209,8 +209,16 @@ impl Store {
 
     /// Create a store with a persistence path
     pub fn with_path(path: impl Into<PathBuf>) -> Self {
+        let path = path.into();
+
+        // Create directory if needed
+        let _ = std::fs::create_dir_all(&path);
+
+        // Create store with paths for all components
         let mut store = Self::new();
-        store.path = Some(path.into());
+        store.path = Some(path.clone());
+        store.universe = Universe::with_path(path.join("universe"));
+        store.naming = NamingIndex::with_path(path.join("naming"));
         store
     }
 
@@ -226,9 +234,49 @@ impl Store {
 
     /// Load a store from disk
     pub fn load(path: &Path) -> Result<Self, String> {
-        // TODO: Implement proper loading
-        // For now, just create a new store with the path
-        Ok(Self::with_path(path))
+        // Load meta structure
+        let meta_path = path.join("meta.bin");
+        let meta = crate::serialize::load_structure(&meta_path)?;
+
+        // Load universe
+        let universe_path = path.join("universe");
+        let universe = Universe::load(&universe_path)?;
+
+        // Load naming
+        let naming_path = path.join("naming");
+        let naming = NamingIndex::load(&naming_path)?;
+
+        // Load HEAD commit reference
+        let head_path = path.join("HEAD");
+        let head = if head_path.exists() {
+            let content = std::fs::read_to_string(&head_path)
+                .map_err(|e| format!("Failed to read HEAD: {}", e))?;
+            let index: usize = content
+                .trim()
+                .parse()
+                .map_err(|e| format!("Invalid HEAD format: {}", e))?;
+            Some(Slid::from_usize(index))
+        } else {
+            None
+        };
+
+        // Get meta theory and build IDs (same as new())
+        let meta_theory = geolog_meta();
+        let sort_ids = SortIds::from_theory(&meta_theory);
+        let func_ids = FuncIds::from_theory(&meta_theory);
+
+        Ok(Self {
+            meta,
+            meta_theory,
+            universe,
+            naming,
+            head,
+            uncommitted: HashMap::new(),
+            sort_ids,
+            func_ids,
+            path: Some(path.to_path_buf()),
+            dirty: false,
+        })
     }
 
     /// Save the store to disk

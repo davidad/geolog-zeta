@@ -66,9 +66,21 @@ impl ReplState {
     }
 
     /// Create a new REPL state with a persistence path
+    ///
+    /// If the path exists, loads the persisted Store. Otherwise creates a new one.
+    /// Note: This loads the Store (GeologMeta, commits, etc.) but does NOT yet
+    /// reconstruct the runtime theories/instances. That requires a query engine.
     pub fn with_path(path: impl Into<PathBuf>) -> Self {
+        let path = path.into();
+        let store = Store::load_or_create(&path);
+
+        // TODO: Reconstruct theories/instances from Store's GeologMeta
+        // This requires querying the GeologMeta to find all Theory/Instance
+        // elements and rebuilding ElaboratedTheory objects from their
+        // sorts/functions/relations. For now, we just load the Store.
+
         Self {
-            store: Store::with_path(path),
+            store,
             theories: HashMap::new(),
             instances: HashMap::new(),
             input_buffer: String::new(),
@@ -299,9 +311,12 @@ impl ReplState {
             .map_err(|e| e.to_string())
     }
 
-    /// List all theories
+    /// List all theories (runtime + persisted)
     pub fn list_theories(&self) -> Vec<TheoryInfo> {
-        self.theories
+        use crate::store::BindingKind;
+        use std::collections::HashSet;
+
+        let mut result: Vec<TheoryInfo> = self.theories
             .iter()
             .map(|(name, theory)| TheoryInfo {
                 name: name.clone(),
@@ -310,19 +325,52 @@ impl ReplState {
                 num_relations: theory.theory.signature.relations.len(),
                 num_axioms: theory.theory.axioms.len(),
             })
-            .collect()
+            .collect();
+
+        // Add persisted theories that aren't in runtime
+        let runtime_names: HashSet<_> = self.theories.keys().cloned().collect();
+        for (name, kind, _slid) in self.store.list_bindings() {
+            if kind == BindingKind::Theory && !runtime_names.contains(&name) {
+                result.push(TheoryInfo {
+                    name,
+                    num_sorts: 0,  // Unknown - would need query engine
+                    num_functions: 0,
+                    num_relations: 0,
+                    num_axioms: 0,
+                });
+            }
+        }
+
+        result
     }
 
-    /// List all instances
+    /// List all instances (runtime + persisted)
     pub fn list_instances(&self) -> Vec<InstanceInfo> {
-        self.instances
+        use crate::store::BindingKind;
+        use std::collections::HashSet;
+
+        let mut result: Vec<InstanceInfo> = self.instances
             .iter()
             .map(|(name, entry)| InstanceInfo {
                 name: name.clone(),
                 theory_name: entry.theory_name.clone(),
                 num_elements: entry.structure.len(),
             })
-            .collect()
+            .collect();
+
+        // Add persisted instances that aren't in runtime
+        let runtime_names: HashSet<_> = self.instances.keys().cloned().collect();
+        for (name, kind, _slid) in self.store.list_bindings() {
+            if kind == BindingKind::Instance && !runtime_names.contains(&name) {
+                result.push(InstanceInfo {
+                    name,
+                    theory_name: "(persisted)".to_string(),  // Would need query to get
+                    num_elements: 0,  // Unknown
+                });
+            }
+        }
+
+        result
     }
 
     /// Inspect a theory or instance by name
