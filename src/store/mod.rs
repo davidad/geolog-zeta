@@ -255,7 +255,7 @@ impl Store {
 
         // Save meta structure
         let meta_path = path.join("meta.bin");
-        crate::workspace::save_structure(&self.meta, &meta_path)?;
+        crate::serialize::save_structure(&self.meta, &meta_path)?;
 
         // Save head commit reference
         if let Some(head) = self.head {

@@ -1,27 +1,82 @@
 //! Instance elaboration.
 
 use std::collections::HashMap;
+use std::rc::Rc;
 
 use crate::ast;
 use crate::core::*;
 use crate::id::{NumericId, Slid};
-use crate::workspace::Workspace;
+use crate::universe::Universe;
 
 use super::env::Env;
 use super::error::{ElabError, ElabResult};
 
+/// Minimal context for instance elaboration - what we need from the caller.
+///
+/// This replaces the old `Workspace` dependency, making elaboration more modular.
+pub struct ElaborationContext<'a> {
+    /// Available theories
+    pub theories: &'a HashMap<String, Rc<ElaboratedTheory>>,
+    /// Existing instances (for parameterized instance support)
+    pub instances: &'a HashMap<String, InstanceEntry>,
+    /// Universe for allocating new Luids
+    pub universe: &'a mut Universe,
+}
+
+/// An instance entry for elaboration context.
+///
+/// This is a simpler version than what's in the REPL - just enough for elaboration.
+pub struct InstanceEntry {
+    /// The structure containing the instance data
+    pub structure: Structure,
+    /// The theory name this instance is of
+    pub theory_name: String,
+    /// Map from element names to Slids
+    pub element_names: HashMap<String, Slid>,
+    /// Reverse map from Slids to names
+    pub slid_to_name: HashMap<Slid, String>,
+}
+
+impl InstanceEntry {
+    /// Create a new instance entry
+    pub fn new(structure: Structure, theory_name: String) -> Self {
+        Self {
+            structure,
+            theory_name,
+            element_names: HashMap::new(),
+            slid_to_name: HashMap::new(),
+        }
+    }
+
+    /// Register an element with a name
+    pub fn register_element(&mut self, name: String, slid: Slid) {
+        self.element_names.insert(name.clone(), slid);
+        self.slid_to_name.insert(slid, name);
+    }
+
+    /// Look up element by local name
+    pub fn get_element(&self, name: &str) -> Option<Slid> {
+        self.element_names.get(name).copied()
+    }
+
+    /// Get name for Slid
+    pub fn get_name(&self, slid: Slid) -> Option<&str> {
+        self.slid_to_name.get(&slid).map(|s| s.as_str())
+    }
+}
+
 /// Elaborate an instance declaration into a Structure.
 ///
-/// This is the workspace-aware version that supports cross-instance references.
+/// This is the context-aware version that supports cross-instance references.
 /// For parameterized instances like `marking0 : ExampleNet Marking`, elements
 /// from param instances (ExampleNet) are imported into the new structure.
-pub fn elaborate_instance_ws(
-    workspace: &mut Workspace,
+pub fn elaborate_instance_ctx(
+    ctx: &mut ElaborationContext<'_>,
     instance: &ast::InstanceDecl,
 ) -> ElabResult<Structure> {
-    // Build Env from workspace.theories for theory lookups
+    // Build Env from context theories for theory lookups
     let env = Env {
-        theories: workspace.theories.clone(),
+        theories: ctx.theories.clone(),
         ..Env::new()
     };
 
@@ -59,10 +114,10 @@ pub fn elaborate_instance_ws(
     let mut param_slid_to_local: HashMap<(String, Slid), Slid> = HashMap::new();
 
     for (param_name, instance_name) in &resolved.arguments {
-        if let Some(param_entry) = workspace.instances.get(instance_name) {
+        if let Some(param_entry) = ctx.instances.get(instance_name) {
             // Get the param theory to know sort mappings
             let param_theory_name = &param_entry.theory_name;
-            if let Some(param_theory) = workspace.theories.get(param_theory_name) {
+            if let Some(param_theory) = ctx.theories.get(param_theory_name) {
                 // For each element in the param instance, import it
                 for (&slid, elem_name) in &param_entry.slid_to_name {
                     // Get the element's sort in the param instance
@@ -105,7 +160,7 @@ pub fn elaborate_instance_ws(
             let sort_id = resolve_instance_sort(&theory.theory.signature, sort_expr)?;
 
             // Add element to structure (returns Slid, Luid)
-            let (slid, _luid) = structure.add_element(&mut workspace.universe, sort_id);
+            let (slid, _luid) = structure.add_element(ctx.universe, sort_id);
             name_to_slid.insert(name.clone(), slid);
             slid_to_name.insert(slid, name.clone());
         }
@@ -138,9 +193,9 @@ pub fn elaborate_instance_ws(
     // For each param (N, ExampleNet), for each function in param theory (src, tgt),
     // import the function values using the local func name (N/src, N/tgt).
     for (param_name, instance_name) in &resolved.arguments {
-        if let Some(param_entry) = workspace.instances.get(instance_name) {
+        if let Some(param_entry) = ctx.instances.get(instance_name) {
             let param_theory_name = &param_entry.theory_name;
-            if let Some(param_theory) = workspace.theories.get(param_theory_name) {
+            if let Some(param_theory) = ctx.theories.get(param_theory_name) {
                 // For each function in the param theory
                 for (param_func_id, param_func) in
                     param_theory.theory.signature.functions.iter().enumerate()
@@ -255,8 +310,8 @@ pub fn elaborate_instance_ws(
 
                         for (slid, (field_name, field_sort)) in tuple.iter().zip(fields.iter()) {
                             let elem_sort_id = structure.sorts[slid.index()];
-                            if let DerivedSort::Base(expected_sort) = field_sort {
-                                if elem_sort_id != *expected_sort {
+                            if let DerivedSort::Base(expected_sort) = field_sort
+                                && elem_sort_id != *expected_sort {
                                     return Err(ElabError::DomainMismatch {
                                         func_name: func.name.clone(),
                                         element_name: format!(
@@ -273,7 +328,6 @@ pub fn elaborate_instance_ws(
                                             .clone(),
                                     });
                                 }
-                            }
                         }
                     } else {
                         return Err(ElabError::UnsupportedFeature(format!(
@@ -330,8 +384,8 @@ pub fn elaborate_instance_ws(
 
                     // Type check
                     let elem_sort_id = structure.sorts[slid.index()];
-                    if let &DerivedSort::Base(expected_sort_id) = &expected_fields[0].1 {
-                        if elem_sort_id != expected_sort_id {
+                    if let &DerivedSort::Base(expected_sort_id) = &expected_fields[0].1
+                        && elem_sort_id != expected_sort_id {
                             return Err(ElabError::DomainMismatch {
                                 func_name: rel_name.clone(),
                                 element_name: slid_to_name
@@ -343,7 +397,6 @@ pub fn elaborate_instance_ws(
                                 actual_sort: theory.theory.signature.sorts[elem_sort_id].clone(),
                             });
                         }
-                    }
                     vec![slid]
                 }
 
@@ -376,8 +429,8 @@ pub fn elaborate_instance_ws(
 
                         // Type check: verify element sort matches field sort
                         let elem_sort_id = structure.sorts[slid.index()];
-                        if let &DerivedSort::Base(expected_sort_id) = expected_sort {
-                            if elem_sort_id != expected_sort_id {
+                        if let &DerivedSort::Base(expected_sort_id) = expected_sort
+                            && elem_sort_id != expected_sort_id {
                                 return Err(ElabError::DomainMismatch {
                                     func_name: rel_name.clone(),
                                     element_name: slid_to_name
@@ -389,7 +442,6 @@ pub fn elaborate_instance_ws(
                                     actual_sort: theory.theory.signature.sorts[elem_sort_id].clone(),
                                 });
                             }
-                        }
 
                         tuple.push(slid);
                     }

@@ -2,20 +2,43 @@
 //!
 //! Provides an interactive environment for defining theories and instances,
 //! inspecting structures, and managing workspaces.
+//!
+//! ## Architecture Note
+//!
+//! This module uses `Store` as the source of truth for all data. The `theories`
+//! and `instances` HashMaps are TRANSITIONAL: they maintain runtime objects
+//! needed for elaboration until the full GeologMeta-based elaboration is complete.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
+use std::rc::Rc;
 
 use crate::ast;
-use crate::core::DerivedSort;
-use crate::elaborate::{Env, elaborate_instance_ws, elaborate_theory};
-// Note: Env is still used for elaborate_theory
+use crate::core::{DerivedSort, ElaboratedTheory, Structure};
+use crate::elaborate::{Env, ElaborationContext, elaborate_instance_ctx, elaborate_theory};
 use crate::id::{NumericId, Slid};
-use crate::workspace::{InstanceEntry, Workspace};
+use crate::store::Store;
 
-/// REPL state - now a thin wrapper around Workspace
+// Re-export InstanceEntry from elaborate for backwards compatibility
+pub use crate::elaborate::InstanceEntry;
+
+/// REPL state - backed by Store with transitional runtime objects.
+///
+/// The `store` is the source of truth for persistence and version control.
+/// The `theories` and `instances` HashMaps are transitional: they hold
+/// runtime objects needed for elaboration until we complete the migration
+/// to fully GeologMeta-based elaboration.
 pub struct ReplState {
-    /// The unified workspace (owns universe, naming, theories, instances)
-    pub workspace: Workspace,
+    /// The append-only store (source of truth for persistence)
+    pub store: Store,
+
+    /// TRANSITIONAL: Runtime theories for elaboration
+    /// Will be removed once elaboration writes directly to Store
+    pub theories: HashMap<String, Rc<ElaboratedTheory>>,
+
+    /// TRANSITIONAL: Runtime instances for elaboration and display
+    /// Will be removed once elaboration and display use Store directly
+    pub instances: HashMap<String, InstanceEntry>,
 
     /// Multi-line input buffer
     pub input_buffer: String,
@@ -31,10 +54,23 @@ impl Default for ReplState {
 }
 
 impl ReplState {
-    /// Create a new REPL state with empty workspace
+    /// Create a new REPL state with empty store
     pub fn new() -> Self {
         Self {
-            workspace: Workspace::new(),
+            store: Store::new(),
+            theories: HashMap::new(),
+            instances: HashMap::new(),
+            input_buffer: String::new(),
+            bracket_depth: 0,
+        }
+    }
+
+    /// Create a new REPL state with a persistence path
+    pub fn with_path(path: impl Into<PathBuf>) -> Self {
+        Self {
+            store: Store::with_path(path),
+            theories: HashMap::new(),
+            instances: HashMap::new(),
             input_buffer: String::new(),
             bracket_depth: 0,
         }
@@ -42,14 +78,31 @@ impl ReplState {
 
     /// Reset to initial state (clear all theories and instances)
     pub fn reset(&mut self) {
-        self.workspace = Workspace::new();
+        self.store = Store::new();
+        self.theories.clear();
+        self.instances.clear();
         self.input_buffer.clear();
         self.bracket_depth = 0;
     }
 
     /// Get a structure by instance name
-    pub fn get_structure(&self, name: &str) -> Option<&crate::core::Structure> {
-        self.workspace.get_structure(name)
+    pub fn get_structure(&self, name: &str) -> Option<&Structure> {
+        self.instances.get(name).map(|e| &e.structure)
+    }
+
+    /// Check if the state has uncommitted changes
+    pub fn is_dirty(&self) -> bool {
+        self.store.is_dirty()
+    }
+
+    /// Commit current changes to the store
+    pub fn commit(&mut self, message: Option<&str>) -> Result<Slid, String> {
+        self.store.commit(message)
+    }
+
+    /// Get commit history
+    pub fn commit_history(&self) -> Vec<Slid> {
+        self.store.commit_history()
     }
 
     /// Process a line of input, handling multi-line bracket matching
@@ -119,16 +172,16 @@ impl ReplState {
                 }
                 ast::Declaration::Theory(t) => {
                     // Check for duplicate theory name
-                    if self.workspace.theories.contains_key(&t.name) {
+                    if self.theories.contains_key(&t.name) {
                         return Err(format!(
                             "Theory '{}' already exists. Use a different name or :reset to clear.",
                             t.name
                         ));
                     }
 
-                    // TRANSITIONAL: Build an Env from workspace.theories for elaborate_theory
+                    // TRANSITIONAL: Build an Env from self.theories for elaborate_theory
                     let mut env = Env::new();
-                    for (name, theory) in &self.workspace.theories {
+                    for (name, theory) in &self.theories {
                         env.theories.insert(name.clone(), theory.clone());
                     }
 
@@ -140,7 +193,11 @@ impl ReplState {
                     let num_functions = elab.theory.signature.functions.len();
                     let num_relations = elab.theory.signature.relations.len();
 
-                    self.workspace.add_theory(elab);
+                    // Store in transitional HashMap
+                    self.theories.insert(name.clone(), Rc::new(elab));
+
+                    // Also register in Store as uncommitted
+                    let _ = self.store.create_theory(&name);
 
                     results.push(ExecuteResult::Theory {
                         name,
@@ -151,15 +208,15 @@ impl ReplState {
                 }
                 ast::Declaration::Instance(inst) => {
                     // Check for duplicate instance name
-                    if self.workspace.instances.contains_key(&inst.name) {
+                    if self.instances.contains_key(&inst.name) {
                         return Err(format!(
                             "Instance '{}' already exists. Use a different name or :reset to clear.",
                             inst.name
                         ));
                     }
 
-                    // Use workspace-aware elaboration (supports parameterized instances)
-                    let structure = elaborate_instance_ws(&mut self.workspace, inst)
+                    // Use the elaboration that works with our transitional state
+                    let structure = self.elaborate_instance_internal(inst)
                         .map_err(|e| format!("Elaboration error: {}", e))?;
 
                     let instance_name = inst.name.clone();
@@ -170,12 +227,6 @@ impl ReplState {
                     let mut entry = InstanceEntry::new(structure, theory_name.clone());
 
                     // Register element names for elements declared in THIS instance
-                    // (imported elements from param instances are already registered with qualified names)
-
-                    // First, count imported elements (if this is a parameterized instance)
-                    // They come first in the structure before locally declared elements
-                    // For now, we use a simple heuristic: locally declared elements are
-                    // those explicitly listed in inst.body
                     let local_elements: Vec<_> = inst
                         .body
                         .iter()
@@ -189,7 +240,6 @@ impl ReplState {
                         .collect();
 
                     // The structure contains: [imported elements...] [local elements...]
-                    // We need to skip imported elements when counting
                     let num_imported = entry.structure.len() - local_elements.len();
                     let mut slid_counter = num_imported;
 
@@ -197,18 +247,25 @@ impl ReplState {
                         let slid = Slid::from_usize(slid_counter);
                         entry.register_element(elem_name.clone(), slid);
 
-                        // Also register in global naming index
+                        // Register in store's naming index
                         let luid = entry.structure.get_luid(slid);
-                        let _ = self.workspace.register_element_name(
-                            &instance_name,
-                            elem_name,
-                            luid,
-                        );
+                        if let Some(uuid) = self.store.universe.get(luid) {
+                            self.store.naming.insert(
+                                uuid,
+                                vec![instance_name.clone(), elem_name.clone()],
+                            );
+                        }
 
                         slid_counter += 1;
                     }
 
-                    self.workspace.add_instance(instance_name.clone(), entry);
+                    // Store in transitional HashMap
+                    self.instances.insert(instance_name.clone(), entry);
+
+                    // Also register in Store (need to find the theory slid)
+                    if let Some((theory_slid, _)) = self.store.resolve_name(&theory_name) {
+                        let _ = self.store.create_instance(&instance_name, theory_slid);
+                    }
 
                     results.push(ExecuteResult::Instance {
                         name: instance_name,
@@ -229,10 +286,22 @@ impl ReplState {
             .ok_or_else(|| "No declarations found".to_string())
     }
 
+    /// Internal instance elaboration that works with our transitional state
+    fn elaborate_instance_internal(&mut self, inst: &ast::InstanceDecl) -> Result<Structure, String> {
+        // Build elaboration context from our state
+        let mut ctx = ElaborationContext {
+            theories: &self.theories,
+            instances: &self.instances,
+            universe: &mut self.store.universe,
+        };
+
+        elaborate_instance_ctx(&mut ctx, inst)
+            .map_err(|e| e.to_string())
+    }
+
     /// List all theories
     pub fn list_theories(&self) -> Vec<TheoryInfo> {
-        self.workspace
-            .theories
+        self.theories
             .iter()
             .map(|(name, theory)| TheoryInfo {
                 name: name.clone(),
@@ -246,8 +315,7 @@ impl ReplState {
 
     /// List all instances
     pub fn list_instances(&self) -> Vec<InstanceInfo> {
-        self.workspace
-            .instances
+        self.instances
             .iter()
             .map(|(name, entry)| InstanceInfo {
                 name: name.clone(),
@@ -260,7 +328,7 @@ impl ReplState {
     /// Inspect a theory or instance by name
     pub fn inspect(&self, name: &str) -> Option<InspectResult> {
         // Check theories first
-        if let Some(theory) = self.workspace.theories.get(name) {
+        if let Some(theory) = self.theories.get(name) {
             return Some(InspectResult::Theory(TheoryDetail {
                 name: name.to_string(),
                 params: theory
@@ -300,8 +368,8 @@ impl ReplState {
         }
 
         // Check instances
-        if let Some(entry) = self.workspace.instances.get(name) {
-            let theory = self.workspace.theories.get(&entry.theory_name)?;
+        if let Some(entry) = self.instances.get(name) {
+            let theory = self.theories.get(&entry.theory_name)?;
             return Some(InspectResult::Instance(InstanceDetail {
                 name: name.to_string(),
                 theory_name: entry.theory_name.clone(),
@@ -688,8 +756,8 @@ impl MetaCommand {
             "commit" | "ci" => {
                 // Collect remaining args as message
                 let message: Vec<&str> = parts.collect();
-                let msg = if arg.is_some() {
-                    let mut full_msg = arg.unwrap().to_string();
+                let msg = if let Some(first) = arg {
+                    let mut full_msg = first.to_string();
                     for part in message {
                         full_msg.push(' ');
                         full_msg.push_str(part);

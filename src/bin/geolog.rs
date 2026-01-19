@@ -36,11 +36,12 @@ fn main() {
     println!("Type :help for help, :quit to exit\n");
 
     // Initialize state
-    let mut state = ReplState::new();
-    if let Some(ref path) = workspace_path {
-        state.workspace.path = Some(path.clone());
+    let mut state = if let Some(ref path) = workspace_path {
         println!("Workspace: {}", path.display());
-    }
+        ReplState::with_path(path)
+    } else {
+        ReplState::new()
+    };
 
     // Set up rustyline
     let config = Config::builder().auto_add_history(true).build();
@@ -143,31 +144,19 @@ fn handle_command(state: &mut ReplState, cmd: MetaCommand) -> bool {
             handle_source(state, &path);
         }
         MetaCommand::Commit(msg) => {
-            // TODO: Integrate with Store for actual commit
-            let message = msg.as_deref().unwrap_or("(no message)");
-            println!("Commit: {} (Store integration pending)", message);
-            println!("Note: Full commit functionality requires Store integration.");
+            handle_commit(state, msg.as_deref());
         }
         MetaCommand::History => {
-            // TODO: Integrate with Store to show actual commit history
-            println!("Commit history (Store integration pending)");
-            println!("Note: Full history requires Store integration.");
+            handle_history(state);
         }
         MetaCommand::Add { instance, element, sort } => {
-            // TODO: Integrate with Store for actual element addition
-            println!("Adding element '{}' of sort '{}' to instance '{}'", element, sort, instance);
-            println!("Note: Full :add functionality requires Store integration.");
+            handle_add(state, &instance, &element, &sort);
         }
         MetaCommand::Assert { instance, relation, args } => {
-            // TODO: Integrate with Store for actual relation assertion
-            let args_str = args.join(", ");
-            println!("Asserting {}({}) in instance '{}'", relation, args_str, instance);
-            println!("Note: Full :assert functionality requires Store integration.");
+            handle_assert(state, &instance, &relation, &args);
         }
         MetaCommand::Retract { instance, element } => {
-            // TODO: Integrate with Store for actual element retraction
-            println!("Retracting element '{}' from instance '{}'", element, instance);
-            println!("Note: Full :retract functionality requires Store integration.");
+            handle_retract(state, &instance, &element);
         }
         MetaCommand::Unknown(msg) => {
             eprintln!("Error: {}", msg);
@@ -356,6 +345,155 @@ fn handle_source(state: &mut ReplState, path: &PathBuf) {
         }
         Err(e) => {
             eprintln!("Error reading {}: {}", path.display(), e);
+        }
+    }
+}
+
+/// Handle :commit command
+fn handle_commit(state: &mut ReplState, message: Option<&str>) {
+    if !state.is_dirty() {
+        println!("Nothing to commit.");
+        return;
+    }
+
+    match state.commit(message) {
+        Ok(commit_slid) => {
+            let msg = message.unwrap_or("(no message)");
+            println!("Committed: {} (commit #{})", msg, commit_slid);
+        }
+        Err(e) => {
+            eprintln!("Commit failed: {}", e);
+        }
+    }
+}
+
+/// Handle :history command
+fn handle_history(state: &ReplState) {
+    let history = state.commit_history();
+    if history.is_empty() {
+        println!("No commits yet.");
+        return;
+    }
+
+    println!("Commit history ({} commits):", history.len());
+    for (i, commit_slid) in history.iter().enumerate() {
+        let marker = if Some(*commit_slid) == state.store.head {
+            " <- HEAD"
+        } else {
+            ""
+        };
+        println!("  {}. commit #{}{}", i + 1, commit_slid, marker);
+    }
+}
+
+/// Handle :add command
+fn handle_add(state: &mut ReplState, instance_name: &str, element_name: &str, sort_name: &str) {
+    // Look up the instance in the Store
+    let Some((instance_slid, _)) = state.store.resolve_name(instance_name) else {
+        eprintln!("Instance '{}' not found", instance_name);
+        return;
+    };
+
+    // Look up the sort in the Store
+    // For now, we use a simple name-based lookup
+    // In full implementation, we'd look up the sort from the theory
+    let sort_slid = match state.store.resolve_name(sort_name) {
+        Some((slid, _)) => slid,
+        None => {
+            // Try to find sort in the theory
+            eprintln!(
+                "Sort '{}' not found. Note: Full sort lookup requires querying the theory.",
+                sort_name
+            );
+            eprintln!("This feature is partially implemented pending query engine (geolog-7tt).");
+            return;
+        }
+    };
+
+    match state.store.add_elem(instance_slid, sort_slid, element_name) {
+        Ok(elem_slid) => {
+            println!(
+                "Added element '{}' of sort '{}' to instance '{}' (elem #{})",
+                element_name, sort_name, instance_name, elem_slid
+            );
+        }
+        Err(e) => {
+            eprintln!("Failed to add element: {}", e);
+        }
+    }
+}
+
+/// Handle :assert command
+fn handle_assert(state: &mut ReplState, instance_name: &str, relation_name: &str, args: &[String]) {
+    // Look up the instance
+    let Some((instance_slid, _)) = state.store.resolve_name(instance_name) else {
+        eprintln!("Instance '{}' not found", instance_name);
+        return;
+    };
+
+    // Look up the relation
+    let Some((relation_slid, _)) = state.store.resolve_name(relation_name) else {
+        eprintln!(
+            "Relation '{}' not found. Note: Full relation lookup requires querying the theory.",
+            relation_name
+        );
+        return;
+    };
+
+    // For now, we only support single-argument relations
+    // Full implementation would handle products via Tuple elements
+    if args.len() != 1 {
+        eprintln!(
+            "Currently only single-argument relations are supported via :assert."
+        );
+        eprintln!(
+            "Multi-argument relations require Tuple element construction (pending geolog-7tt)."
+        );
+        return;
+    }
+
+    let arg_name = &args[0];
+    let Some((arg_slid, _)) = state.store.resolve_name(arg_name) else {
+        eprintln!("Element '{}' not found", arg_name);
+        return;
+    };
+
+    match state.store.add_rel_tuple(instance_slid, relation_slid, arg_slid) {
+        Ok(tuple_slid) => {
+            println!(
+                "Asserted {}({}) in instance '{}' (tuple #{})",
+                relation_name, arg_name, instance_name, tuple_slid
+            );
+        }
+        Err(e) => {
+            eprintln!("Failed to assert relation: {}", e);
+        }
+    }
+}
+
+/// Handle :retract command
+fn handle_retract(state: &mut ReplState, instance_name: &str, element_name: &str) {
+    // Look up the instance
+    let Some((instance_slid, _)) = state.store.resolve_name(instance_name) else {
+        eprintln!("Instance '{}' not found", instance_name);
+        return;
+    };
+
+    // Look up the element
+    let Some((elem_slid, _)) = state.store.resolve_name(element_name) else {
+        eprintln!("Element '{}' not found", element_name);
+        return;
+    };
+
+    match state.store.retract_elem(instance_slid, elem_slid) {
+        Ok(retract_slid) => {
+            println!(
+                "Retracted element '{}' from instance '{}' (retraction #{})",
+                element_name, instance_name, retract_slid
+            );
+        }
+        Err(e) => {
+            eprintln!("Failed to retract element: {}", e);
         }
     }
 }

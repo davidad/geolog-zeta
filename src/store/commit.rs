@@ -58,9 +58,7 @@ impl Store {
         }
 
         // Otherwise, search through name bindings from HEAD backwards
-        let Some(head) = self.head else {
-            return None;
-        };
+        let head = self.head?;
 
         let nb_sort = self.sort_ids.name_binding?;
         let commit_func = self.func_ids.name_binding_commit?;
