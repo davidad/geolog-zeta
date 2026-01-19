@@ -190,6 +190,28 @@ enum TermPostfix {
     App(Term),
 }
 
+/// Parse a record term specifically: [field: term, ...]
+/// Used for relation assertions where we need a standalone record parser.
+fn record_term() -> impl Parser<Token, Term, Error = Simple<Token>> + Clone {
+    recursive(|rec_term| {
+        let path_term = path().map(Term::Path);
+
+        // Record literal: [field: term, ...]
+        // Note: field values can themselves be records
+        let record_field = ident()
+            .then_ignore(just(Token::Colon))
+            .then(choice((
+                rec_term.clone(),
+                path_term.clone(),
+            )));
+
+        record_field
+            .separated_by(just(Token::Comma))
+            .delimited_by(just(Token::LBracket), just(Token::RBracket))
+            .map(Term::Record)
+    })
+}
+
 // ============================================================================
 // Formulas
 // ============================================================================
@@ -421,8 +443,16 @@ fn instance_item() -> impl Parser<Token, InstanceItem, Error = Simple<Token>> + 
             .then_ignore(just(Token::Semicolon))
             .map(|(l, r)| InstanceItem::Equation(l, r));
 
-        // Try nested first (ident = {), then element (ident :), then equation
-        choice((nested, element, equation))
+        // Relation assertion: [field: value, ...] relation_name;
+        // The record part is parsed as a term, relation name is an identifier
+        let relation_assertion = record_term()
+            .then(ident())
+            .then_ignore(just(Token::Semicolon))
+            .map(|(term, rel)| InstanceItem::RelationAssertion(term, rel));
+
+        // Try nested first (ident = {), then element (ident :), then relation ([ ...),
+        // then equation (fallback)
+        choice((nested, element, relation_assertion, equation))
     })
 }
 

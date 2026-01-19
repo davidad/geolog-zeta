@@ -232,6 +232,11 @@ pub enum InstanceItem {
 
     /// Nested instance: `initial_marking = N Marking instance { ... };`
     NestedInstance(String, InstanceDecl),
+
+    /// Relation assertion: `[item: buy_groceries] completed;`
+    /// The Term should be a record with the relation's domain fields,
+    /// and String is the relation name.
+    RelationAssertion(Term, String),
 }
 
 /// A query declaration

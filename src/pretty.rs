@@ -357,6 +357,12 @@ impl Pretty {
                 self.indent();
                 self.write("};");
             }
+            InstanceItem::RelationAssertion(term, rel) => {
+                self.term(term);
+                self.write(" ");
+                self.write(rel);
+                self.write(";");
+            }
         }
     }
 

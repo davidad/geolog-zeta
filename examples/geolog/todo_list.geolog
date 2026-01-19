@@ -26,7 +26,6 @@ instance MyTodos : TodoList = {
 }
 
 // Example: A pre-populated todo list
-// Note: Relation assertions require :assert REPL command (not yet in static syntax)
 instance SampleTodos : TodoList = {
   // Items
   buy_groceries : Item;
@@ -34,8 +33,10 @@ instance SampleTodos : TodoList = {
   do_laundry : Item;
   clean_house : Item;
 
-  // TODO: Once relation assertion syntax is added to parser:
-  // [item: buy_groceries] completed;
-  // [item: cook_dinner] high_priority;
-  // [x: cook_dinner, y: buy_groceries] depends_on;
+  // Status: relation assertions using [fields] relation_name; syntax
+  [item: buy_groceries] completed;
+  [item: cook_dinner] high_priority;
+
+  // Dependencies: cook_dinner depends on buy_groceries
+  [x: cook_dinner, y: buy_groceries] depends_on;
 }

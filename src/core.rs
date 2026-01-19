@@ -35,6 +35,16 @@ impl DerivedSort {
     pub fn unit() -> Self {
         DerivedSort::Product(vec![])
     }
+
+    /// Returns the arity (number of atomic sorts) of this derived sort.
+    /// For Product([x: A, y: B]), arity is 2.
+    /// For Base(s), arity is 1.
+    pub fn arity(&self) -> usize {
+        match self {
+            DerivedSort::Base(_) => 1,
+            DerivedSort::Product(fields) => fields.len(),
+        }
+    }
 }
 
 /// A function symbol with its domain and codomain

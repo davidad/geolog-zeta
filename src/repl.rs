@@ -307,6 +307,7 @@ impl ReplState {
                 theory_name: entry.theory_name.clone(),
                 elements: self.collect_elements(entry, &theory.theory.signature),
                 functions: self.collect_function_values(entry, &theory.theory.signature),
+                relations: self.collect_relation_tuples(entry, &theory.theory.signature),
             }));
         }
 
@@ -428,6 +429,43 @@ impl ReplState {
                 result.push((func_sym.name.clone(), values));
             }
         }
+        result
+    }
+
+    /// Collect relation tuples as vectors of element names
+    fn collect_relation_tuples(
+        &self,
+        entry: &InstanceEntry,
+        signature: &crate::core::Signature,
+    ) -> Vec<(String, Vec<Vec<String>>)> {
+        let mut result = Vec::new();
+
+        for (rel_id, rel_sym) in signature.relations.iter().enumerate() {
+            if rel_id >= entry.structure.relations.len() {
+                continue;
+            }
+
+            let relation = &entry.structure.relations[rel_id];
+            let mut tuples: Vec<Vec<String>> = Vec::new();
+
+            for tuple in relation.iter() {
+                let tuple_names: Vec<String> = tuple
+                    .iter()
+                    .map(|&slid| {
+                        entry
+                            .get_name(slid)
+                            .map(|s| s.to_string())
+                            .unwrap_or_else(|| format!("#{}", slid))
+                    })
+                    .collect();
+                tuples.push(tuple_names);
+            }
+
+            if !tuples.is_empty() {
+                result.push((rel_sym.name.clone(), tuples));
+            }
+        }
+
         result
     }
 }
@@ -765,6 +803,8 @@ pub struct InstanceDetail {
     pub theory_name: String,
     pub elements: Vec<(String, Vec<String>)>,
     pub functions: Vec<(String, Vec<String>)>,
+    /// Relations: (name, list of tuples-as-element-names)
+    pub relations: Vec<(String, Vec<Vec<String>>)>,
 }
 
 #[derive(Debug)]
@@ -793,6 +833,22 @@ pub fn format_instance_detail(detail: &InstanceDetail) -> String {
             out.push_str(&format!("  // {}:\n", func_name));
             for value in values {
                 out.push_str(&format!("  {};\n", value));
+            }
+        }
+    }
+
+    // Relations
+    for (rel_name, tuples) in &detail.relations {
+        if !tuples.is_empty() {
+            out.push_str(&format!("  // {} ({} tuples):\n", rel_name, tuples.len()));
+            for tuple in tuples {
+                // Format as [field1: val1, field2: val2] rel_name;
+                // For simplicity, show as positional for now
+                out.push_str(&format!(
+                    "  [{}] {};\n",
+                    tuple.join(", "),
+                    rel_name
+                ));
             }
         }
     }

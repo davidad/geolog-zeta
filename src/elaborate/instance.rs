@@ -35,6 +35,16 @@ pub fn elaborate_instance_ws(
     // 2. Initialize structure (functions will be initialized after first pass)
     let mut structure = Structure::new(theory.theory.signature.sorts.len());
 
+    // Initialize relation storage from signature
+    let relation_arities: Vec<usize> = theory
+        .theory
+        .signature
+        .relations
+        .iter()
+        .map(|rel| rel.domain.arity())
+        .collect();
+    structure.init_relations(&relation_arities);
+
     // Track name → Slid for resolving references within this instance
     // Also track Slid → name for error messages
     let mut name_to_slid: HashMap<String, Slid> = HashMap::new();
@@ -297,7 +307,89 @@ pub fn elaborate_instance_ws(
         }
     }
 
-    // 5. Third pass: nested instances (TODO for Phase 2)
+    // 5. Third pass: relation assertions (assert relation tuples)
+    for item in &instance.body {
+        if let ast::InstanceItem::RelationAssertion(term, rel_name) = &item.node {
+            // Find the relation in the signature
+            let rel_id = theory
+                .theory
+                .signature
+                .lookup_rel(rel_name)
+                .ok_or_else(|| ElabError::UnknownRel(rel_name.clone()))?;
+
+            let rel = &theory.theory.signature.relations[rel_id];
+
+            // The term should be a record matching the relation's domain
+            match term {
+                ast::Term::Record(fields) => {
+                    // Build the tuple of Slids from the record fields
+                    let domain = &rel.domain;
+                    if let DerivedSort::Product(expected_fields) = domain {
+                        if fields.len() != expected_fields.len() {
+                            return Err(ElabError::UnsupportedFeature(format!(
+                                "relation {} expects {} fields, got {}",
+                                rel_name,
+                                expected_fields.len(),
+                                fields.len()
+                            )));
+                        }
+
+                        // Build tuple in the correct field order
+                        let mut tuple = Vec::with_capacity(expected_fields.len());
+                        for (expected_name, expected_sort) in expected_fields {
+                            let field_value = fields
+                                .iter()
+                                .find(|(name, _)| name == expected_name.as_str())
+                                .ok_or_else(|| {
+                                    ElabError::UnsupportedFeature(format!(
+                                        "missing field '{}' in relation assertion",
+                                        expected_name
+                                    ))
+                                })?;
+
+                            // Resolve the field value to a Slid
+                            let slid = resolve_instance_element(&field_value.1, &name_to_slid)?;
+
+                            // Type check: verify element sort matches field sort
+                            let elem_sort_id = structure.sorts[slid.index()];
+                            if let &DerivedSort::Base(expected_sort_id) = expected_sort {
+                                if elem_sort_id != expected_sort_id {
+                                    return Err(ElabError::DomainMismatch {
+                                        func_name: rel_name.clone(),
+                                        element_name: slid_to_name
+                                            .get(&slid)
+                                            .cloned()
+                                            .unwrap_or_else(|| format!("slid_{}", slid)),
+                                        expected_sort: theory.theory.signature.sorts[expected_sort_id]
+                                            .clone(),
+                                        actual_sort: theory.theory.signature.sorts[elem_sort_id].clone(),
+                                    });
+                                }
+                            }
+
+                            tuple.push(slid);
+                        }
+
+                        // Assert the relation tuple
+                        structure.assert_relation(rel_id, tuple);
+                    } else {
+                        return Err(ElabError::UnsupportedFeature(format!(
+                            "relation {} has non-product domain {:?}",
+                            rel_name, domain
+                        )));
+                    }
+                }
+                _ => {
+                    return Err(ElabError::UnsupportedFeature(format!(
+                        "relation assertion requires record term, got {:?}",
+                        term
+                    )));
+                }
+            }
+        }
+    }
+
+    // 6. Fourth pass: nested instances (TODO for Phase 2)
     for item in &instance.body {
         if let ast::InstanceItem::NestedInstance(name, _nested) = &item.node {
             // For now, just note that we're skipping these
@@ -339,6 +431,17 @@ pub fn elaborate_instance(
         .ok_or_else(|| ElabError::UnknownTheory(resolved.theory_name.clone()))?;
 
     let mut structure = Structure::new(theory.theory.signature.sorts.len());
+
+    // Initialize relation storage from signature
+    let relation_arities: Vec<usize> = theory
+        .theory
+        .signature
+        .relations
+        .iter()
+        .map(|rel| rel.domain.arity())
+        .collect();
+    structure.init_relations(&relation_arities);
+
     let mut name_to_slid: HashMap<String, Slid> = HashMap::new();
     let mut slid_to_name: HashMap<Slid, String> = HashMap::new();
 
