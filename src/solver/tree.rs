@@ -8,7 +8,7 @@ use crate::tensor::{CheckResult, Violation};
 use crate::universe::Universe;
 
 use super::types::{
-    ConflictClause, NodeDetail, NodeId, NodeStatus, SearchNode, SearchSummary,
+    ConflictClause, CongruenceClosure, NodeDetail, NodeId, NodeStatus, SearchNode, SearchSummary,
 };
 
 /// The search tree
@@ -36,6 +36,7 @@ impl SearchTree {
             parent: None,
             children: Vec::new(),
             structure: root_structure,
+            cc: CongruenceClosure::new(),
             status: NodeStatus::Open,
             p_success: 0.5, // Prior: 50% chance of solution existing
             conflicts: Vec::new(),
@@ -96,6 +97,7 @@ impl SearchTree {
     pub fn branch(&mut self, parent: NodeId, label: Option<String>) -> NodeId {
         let parent_node = &self.nodes[parent];
         let child_structure = parent_node.structure.clone();
+        let child_cc = parent_node.cc.clone();
         let child_p = parent_node.p_success;
 
         let child_id = self.nodes.len();
@@ -104,6 +106,7 @@ impl SearchTree {
             parent: Some(parent),
             children: Vec::new(),
             structure: child_structure,
+            cc: child_cc,
             status: NodeStatus::Open,
             p_success: child_p,
             conflicts: Vec::new(),

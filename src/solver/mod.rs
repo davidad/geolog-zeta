@@ -64,8 +64,8 @@ pub use tactics::{Budget, CheckTactic, EnumerateFunctionTactic, Tactic, TacticRe
 pub use tactics::PropagationTactic;
 pub use tree::SearchTree;
 pub use types::{
-    AxiomCheckResult, ConflictClause, NodeDetail, NodeId, NodeStatus, Obligation, SearchNode,
-    SearchSummary,
+    AxiomCheckResult, ConflictClause, CongruenceClosure, EquationReason, NodeDetail, NodeId,
+    NodeStatus, Obligation, PendingEquation, SearchNode, SearchSummary,
 };
 
 // Re-export union-find for convenience
