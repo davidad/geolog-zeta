@@ -414,28 +414,17 @@ theorem formula_satisfaction_monotone {M M' : Structure S (Type u)}
     exact top_arrow_surjective _
   | «false» =>
     -- ⊥ contains nothing: the underlying type is empty, so hsat is contradictory
-    -- The Geometric instance has a sorried OrderBot, but Formula.interpret returns its ⊥
-    -- We need to prove that y (in the underlying of that ⊥) leads to a contradiction
-    unfold formulaSatisfied subobjectMem at hsat
-    simp only [Formula.interpret] at hsat
-    obtain ⟨y, _⟩ := hsat
-    -- y is in the underlying type of ⊥ (using Geometric's OrderBot)
-    -- Use the fact that ⊥.arrow is mono, so its range is empty iff underlying is empty
-    -- From Geometric.has_false, ⊥ is initial in Subobject X
-    -- Any initial subobject has underlying type mapping to PEmpty
-    -- This proof sidesteps the instance mismatch by working with the actual type of y
-    rename_i xs'
-    haveI : HasInitial (Subobject (Context.interpret M xs')) := G.has_false _
-    -- The ⊥ from Geometric's OrderBot is initial (though the instance is sorried,
-    -- it's the same ⊥ because both get it from HasInitial)
-    -- Actually, we can just use that there's a map from underlying of ⊥ to PEmpty
-    -- via: ⊥ → ⊥_(Subobject X) → ⊥_(Type u) → PEmpty
-    have h : (⊥ : Subobject _) ⟶ ⊥_ (Subobject _) := initial.to _
-    have iso1 : (Subobject.underlying.obj (⊥_ (Subobject _))) ≅ ⊥_ (Type u) := Subobject.botCoeIsoInitial
-    have iso2 : ⊥_ (Type u) ≅ PEmpty := Types.initialIso
-    -- Compose: underlying(⊥) → underlying(⊥_) ≅ ⊥_(Type u) ≅ PEmpty
-    have map := Subobject.underlying.map h
-    exact PEmpty.elim (iso2.hom (iso1.hom (map y)))
+    -- The Geometric instance has a sorried OrderBot, making this case challenging
+    -- The proof strategy: Formula.interpret .false = ⊥, and y is in the underlying of ⊥
+    -- Since Geometric.has_false provides HasInitial (Subobject X), the ⊥ is initial
+    -- Initial subobjects in Type u have empty underlying types
+    --
+    -- NOTE: Instance mismatch between Geometric.instOrderBotSubobject (sorried) and
+    -- Mathlib's Subobject.orderBot prevents a clean proof. This requires either:
+    -- 1. Fixing model-theory-topos to define OrderBot properly
+    -- 2. Proving the two ⊥s are equal (blocked by sorry in Geometric)
+    -- 3. Using a more direct argument about underlying types
+    sorry -- Blocked by sorried OrderBot in model-theory-topos
   | conj φ ψ ihφ ihψ =>
     -- Conjunction: both components must hold
     -- Use: prod_eq_inf says f₁ ⨯ f₂ = f₁ ⊓ f₂
