@@ -142,6 +142,33 @@ fn handle_command(state: &mut ReplState, cmd: MetaCommand) -> bool {
         MetaCommand::Source(path) => {
             handle_source(state, &path);
         }
+        MetaCommand::Commit(msg) => {
+            // TODO: Integrate with Store for actual commit
+            let message = msg.as_deref().unwrap_or("(no message)");
+            println!("Commit: {} (Store integration pending)", message);
+            println!("Note: Full commit functionality requires Store integration.");
+        }
+        MetaCommand::History => {
+            // TODO: Integrate with Store to show actual commit history
+            println!("Commit history (Store integration pending)");
+            println!("Note: Full history requires Store integration.");
+        }
+        MetaCommand::Add { instance, element, sort } => {
+            // TODO: Integrate with Store for actual element addition
+            println!("Adding element '{}' of sort '{}' to instance '{}'", element, sort, instance);
+            println!("Note: Full :add functionality requires Store integration.");
+        }
+        MetaCommand::Assert { instance, relation, args } => {
+            // TODO: Integrate with Store for actual relation assertion
+            let args_str = args.join(", ");
+            println!("Asserting {}({}) in instance '{}'", relation, args_str, instance);
+            println!("Note: Full :assert functionality requires Store integration.");
+        }
+        MetaCommand::Retract { instance, element } => {
+            // TODO: Integrate with Store for actual element retraction
+            println!("Retracting element '{}' from instance '{}'", element, instance);
+            println!("Note: Full :retract functionality requires Store integration.");
+        }
         MetaCommand::Unknown(msg) => {
             eprintln!("Error: {}", msg);
             eprintln!("Type :help for available commands");
@@ -204,6 +231,15 @@ fn print_help(topic: Option<&str>) {
             println!("  :source <file>   Load and execute a geolog file");
             println!("  :clear           Clear the screen");
             println!("  :reset           Reset all state");
+            println!();
+            println!("Version Control:");
+            println!("  :commit [msg]    Commit current changes");
+            println!("  :history         Show commit history");
+            println!();
+            println!("Instance Mutation:");
+            println!("  :add <inst> <elem> <sort>   Add element to instance");
+            println!("  :assert <inst> <rel> [args] Assert relation tuple");
+            println!("  :retract <inst> <elem>      Retract element from instance");
             println!();
             println!("Enter geolog definitions directly (theories, instances).");
             println!("Multi-line input is supported - brackets are matched automatically.");

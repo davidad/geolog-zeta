@@ -600,6 +600,16 @@ pub enum MetaCommand {
     Clear,
     Reset,
     Source(PathBuf),
+    /// Commit current changes with optional message
+    Commit(Option<String>),
+    /// Show commit history
+    History,
+    /// Add element to instance: :add <instance> <element> <sort>
+    Add { instance: String, element: String, sort: String },
+    /// Assert relation tuple: :assert <instance> <relation> <args...>
+    Assert { instance: String, relation: String, args: Vec<String> },
+    /// Retract element from instance: :retract <instance> <element>
+    Retract { instance: String, element: String },
     Unknown(String),
 }
 
@@ -635,6 +645,57 @@ impl MetaCommand {
                     MetaCommand::Source(PathBuf::from(path))
                 } else {
                     MetaCommand::Unknown(":source requires a file path".to_string())
+                }
+            }
+            "commit" | "ci" => {
+                // Collect remaining args as message
+                let message: Vec<&str> = parts.collect();
+                let msg = if arg.is_some() {
+                    let mut full_msg = arg.unwrap().to_string();
+                    for part in message {
+                        full_msg.push(' ');
+                        full_msg.push_str(part);
+                    }
+                    Some(full_msg)
+                } else {
+                    None
+                };
+                MetaCommand::Commit(msg)
+            }
+            "history" | "log" => MetaCommand::History,
+            "add" => {
+                let args: Vec<&str> = std::iter::once(arg).flatten().chain(parts).collect();
+                if args.len() >= 3 {
+                    MetaCommand::Add {
+                        instance: args[0].to_string(),
+                        element: args[1].to_string(),
+                        sort: args[2].to_string(),
+                    }
+                } else {
+                    MetaCommand::Unknown(":add requires <instance> <element> <sort>".to_string())
+                }
+            }
+            "assert" => {
+                let args: Vec<&str> = std::iter::once(arg).flatten().chain(parts).collect();
+                if args.len() >= 2 {
+                    MetaCommand::Assert {
+                        instance: args[0].to_string(),
+                        relation: args[1].to_string(),
+                        args: args[2..].iter().map(|s| s.to_string()).collect(),
+                    }
+                } else {
+                    MetaCommand::Unknown(":assert requires <instance> <relation> [args...]".to_string())
+                }
+            }
+            "retract" => {
+                let args: Vec<&str> = std::iter::once(arg).flatten().chain(parts).collect();
+                if args.len() >= 2 {
+                    MetaCommand::Retract {
+                        instance: args[0].to_string(),
+                        element: args[1].to_string(),
+                    }
+                } else {
+                    MetaCommand::Unknown(":retract requires <instance> <element>".to_string())
                 }
             }
             other => MetaCommand::Unknown(format!("Unknown command: :{}", other)),
