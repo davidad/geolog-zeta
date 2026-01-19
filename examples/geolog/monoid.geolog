@@ -2,11 +2,6 @@
 //
 // This is the simplest algebraic structure with interesting axioms.
 // Note: geolog uses postfix function application.
-//
-// LIMITATION: Instance elaboration doesn't yet support product-typed
-// function applications in equations. So we can define the theory
-// (which IS elaborated correctly), but concrete instances with the
-// multiplication table would need that feature.
 
 theory Monoid {
   M : Sort;
@@ -34,4 +29,49 @@ theory Monoid {
   // id is constant: id(x) = id(y) for all x, y
   ax/id_const : forall x : M, y : M.
     |- x id = y id;
+}
+
+// Trivial monoid: single element, e * e = e
+instance Trivial : Monoid = {
+  e : M;
+
+  // Multiplication table: e * e = e
+  [x: e, y: e] mul = e;
+
+  // Identity: e is the identity element
+  e id = e;
+}
+
+// Boolean "And" monoid: {T, F} with T as identity
+// T and T = T, T and F = F, F and T = F, F and F = F
+instance BoolAnd : Monoid = {
+  T : M;
+  F : M;
+
+  // Identity: T is the identity element
+  T id = T;
+  F id = T;
+
+  // Multiplication table for "and":
+  [x: T, y: T] mul = T;
+  [x: T, y: F] mul = F;
+  [x: F, y: T] mul = F;
+  [x: F, y: F] mul = F;
+}
+
+// Boolean "Or" monoid: {T, F} with F as identity
+// T or T = T, T or F = T, F or T = T, F or F = F
+instance BoolOr : Monoid = {
+  T : M;
+  F : M;
+
+  // Identity: F is the identity element
+  T id = F;
+  F id = F;
+
+  // Multiplication table for "or":
+  [x: T, y: T] mul = T;
+  [x: T, y: F] mul = T;
+  [x: F, y: T] mul = T;
+  [x: F, y: F] mul = F;
 }

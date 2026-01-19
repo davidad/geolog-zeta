@@ -393,6 +393,9 @@ impl SearchTree {
                     crate::core::FunctionColumn::External(col) => {
                         col.iter().filter(|opt| opt.is_some()).count()
                     }
+                    crate::core::FunctionColumn::ProductLocal { storage, .. } => {
+                        storage.defined_count()
+                    }
                 })
                 .collect(),
             num_relation_tuples: node.structure.relations.iter().map(|r| r.len()).collect(),

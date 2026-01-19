@@ -432,6 +432,12 @@ pub struct RelationData {
 pub enum FunctionColumnData {
     Local(Vec<Option<usize>>),
     External(Vec<Option<usize>>),
+    /// Product domain: maps tuples of sort-local indices to result Slid index,
+    /// along with the field sort IDs for reconstruction
+    ProductLocal {
+        entries: Vec<(Vec<usize>, usize)>,
+        field_sorts: Vec<usize>,
+    },
 }
 
 /// Serializable form of a Structure
@@ -460,6 +466,16 @@ impl StructureData {
                 FunctionColumn::External(col) => FunctionColumnData::External(
                     col.iter().map(|&opt| get_luid(opt).map(|l| l.index())).collect(),
                 ),
+                FunctionColumn::ProductLocal { storage, field_sorts } => {
+                    let entries: Vec<(Vec<usize>, usize)> = storage
+                        .iter_defined()
+                        .map(|(tuple, result)| (tuple, result.index()))
+                        .collect();
+                    FunctionColumnData::ProductLocal {
+                        entries,
+                        field_sorts: field_sorts.clone(),
+                    }
+                }
             })
             .collect();
 
@@ -506,6 +522,22 @@ impl StructureData {
                         .map(|&opt| opt.map(Luid::from_usize).and_then(crate::id::some_luid))
                         .collect(),
                 ),
+                FunctionColumnData::ProductLocal { entries, field_sorts } => {
+                    use crate::core::ProductStorage;
+                    // Reconstruct ProductStorage from entries
+                    // Use General variant to avoid needing carrier sizes
+                    let mut storage = ProductStorage::new_general();
+                    for (tuple, result) in entries {
+                        // Note: entries contain sort-local indices, not Slids
+                        storage
+                            .set(tuple, Slid::from_usize(*result))
+                            .expect("no conflicts in serialized data");
+                    }
+                    FunctionColumn::ProductLocal {
+                        storage,
+                        field_sorts: field_sorts.clone(),
+                    }
+                }
             })
             .collect();
 

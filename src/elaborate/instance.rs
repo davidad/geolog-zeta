@@ -102,18 +102,27 @@ pub fn elaborate_instance_ws(
     }
 
     // 3b. Initialize function storage now that carrier sizes are known
-    // Extract domain sort IDs for each function (None for product domains)
-    let domain_sort_ids: Vec<Option<SortId>> = theory
+    // Extract domain info for each function (base or product)
+    let domains: Vec<FunctionDomainInfo> = theory
         .theory
         .signature
         .functions
         .iter()
         .map(|func| match &func.domain {
-            DerivedSort::Base(id) => Some(*id),
-            DerivedSort::Product(_) => None, // Defer product domains
+            DerivedSort::Base(id) => FunctionDomainInfo::Base(*id),
+            DerivedSort::Product(fields) => {
+                let field_sorts: Vec<SortId> = fields
+                    .iter()
+                    .filter_map(|(_, ds)| match ds {
+                        DerivedSort::Base(id) => Some(*id),
+                        DerivedSort::Product(_) => None, // Nested products not supported
+                    })
+                    .collect();
+                FunctionDomainInfo::Product(field_sorts)
+            }
         })
         .collect();
-    structure.init_functions(&domain_sort_ids);
+    structure.init_functions_full(&domains);
 
     // 3c. Import function values from param instances
     // For each param (N, ExampleNet), for each function in param theory (src, tgt),
@@ -173,51 +182,118 @@ pub fn elaborate_instance_ws(
     // 4. Second pass: process equations (define function values) with type checking
     for item in &instance.body {
         if let ast::InstanceItem::Equation(lhs, rhs) = &item.node {
-            // Decompose lhs: should be `element func_path`
-            // e.g., `ab_in in/src` → element="ab_in", func="in/src"
-            let (elem_slid, func_id) =
+            // Decompose lhs: `element func_path` or `[x: a, y: b] func_path`
+            let decomposed =
                 decompose_func_app(lhs, &name_to_slid, &theory.theory.signature)?;
 
             // Resolve rhs to an element
             let value_slid = resolve_instance_element(rhs, &name_to_slid)?;
 
-            // Type checking: verify element sort matches function domain
-            let func = &theory.theory.signature.functions[func_id];
-            let elem_sort_id = structure.sorts[elem_slid.index()];
-            if let DerivedSort::Base(expected_domain) = &func.domain
-                && elem_sort_id != *expected_domain
-            {
-                return Err(ElabError::DomainMismatch {
-                    func_name: func.name.clone(),
-                    element_name: slid_to_name
-                        .get(&elem_slid)
-                        .cloned()
-                        .unwrap_or_else(|| format!("slid_{}", elem_slid)),
-                    expected_sort: theory.theory.signature.sorts[*expected_domain].clone(),
-                    actual_sort: theory.theory.signature.sorts[elem_sort_id].clone(),
-                });
-            }
+            match decomposed {
+                DecomposedFuncApp::Base { elem, func_id } => {
+                    // Type checking: verify element sort matches function domain
+                    let func = &theory.theory.signature.functions[func_id];
+                    let elem_sort_id = structure.sorts[elem.index()];
+                    if let DerivedSort::Base(expected_domain) = &func.domain
+                        && elem_sort_id != *expected_domain
+                    {
+                        return Err(ElabError::DomainMismatch {
+                            func_name: func.name.clone(),
+                            element_name: slid_to_name
+                                .get(&elem)
+                                .cloned()
+                                .unwrap_or_else(|| format!("slid_{}", elem)),
+                            expected_sort: theory.theory.signature.sorts[*expected_domain].clone(),
+                            actual_sort: theory.theory.signature.sorts[elem_sort_id].clone(),
+                        });
+                    }
 
-            // Type checking: verify value sort matches function codomain
-            let value_sort_id = structure.sorts[value_slid.index()];
-            if let DerivedSort::Base(expected_codomain) = &func.codomain
-                && value_sort_id != *expected_codomain
-            {
-                return Err(ElabError::CodomainMismatch {
-                    func_name: func.name.clone(),
-                    element_name: slid_to_name
-                        .get(&value_slid)
-                        .cloned()
-                        .unwrap_or_else(|| format!("slid_{}", value_slid)),
-                    expected_sort: theory.theory.signature.sorts[*expected_codomain].clone(),
-                    actual_sort: theory.theory.signature.sorts[value_sort_id].clone(),
-                });
-            }
+                    // Type checking: verify value sort matches function codomain
+                    let value_sort_id = structure.sorts[value_slid.index()];
+                    if let DerivedSort::Base(expected_codomain) = &func.codomain
+                        && value_sort_id != *expected_codomain
+                    {
+                        return Err(ElabError::CodomainMismatch {
+                            func_name: func.name.clone(),
+                            element_name: slid_to_name
+                                .get(&value_slid)
+                                .cloned()
+                                .unwrap_or_else(|| format!("slid_{}", value_slid)),
+                            expected_sort: theory.theory.signature.sorts[*expected_codomain].clone(),
+                            actual_sort: theory.theory.signature.sorts[value_sort_id].clone(),
+                        });
+                    }
 
-            // Define the function value
-            structure
-                .define_function(func_id, elem_slid, value_slid)
-                .map_err(ElabError::DuplicateDefinition)?;
+                    // Define the function value
+                    structure
+                        .define_function(func_id, elem, value_slid)
+                        .map_err(ElabError::DuplicateDefinition)?;
+                }
+
+                DecomposedFuncApp::Product { tuple, func_id } => {
+                    let func = &theory.theory.signature.functions[func_id];
+
+                    // Type checking: verify tuple elements match product domain fields
+                    if let DerivedSort::Product(fields) = &func.domain {
+                        if tuple.len() != fields.len() {
+                            return Err(ElabError::UnsupportedFeature(format!(
+                                "product domain arity mismatch: expected {}, got {}",
+                                fields.len(),
+                                tuple.len()
+                            )));
+                        }
+
+                        for (slid, (field_name, field_sort)) in tuple.iter().zip(fields.iter()) {
+                            let elem_sort_id = structure.sorts[slid.index()];
+                            if let DerivedSort::Base(expected_sort) = field_sort {
+                                if elem_sort_id != *expected_sort {
+                                    return Err(ElabError::DomainMismatch {
+                                        func_name: func.name.clone(),
+                                        element_name: format!(
+                                            "field {} ({})",
+                                            field_name,
+                                            slid_to_name
+                                                .get(slid)
+                                                .cloned()
+                                                .unwrap_or_else(|| format!("slid_{}", slid))
+                                        ),
+                                        expected_sort: theory.theory.signature.sorts[*expected_sort]
+                                            .clone(),
+                                        actual_sort: theory.theory.signature.sorts[elem_sort_id]
+                                            .clone(),
+                                    });
+                                }
+                            }
+                        }
+                    } else {
+                        return Err(ElabError::UnsupportedFeature(format!(
+                            "function {} has product LHS but non-product domain {:?}",
+                            func.name, func.domain
+                        )));
+                    }
+
+                    // Type checking: verify value sort matches function codomain
+                    let value_sort_id = structure.sorts[value_slid.index()];
+                    if let DerivedSort::Base(expected_codomain) = &func.codomain
+                        && value_sort_id != *expected_codomain
+                    {
+                        return Err(ElabError::CodomainMismatch {
+                            func_name: func.name.clone(),
+                            element_name: slid_to_name
+                                .get(&value_slid)
+                                .cloned()
+                                .unwrap_or_else(|| format!("slid_{}", value_slid)),
+                            expected_sort: theory.theory.signature.sorts[*expected_codomain].clone(),
+                            actual_sort: theory.theory.signature.sorts[value_sort_id].clone(),
+                        });
+                    }
+
+                    // Define the function value for product domain
+                    structure
+                        .define_function_product(func_id, &tuple, value_slid)
+                        .map_err(ElabError::DuplicateDefinition)?;
+                }
+            }
         }
     }
 
@@ -276,60 +352,79 @@ pub fn elaborate_instance(
         }
     }
 
-    // Initialize function storage
-    let domain_sort_ids: Vec<Option<SortId>> = theory
+    // Initialize function storage with full domain info
+    let domains: Vec<FunctionDomainInfo> = theory
         .theory
         .signature
         .functions
         .iter()
         .map(|func| match &func.domain {
-            DerivedSort::Base(id) => Some(*id),
-            DerivedSort::Product(_) => None,
+            DerivedSort::Base(id) => FunctionDomainInfo::Base(*id),
+            DerivedSort::Product(fields) => {
+                let field_sorts: Vec<SortId> = fields
+                    .iter()
+                    .filter_map(|(_, ds)| match ds {
+                        DerivedSort::Base(id) => Some(*id),
+                        DerivedSort::Product(_) => None, // Nested products not supported
+                    })
+                    .collect();
+                FunctionDomainInfo::Product(field_sorts)
+            }
         })
         .collect();
-    structure.init_functions(&domain_sort_ids);
+    structure.init_functions_full(&domains);
 
     // Second pass: process equations
     for item in &instance.body {
         if let ast::InstanceItem::Equation(lhs, rhs) = &item.node {
-            let (elem_slid, func_id) =
+            let decomposed =
                 decompose_func_app(lhs, &name_to_slid, &theory.theory.signature)?;
             let value_slid = resolve_instance_element(rhs, &name_to_slid)?;
 
-            let func = &theory.theory.signature.functions[func_id];
-            let elem_sort_id = structure.sorts[elem_slid.index()];
-            if let DerivedSort::Base(expected_domain) = &func.domain
-                && elem_sort_id != *expected_domain
-            {
-                return Err(ElabError::DomainMismatch {
-                    func_name: func.name.clone(),
-                    element_name: slid_to_name
-                        .get(&elem_slid)
-                        .cloned()
-                        .unwrap_or_else(|| format!("slid_{}", elem_slid)),
-                    expected_sort: theory.theory.signature.sorts[*expected_domain].clone(),
-                    actual_sort: theory.theory.signature.sorts[elem_sort_id].clone(),
-                });
-            }
+            match decomposed {
+                DecomposedFuncApp::Base { elem, func_id } => {
+                    let func = &theory.theory.signature.functions[func_id];
+                    let elem_sort_id = structure.sorts[elem.index()];
+                    if let DerivedSort::Base(expected_domain) = &func.domain
+                        && elem_sort_id != *expected_domain
+                    {
+                        return Err(ElabError::DomainMismatch {
+                            func_name: func.name.clone(),
+                            element_name: slid_to_name
+                                .get(&elem)
+                                .cloned()
+                                .unwrap_or_else(|| format!("slid_{}", elem)),
+                            expected_sort: theory.theory.signature.sorts[*expected_domain].clone(),
+                            actual_sort: theory.theory.signature.sorts[elem_sort_id].clone(),
+                        });
+                    }
 
-            let value_sort_id = structure.sorts[value_slid.index()];
-            if let DerivedSort::Base(expected_codomain) = &func.codomain
-                && value_sort_id != *expected_codomain
-            {
-                return Err(ElabError::CodomainMismatch {
-                    func_name: func.name.clone(),
-                    element_name: slid_to_name
-                        .get(&value_slid)
-                        .cloned()
-                        .unwrap_or_else(|| format!("slid_{}", value_slid)),
-                    expected_sort: theory.theory.signature.sorts[*expected_codomain].clone(),
-                    actual_sort: theory.theory.signature.sorts[value_sort_id].clone(),
-                });
-            }
+                    let value_sort_id = structure.sorts[value_slid.index()];
+                    if let DerivedSort::Base(expected_codomain) = &func.codomain
+                        && value_sort_id != *expected_codomain
+                    {
+                        return Err(ElabError::CodomainMismatch {
+                            func_name: func.name.clone(),
+                            element_name: slid_to_name
+                                .get(&value_slid)
+                                .cloned()
+                                .unwrap_or_else(|| format!("slid_{}", value_slid)),
+                            expected_sort: theory.theory.signature.sorts[*expected_codomain].clone(),
+                            actual_sort: theory.theory.signature.sorts[value_sort_id].clone(),
+                        });
+                    }
 
-            structure
-                .define_function(func_id, elem_slid, value_slid)
-                .map_err(ElabError::DuplicateDefinition)?;
+                    structure
+                        .define_function(func_id, elem, value_slid)
+                        .map_err(ElabError::DuplicateDefinition)?;
+                }
+                DecomposedFuncApp::Product { tuple, func_id } => {
+                    // Legacy function: handle product domains like the main version
+                    structure
+                        .define_function_product(func_id, &tuple, value_slid)
+                        .map_err(ElabError::DuplicateDefinition)?;
+                }
+            }
         }
     }
 
@@ -470,18 +565,24 @@ fn resolve_instance_sort(sig: &Signature, sort_expr: &ast::TypeExpr) -> ElabResu
     }
 }
 
-/// Decompose a function application term like `ab_in in/src`
-/// Returns (element_slid, func_id)
+/// Result of decomposing a function application's LHS
+enum DecomposedFuncApp {
+    /// Base domain: `element func` → single element
+    Base { elem: Slid, func_id: FuncId },
+    /// Product domain: `[x: a, y: b] func` → tuple of elements
+    Product { tuple: Vec<Slid>, func_id: FuncId },
+}
+
+/// Decompose a function application term like `ab_in in/src` or `[x: u, y: u] mul`
+/// Returns either Base (single element) or Product (tuple of elements) with func_id
 fn decompose_func_app(
     term: &ast::Term,
     name_to_slid: &HashMap<String, Slid>,
     sig: &Signature,
-) -> ElabResult<(Slid, FuncId)> {
+) -> ElabResult<DecomposedFuncApp> {
     match term {
         ast::Term::App(base, func) => {
-            // base should be an element name, func should be a function path
-            let elem_slid = resolve_instance_element(base, name_to_slid)?;
-
+            // func should be a function path
             let func_id = match func.as_ref() {
                 ast::Term::Path(path) => {
                     let func_name = path.to_string();
@@ -491,7 +592,27 @@ fn decompose_func_app(
                 _ => Err(ElabError::NotAFunction(format!("{:?}", func))),
             }?;
 
-            Ok((elem_slid, func_id))
+            // base can be either:
+            // - a single element name (base domain)
+            // - a record like [x: a, y: b] (product domain)
+            match base.as_ref() {
+                ast::Term::Record(fields) => {
+                    // Product domain: [x: a, y: b] func
+                    let tuple: Vec<Slid> = fields
+                        .iter()
+                        .map(|(_, term)| resolve_instance_element(term, name_to_slid))
+                        .collect::<ElabResult<Vec<_>>>()?;
+                    Ok(DecomposedFuncApp::Product { tuple, func_id })
+                }
+                _ => {
+                    // Base domain: element func
+                    let elem_slid = resolve_instance_element(base, name_to_slid)?;
+                    Ok(DecomposedFuncApp::Base {
+                        elem: elem_slid,
+                        func_id,
+                    })
+                }
+            }
         }
         _ => Err(ElabError::NotAFunction(format!(
             "expected function application, got {:?}",
@@ -534,26 +655,16 @@ fn validate_totality(
     use crate::core::FunctionColumn;
 
     for (func_id, func_sym) in sig.functions.iter().enumerate() {
-        // Get the domain sort (only handle base sorts for now)
-        let domain_sort_id = match &func_sym.domain {
-            DerivedSort::Base(id) => *id,
-            DerivedSort::Product(_) => {
-                // Skip product domains for now — they'd require enumerating all tuples
-                continue;
-            }
-        };
-
-        // Check that every slot in the columnar function storage is defined
         let mut missing = Vec::new();
         let func_col = &structure.functions[func_id];
 
-        match func_col {
-            FunctionColumn::Local(col) => {
+        match (&func_sym.domain, func_col) {
+            // Base domain with local codomain
+            (DerivedSort::Base(domain_sort_id), FunctionColumn::Local(col)) => {
                 for (sort_slid, opt_slid) in col.iter().enumerate() {
                     if opt_slid.is_none() {
-                        // Reverse lookup: sort_slid → slid
                         let slid = Slid::from_usize(
-                            structure.carriers[domain_sort_id]
+                            structure.carriers[*domain_sort_id]
                                 .select(sort_slid as u64)
                                 .expect("sort_slid should be valid") as usize,
                         );
@@ -565,12 +676,13 @@ fn validate_totality(
                     }
                 }
             }
-            FunctionColumn::External(col) => {
-                // For external codomains, check that all Luid refs are defined
+
+            // Base domain with external codomain
+            (DerivedSort::Base(domain_sort_id), FunctionColumn::External(col)) => {
                 for (sort_slid, opt_luid) in col.iter().enumerate() {
                     if opt_luid.is_none() {
                         let slid = Slid::from_usize(
-                            structure.carriers[domain_sort_id]
+                            structure.carriers[*domain_sort_id]
                                 .select(sort_slid as u64)
                                 .expect("sort_slid should be valid") as usize,
                         );
@@ -581,6 +693,63 @@ fn validate_totality(
                         missing.push(name);
                     }
                 }
+            }
+
+            // Product domain: check all tuples in the cartesian product
+            (DerivedSort::Product(fields), FunctionColumn::ProductLocal { storage, .. }) => {
+                // Collect carriers for each field
+                let field_carriers: Vec<Vec<Slid>> = fields
+                    .iter()
+                    .map(|(_, ds)| match ds {
+                        DerivedSort::Base(sort_id) => structure.carriers[*sort_id]
+                            .iter()
+                            .map(|s| Slid::from_usize(s as usize))
+                            .collect(),
+                        DerivedSort::Product(_) => {
+                            // Nested products not yet supported
+                            vec![]
+                        }
+                    })
+                    .collect();
+
+                // Enumerate all tuples via cartesian product
+                for tuple in cartesian_product(&field_carriers) {
+                    // Convert Slids to sort-local indices for storage lookup
+                    let local_indices: Vec<usize> = tuple
+                        .iter()
+                        .map(|slid| structure.sort_local_id(*slid).index())
+                        .collect();
+
+                    if storage.get(&local_indices).is_none() {
+                        // Format the missing tuple nicely
+                        let tuple_str: Vec<String> = tuple
+                            .iter()
+                            .zip(fields.iter())
+                            .map(|(slid, (field_name, _))| {
+                                let elem_name = slid_to_name
+                                    .get(slid)
+                                    .cloned()
+                                    .unwrap_or_else(|| format!("#{}", slid));
+                                format!("{}: {}", field_name, elem_name)
+                            })
+                            .collect();
+                        missing.push(format!("[{}]", tuple_str.join(", ")));
+                    }
+                }
+            }
+
+            // Mismatched domain/column types (shouldn't happen if init is correct)
+            (DerivedSort::Base(_), FunctionColumn::ProductLocal { .. }) => {
+                return Err(ElabError::UnsupportedFeature(format!(
+                    "function {} has base domain but product storage",
+                    func_sym.name
+                )));
+            }
+            (DerivedSort::Product(_), FunctionColumn::Local(_) | FunctionColumn::External(_)) => {
+                return Err(ElabError::UnsupportedFeature(format!(
+                    "function {} has product domain but columnar storage",
+                    func_sym.name
+                )));
             }
         }
 
@@ -593,4 +762,25 @@ fn validate_totality(
     }
 
     Ok(())
+}
+
+/// Generate cartesian product of vectors
+fn cartesian_product(sets: &[Vec<Slid>]) -> Vec<Vec<Slid>> {
+    if sets.is_empty() {
+        return vec![vec![]]; // Single empty tuple for nullary product
+    }
+
+    let mut result = vec![vec![]];
+    for set in sets {
+        let mut new_result = Vec::new();
+        for tuple in &result {
+            for &elem in set {
+                let mut new_tuple = tuple.clone();
+                new_tuple.push(elem);
+                new_result.push(new_tuple);
+            }
+        }
+        result = new_result;
+    }
+    result
 }

@@ -149,7 +149,7 @@ fn test_petri_net_mutual_exclusion() {
 }
 
 // ============================================================================
-// Monoid example (theory only - instances need geolog-ulh)
+// Monoid example (with product domain function support)
 // ============================================================================
 
 #[test]
@@ -162,6 +162,82 @@ fn test_monoid_example_parses() {
     assert_eq!(monoid.theory.signature.sorts.len(), 1, "Monoid should have 1 sort (M)");
     assert_eq!(monoid.theory.signature.functions.len(), 2, "Monoid should have 2 functions (mul, id)");
     assert_eq!(monoid.theory.axioms.len(), 4, "Monoid should have 4 axioms");
+
+    // Check instances (product domain support via geolog-ulh)
+    assert!(state.workspace.instances.contains_key("Trivial"), "Trivial monoid should exist");
+    assert!(state.workspace.instances.contains_key("BoolAnd"), "BoolAnd monoid should exist");
+    assert!(state.workspace.instances.contains_key("BoolOr"), "BoolOr monoid should exist");
+}
+
+#[test]
+fn test_monoid_trivial_structure() {
+    let path = Path::new("examples/geolog/monoid.geolog");
+    let state = load_geolog_file(path).unwrap();
+
+    let trivial = state.workspace.instances.get("Trivial").unwrap();
+
+    // Trivial monoid has 1 element
+    assert_eq!(trivial.structure.carrier_size(0), 1, "Trivial monoid should have 1 element");
+
+    // Check id function (base domain: M -> M)
+    // id: e -> e
+    assert!(trivial.structure.functions[1].as_local().is_some(), "id should be a local function");
+    let id_col = trivial.structure.functions[1].as_local().unwrap();
+    assert_eq!(id_col.len(), 1, "id should have 1 entry");
+    assert!(id_col[0].is_some(), "id(e) should be defined");
+
+    // Check mul function (product domain: M × M -> M)
+    // mul: (e,e) -> e
+    if let geolog::core::FunctionColumn::ProductLocal { storage, field_sorts } = &trivial.structure.functions[0] {
+        assert_eq!(field_sorts.len(), 2, "mul should have 2-element domain");
+        assert_eq!(storage.defined_count(), 1, "mul should have 1 entry defined");
+    } else {
+        panic!("mul should be a ProductLocal function");
+    }
+}
+
+#[test]
+fn test_monoid_bool_and_structure() {
+    let path = Path::new("examples/geolog/monoid.geolog");
+    let state = load_geolog_file(path).unwrap();
+
+    let bool_and = state.workspace.instances.get("BoolAnd").unwrap();
+
+    // BoolAnd has 2 elements (T, F)
+    assert_eq!(bool_and.structure.carrier_size(0), 2, "BoolAnd should have 2 elements");
+
+    // Check mul function (product domain): all 4 entries should be defined
+    if let geolog::core::FunctionColumn::ProductLocal { storage, .. } = &bool_and.structure.functions[0] {
+        assert_eq!(storage.defined_count(), 4, "mul should have all 4 entries defined (2×2)");
+
+        // Verify it's total
+        assert!(storage.is_total(&[2, 2]), "mul should be total on 2×2 domain");
+    } else {
+        panic!("mul should be a ProductLocal function");
+    }
+
+    // Check id function (base domain): both entries defined
+    let id_col = bool_and.structure.functions[1].as_local().unwrap();
+    assert_eq!(id_col.len(), 2, "id should have 2 entries");
+    assert!(id_col.iter().all(|opt| opt.is_some()), "id should be total");
+}
+
+#[test]
+fn test_monoid_bool_or_structure() {
+    let path = Path::new("examples/geolog/monoid.geolog");
+    let state = load_geolog_file(path).unwrap();
+
+    let bool_or = state.workspace.instances.get("BoolOr").unwrap();
+
+    // BoolOr has 2 elements (T, F)
+    assert_eq!(bool_or.structure.carrier_size(0), 2, "BoolOr should have 2 elements");
+
+    // Check mul function is total
+    if let geolog::core::FunctionColumn::ProductLocal { storage, .. } = &bool_or.structure.functions[0] {
+        assert!(storage.is_total(&[2, 2]), "mul should be total on 2×2 domain");
+    } else {
+        panic!("mul should be a ProductLocal function");
+    }
 }
 
 // ============================================================================

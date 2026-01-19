@@ -346,6 +346,8 @@ impl ReplState {
         entry: &InstanceEntry,
         signature: &crate::core::Signature,
     ) -> Vec<(String, Vec<String>)> {
+        use crate::core::FunctionColumn;
+
         let mut result = Vec::new();
         for (func_id, func_sym) in signature.functions.iter().enumerate() {
             if func_id >= entry.structure.functions.len() {
@@ -353,26 +355,75 @@ impl ReplState {
             }
             let mut values = Vec::new();
 
-            if let DerivedSort::Base(domain_sort_id) = &func_sym.domain {
-                for slid_u64 in entry.structure.carriers[*domain_sort_id].iter() {
-                    let slid = Slid::from_usize(slid_u64 as usize);
-                    let sort_slid = entry.structure.sort_local_id(slid);
-                    if let Some(codomain_slid) = entry.structure.get_function(func_id, sort_slid) {
-                        let domain_name = entry
-                            .get_name(slid)
-                            .map(|s| s.to_string())
-                            .unwrap_or_else(|| format!("#{}", slid_u64));
-                        let codomain_name = entry
-                            .get_name(codomain_slid)
-                            .map(|s| s.to_string())
-                            .unwrap_or_else(|| format!("#{}", codomain_slid));
-                        values.push(format!(
-                            "{} {} = {}",
-                            domain_name, func_sym.name, codomain_name
-                        ));
+            match &func_sym.domain {
+                DerivedSort::Base(domain_sort_id) => {
+                    // Base domain: iterate over carrier elements
+                    for slid_u64 in entry.structure.carriers[*domain_sort_id].iter() {
+                        let slid = Slid::from_usize(slid_u64 as usize);
+                        let sort_slid = entry.structure.sort_local_id(slid);
+                        if let Some(codomain_slid) =
+                            entry.structure.get_function(func_id, sort_slid)
+                        {
+                            let domain_name = entry
+                                .get_name(slid)
+                                .map(|s| s.to_string())
+                                .unwrap_or_else(|| format!("#{}", slid_u64));
+                            let codomain_name = entry
+                                .get_name(codomain_slid)
+                                .map(|s| s.to_string())
+                                .unwrap_or_else(|| format!("#{}", codomain_slid));
+                            values.push(format!(
+                                "{} {} = {}",
+                                domain_name, func_sym.name, codomain_name
+                            ));
+                        }
+                    }
+                }
+                DerivedSort::Product(fields) => {
+                    // Product domain: iterate over defined entries in storage
+                    if let FunctionColumn::ProductLocal { storage, .. } =
+                        &entry.structure.functions[func_id]
+                    {
+                        for (tuple_indices, codomain_slid) in storage.iter_defined() {
+                            // Map sort-local indices back to Slids for name lookup
+                            let tuple_strs: Vec<String> = tuple_indices
+                                .iter()
+                                .zip(fields.iter())
+                                .map(|(&local_idx, (field_name, field_sort))| {
+                                    // Get the Slid at this sort-local position
+                                    let slid = if let DerivedSort::Base(sort_id) = field_sort {
+                                        entry.structure.carriers[*sort_id]
+                                            .iter()
+                                            .nth(local_idx)
+                                            .map(|u| Slid::from_usize(u as usize))
+                                    } else {
+                                        None
+                                    };
+
+                                    let elem_name = slid
+                                        .and_then(|s| entry.get_name(s).map(|n| n.to_string()))
+                                        .unwrap_or_else(|| format!("#{}", local_idx));
+
+                                    format!("{}: {}", field_name, elem_name)
+                                })
+                                .collect();
+
+                            let codomain_name = entry
+                                .get_name(codomain_slid)
+                                .map(|s| s.to_string())
+                                .unwrap_or_else(|| format!("#{}", codomain_slid));
+
+                            values.push(format!(
+                                "[{}] {} = {}",
+                                tuple_strs.join(", "),
+                                func_sym.name,
+                                codomain_name
+                            ));
+                        }
                     }
                 }
             }
+
             if !values.is_empty() {
                 result.push((func_sym.name.clone(), values));
             }

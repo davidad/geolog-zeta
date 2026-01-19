@@ -380,78 +380,346 @@ use crate::universe::Universe;
 /// For functions with external codomain (e.g., `token/of : token -> N/P` where
 /// N/P comes from a parent instance), we use `External(Vec<OptLuid>)` to
 /// reference elements in the parent by their Luid.
+/// Storage for product-domain functions.
+///
+/// Uses nested Vecs for efficient access and natural handling of carrier growth.
+/// Sort-local indices are append-only, so existing indices remain stable when
+/// carriers grow — we just extend the inner/outer Vecs.
+#[derive(Clone, Debug)]
+pub enum ProductStorage {
+    /// Binary product [x: A, y: B] → Vec<Vec<OptSlid>>
+    /// Outer dim is A (first field), inner is B (second field).
+    /// Access: rows[x_local][y_local]
+    Binary(Vec<Vec<OptSlid>>),
+
+    /// Ternary product [x: A, y: B, z: C] → Vec<Vec<Vec<OptSlid>>>
+    Ternary(Vec<Vec<Vec<OptSlid>>>),
+
+    /// Higher-arity products: fall back to HashMap for flexibility.
+    /// Keys are tuples of sort-local indices.
+    General(HashMap<Vec<usize>, Slid>),
+}
+
+impl ProductStorage {
+    /// Create storage for binary product with given carrier sizes
+    pub fn new_binary(size_a: usize, size_b: usize) -> Self {
+        ProductStorage::Binary(vec![vec![None; size_b]; size_a])
+    }
+
+    /// Create storage for ternary product with given carrier sizes
+    pub fn new_ternary(size_a: usize, size_b: usize, size_c: usize) -> Self {
+        ProductStorage::Ternary(vec![vec![vec![None; size_c]; size_b]; size_a])
+    }
+
+    /// Create storage for general (n-ary) product
+    pub fn new_general() -> Self {
+        ProductStorage::General(HashMap::new())
+    }
+
+    /// Create storage based on arity and carrier sizes
+    pub fn new(carrier_sizes: &[usize]) -> Self {
+        match carrier_sizes.len() {
+            2 => Self::new_binary(carrier_sizes[0], carrier_sizes[1]),
+            3 => Self::new_ternary(carrier_sizes[0], carrier_sizes[1], carrier_sizes[2]),
+            _ => Self::new_general(),
+        }
+    }
+
+    /// Get value at the given tuple of sort-local indices
+    pub fn get(&self, tuple: &[usize]) -> Option<Slid> {
+        match self {
+            ProductStorage::Binary(rows) => {
+                debug_assert_eq!(tuple.len(), 2);
+                let opt = rows.get(tuple[0])?.get(tuple[1])?;
+                get_slid(*opt)
+            }
+            ProductStorage::Ternary(planes) => {
+                debug_assert_eq!(tuple.len(), 3);
+                let opt = planes.get(tuple[0])?.get(tuple[1])?.get(tuple[2])?;
+                get_slid(*opt)
+            }
+            ProductStorage::General(map) => map.get(tuple).copied(),
+        }
+    }
+
+    /// Set value at the given tuple of sort-local indices
+    /// Returns Err if conflicting definition exists
+    pub fn set(&mut self, tuple: &[usize], value: Slid) -> Result<(), Slid> {
+        match self {
+            ProductStorage::Binary(rows) => {
+                debug_assert_eq!(tuple.len(), 2);
+                // Grow if needed (append-only growth)
+                while rows.len() <= tuple[0] {
+                    rows.push(Vec::new());
+                }
+                while rows[tuple[0]].len() <= tuple[1] {
+                    rows[tuple[0]].push(None);
+                }
+                if let Some(existing) = get_slid(rows[tuple[0]][tuple[1]]) {
+                    if existing != value {
+                        return Err(existing);
+                    }
+                }
+                rows[tuple[0]][tuple[1]] = some_slid(value);
+                Ok(())
+            }
+            ProductStorage::Ternary(planes) => {
+                debug_assert_eq!(tuple.len(), 3);
+                while planes.len() <= tuple[0] {
+                    planes.push(Vec::new());
+                }
+                while planes[tuple[0]].len() <= tuple[1] {
+                    planes[tuple[0]].push(Vec::new());
+                }
+                while planes[tuple[0]][tuple[1]].len() <= tuple[2] {
+                    planes[tuple[0]][tuple[1]].push(None);
+                }
+                if let Some(existing) = get_slid(planes[tuple[0]][tuple[1]][tuple[2]]) {
+                    if existing != value {
+                        return Err(existing);
+                    }
+                }
+                planes[tuple[0]][tuple[1]][tuple[2]] = some_slid(value);
+                Ok(())
+            }
+            ProductStorage::General(map) => {
+                if let Some(&existing) = map.get(tuple) {
+                    if existing != value {
+                        return Err(existing);
+                    }
+                }
+                map.insert(tuple.to_vec(), value);
+                Ok(())
+            }
+        }
+    }
+
+    /// Count of defined (Some) entries
+    pub fn defined_count(&self) -> usize {
+        match self {
+            ProductStorage::Binary(rows) => rows
+                .iter()
+                .flat_map(|row| row.iter())
+                .filter(|&&v| v.is_some())
+                .count(),
+            ProductStorage::Ternary(planes) => planes
+                .iter()
+                .flat_map(|plane| plane.iter())
+                .flat_map(|row| row.iter())
+                .filter(|&&v| v.is_some())
+                .count(),
+            ProductStorage::General(map) => map.len(),
+        }
+    }
+
+    /// Check if all entries are defined (total function)
+    pub fn is_total(&self, carrier_sizes: &[usize]) -> bool {
+        let expected = carrier_sizes.iter().product::<usize>();
+        self.defined_count() == expected
+    }
+
+    /// Iterate over all defined entries as (tuple, value) pairs
+    pub fn iter_defined(&self) -> Box<dyn Iterator<Item = (Vec<usize>, Slid)> + '_> {
+        match self {
+            ProductStorage::Binary(rows) => Box::new(
+                rows.iter()
+                    .enumerate()
+                    .flat_map(|(i, row)| {
+                        row.iter().enumerate().filter_map(move |(j, &v)| {
+                            get_slid(v).map(|s| (vec![i, j], s))
+                        })
+                    }),
+            ),
+            ProductStorage::Ternary(planes) => Box::new(
+                planes.iter().enumerate().flat_map(|(i, plane)| {
+                    plane.iter().enumerate().flat_map(move |(j, row)| {
+                        row.iter().enumerate().filter_map(move |(k, &v)| {
+                            get_slid(v).map(|s| (vec![i, j, k], s))
+                        })
+                    })
+                }),
+            ),
+            ProductStorage::General(map) => {
+                Box::new(map.iter().map(|(k, &v)| (k.clone(), v)))
+            }
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub enum FunctionColumn {
-    /// Codomain is local: values are Slids within this structure
+    /// Base domain with local codomain: values are Slids within this structure
     Local(Vec<OptSlid>),
-    /// Codomain is external (from parent): values are Luids (globally unique)
+    /// Base domain with external codomain (from parent): values are Luids
     External(Vec<OptLuid>),
+    /// Product domain with local codomain.
+    /// Stores field sort IDs for carrier size lookups during growth.
+    ProductLocal {
+        storage: ProductStorage,
+        field_sorts: Vec<SortId>,
+    },
+}
+
+/// Linearize a tuple of sort-local indices into a flat column index.
+/// Uses row-major (lexicographic) order.
+/// E.g., for field_sizes = [3, 4], tuple [1, 2] → 1*4 + 2 = 6
+pub fn linearize_tuple(tuple: &[usize], field_sizes: &[usize]) -> usize {
+    debug_assert_eq!(tuple.len(), field_sizes.len());
+    let mut index = 0;
+    let mut stride = 1;
+    // Process in reverse for row-major order
+    for (i, &size) in field_sizes.iter().enumerate().rev() {
+        index += tuple[i] * stride;
+        stride *= size;
+    }
+    index
+}
+
+/// Delinearize a flat column index back to tuple of sort-local indices.
+pub fn delinearize_index(mut index: usize, field_sizes: &[usize]) -> Vec<usize> {
+    let mut tuple = vec![0; field_sizes.len()];
+    // Process in reverse for row-major order
+    for (i, &size) in field_sizes.iter().enumerate().rev() {
+        tuple[i] = index % size;
+        index /= size;
+    }
+    tuple
+}
+
+/// Compute total size of product domain (product of field carrier sizes)
+pub fn product_domain_size(field_sizes: &[usize]) -> usize {
+    field_sizes.iter().product()
 }
 
 impl FunctionColumn {
-    /// Get the length of this column
+    /// Get the total number of domain slots (for base domains only).
+    /// For product domains, returns 0 — use `defined_count()` instead.
     pub fn len(&self) -> usize {
         match self {
             FunctionColumn::Local(v) => v.len(),
             FunctionColumn::External(v) => v.len(),
+            FunctionColumn::ProductLocal { .. } => 0, // Product domains have dynamic size
         }
     }
 
-    /// Check if empty
-    pub fn is_empty(&self) -> bool {
-        self.len() == 0
+    /// Get the number of defined entries (not total slots)
+    pub fn defined_count(&self) -> usize {
+        match self {
+            FunctionColumn::Local(v) => v.iter().filter(|x| x.is_some()).count(),
+            FunctionColumn::External(v) => v.iter().filter(|x| x.is_some()).count(),
+            FunctionColumn::ProductLocal { storage, .. } => storage.defined_count(),
+        }
     }
 
-    /// Check if this is a local column
+    /// Check if empty (no defined entries)
+    pub fn is_empty(&self) -> bool {
+        self.defined_count() == 0
+    }
+
+    /// Check if this is a local column (base domain, local codomain)
     pub fn is_local(&self) -> bool {
         matches!(self, FunctionColumn::Local(_))
     }
 
-    /// Get local value at index (panics if external or out of bounds)
+    /// Check if this is an external column (base domain, external codomain)
+    pub fn is_external(&self) -> bool {
+        matches!(self, FunctionColumn::External(_))
+    }
+
+    /// Check if this is a product-domain column
+    pub fn is_product(&self) -> bool {
+        matches!(self, FunctionColumn::ProductLocal { .. })
+    }
+
+    /// Get local value at index (panics if not local or out of bounds)
     pub fn get_local(&self, idx: usize) -> OptSlid {
         match self {
             FunctionColumn::Local(v) => v[idx],
             FunctionColumn::External(_) => panic!("get_local called on external column"),
+            FunctionColumn::ProductLocal { .. } => panic!("get_local called on product column"),
         }
     }
 
-    /// Get external value at index (panics if local or out of bounds)
+    /// Get external value at index (panics if not external or out of bounds)
     pub fn get_external(&self, idx: usize) -> OptLuid {
         match self {
             FunctionColumn::External(v) => v[idx],
             FunctionColumn::Local(_) => panic!("get_external called on local column"),
+            FunctionColumn::ProductLocal { .. } => panic!("get_external called on product column"),
         }
     }
 
-    /// Iterate over local values (panics if external)
+    /// Iterate over local values (panics if not local)
     pub fn iter_local(&self) -> impl Iterator<Item = &OptSlid> {
         match self {
             FunctionColumn::Local(v) => v.iter(),
             FunctionColumn::External(_) => panic!("iter_local called on external column"),
+            FunctionColumn::ProductLocal { .. } => panic!("iter_local called on product column"),
         }
     }
 
-    /// Iterate over external values (panics if local)
+    /// Iterate over external values (panics if not external)
     pub fn iter_external(&self) -> impl Iterator<Item = &OptLuid> {
         match self {
             FunctionColumn::External(v) => v.iter(),
             FunctionColumn::Local(_) => panic!("iter_external called on local column"),
+            FunctionColumn::ProductLocal { .. } => panic!("iter_external called on product column"),
         }
     }
 
-    /// Get as local column (returns None if external)
+    /// Get as local column (returns None if external or product)
     pub fn as_local(&self) -> Option<&Vec<OptSlid>> {
         match self {
             FunctionColumn::Local(v) => Some(v),
-            FunctionColumn::External(_) => None,
+            FunctionColumn::External(_) | FunctionColumn::ProductLocal { .. } => None,
         }
     }
 
-    /// Get as mutable local column (returns None if external)
+    /// Get as mutable local column (returns None if external or product)
     pub fn as_local_mut(&mut self) -> Option<&mut Vec<OptSlid>> {
         match self {
             FunctionColumn::Local(v) => Some(v),
-            FunctionColumn::External(_) => None,
+            FunctionColumn::External(_) | FunctionColumn::ProductLocal { .. } => None,
+        }
+    }
+
+    /// Get product value for a tuple of sort-local indices
+    pub fn get_product(&self, tuple: &[usize]) -> Option<Slid> {
+        match self {
+            FunctionColumn::ProductLocal { storage, .. } => storage.get(tuple),
+            _ => None,
+        }
+    }
+
+    /// Get field sort IDs for product column (returns None if not product)
+    pub fn field_sorts(&self) -> Option<&[SortId]> {
+        match self {
+            FunctionColumn::ProductLocal { field_sorts, .. } => Some(field_sorts),
+            _ => None,
+        }
+    }
+
+    /// Get product storage (returns None if not product)
+    pub fn as_product(&self) -> Option<&ProductStorage> {
+        match self {
+            FunctionColumn::ProductLocal { storage, .. } => Some(storage),
+            _ => None,
+        }
+    }
+
+    /// Get mutable product storage (returns None if not product)
+    pub fn as_product_mut(&mut self) -> Option<&mut ProductStorage> {
+        match self {
+            FunctionColumn::ProductLocal { storage, .. } => Some(storage),
+            _ => None,
+        }
+    }
+
+    /// Iterate over defined product entries as (tuple, value) pairs
+    pub fn iter_product_defined(&self) -> Option<Box<dyn Iterator<Item = (Vec<usize>, Slid)> + '_>> {
+        match self {
+            FunctionColumn::ProductLocal { storage, .. } => Some(storage.iter_defined()),
+            _ => None,
         }
     }
 }
@@ -511,6 +779,15 @@ pub struct FunctionInitInfo {
     pub codomain_is_external: bool,
 }
 
+/// Domain info for function initialization
+#[derive(Clone, Debug)]
+pub enum FunctionDomainInfo {
+    /// Base sort domain: just the sort ID
+    Base(SortId),
+    /// Product domain: list of sort IDs for each field
+    Product(Vec<SortId>),
+}
+
 impl Structure {
     /// Create a new empty structure.
     /// Note: functions and relations are not pre-allocated here; call
@@ -561,13 +838,41 @@ impl Structure {
 
     /// Initialize function storage for simple (non-parameterized) instances.
     /// All codomains are assumed to be local.
+    /// Pass `None` for product-domain functions; pass `Some(sort_id)` for base-domain functions.
     pub fn init_functions(&mut self, domain_sort_ids: &[Option<SortId>]) {
         self.functions = domain_sort_ids
             .iter()
-            .map(|opt_sort_id| {
-                match opt_sort_id {
-                    Some(sort_id) => FunctionColumn::Local(vec![None; self.carrier_size(*sort_id)]),
-                    None => FunctionColumn::Local(Vec::new()), // Product domains deferred
+            .map(|opt_sort_id| match opt_sort_id {
+                Some(sort_id) => FunctionColumn::Local(vec![None; self.carrier_size(*sort_id)]),
+                None => {
+                    // Legacy: product domains without size info get empty ProductLocal
+                    // Use init_functions_full for proper initialization
+                    FunctionColumn::ProductLocal {
+                        storage: ProductStorage::new_general(),
+                        field_sorts: Vec::new(),
+                    }
+                }
+            })
+            .collect();
+    }
+
+    /// Initialize function storage with full domain info (supports product domains).
+    pub fn init_functions_full(&mut self, domains: &[FunctionDomainInfo]) {
+        self.functions = domains
+            .iter()
+            .map(|domain| match domain {
+                FunctionDomainInfo::Base(sort_id) => {
+                    FunctionColumn::Local(vec![None; self.carrier_size(*sort_id)])
+                }
+                FunctionDomainInfo::Product(field_sort_ids) => {
+                    let carrier_sizes: Vec<usize> = field_sort_ids
+                        .iter()
+                        .map(|&sort_id| self.carrier_size(sort_id))
+                        .collect();
+                    FunctionColumn::ProductLocal {
+                        storage: ProductStorage::new(&carrier_sizes),
+                        field_sorts: field_sort_ids.clone(),
+                    }
                 }
             })
             .collect();
@@ -676,6 +981,10 @@ impl Structure {
                 "func {} has external codomain, use define_function_ext",
                 func_id
             )),
+            FunctionColumn::ProductLocal { .. } => Err(format!(
+                "func {} has product domain, use define_function_product",
+                func_id
+            )),
         }
     }
 
@@ -707,14 +1016,55 @@ impl Structure {
                 "func {} has local codomain, use define_function",
                 func_id
             )),
+            FunctionColumn::ProductLocal { .. } => Err(format!(
+                "func {} has product domain, use define_function_product",
+                func_id
+            )),
         }
     }
 
-    /// Get function value for local codomain.
+    /// Define a function value for a product domain (tuple of Slids → Slid).
+    /// Used for functions like `mul : [x: M, y: M] -> M`.
+    ///
+    /// The domain_tuple contains Slids which are converted to sort-local indices
+    /// for storage in the nested Vec structure.
+    pub fn define_function_product(
+        &mut self,
+        func_id: FuncId,
+        domain_tuple: &[Slid],
+        codomain_slid: Slid,
+    ) -> Result<(), String> {
+        // Convert Slids to sort-local indices for storage
+        let local_indices: Vec<usize> = domain_tuple
+            .iter()
+            .map(|&slid| self.sort_local_id(slid).index())
+            .collect();
+
+        match &mut self.functions[func_id] {
+            FunctionColumn::ProductLocal { storage, .. } => {
+                storage.set(&local_indices, codomain_slid).map_err(|existing| {
+                    format!(
+                        "conflicting definition: func {}({:?}) already defined as slid {}, cannot redefine as slid {}",
+                        func_id, domain_tuple, existing, codomain_slid
+                    )
+                })
+            }
+            FunctionColumn::Local(_) => Err(format!(
+                "func {} has base domain, use define_function",
+                func_id
+            )),
+            FunctionColumn::External(_) => Err(format!(
+                "func {} has external codomain, use define_function_ext",
+                func_id
+            )),
+        }
+    }
+
+    /// Get function value for local codomain (base domain only).
     pub fn get_function(&self, func_id: FuncId, domain_sort_slid: SortSlid) -> Option<Slid> {
         match &self.functions[func_id] {
             FunctionColumn::Local(col) => get_slid(col[domain_sort_slid.index()]),
-            FunctionColumn::External(_) => None,
+            FunctionColumn::External(_) | FunctionColumn::ProductLocal { .. } => None,
         }
     }
 
@@ -723,7 +1073,22 @@ impl Structure {
         use crate::id::get_luid;
         match &self.functions[func_id] {
             FunctionColumn::External(col) => get_luid(col[domain_sort_slid.index()]),
-            FunctionColumn::Local(_) => None,
+            FunctionColumn::Local(_) | FunctionColumn::ProductLocal { .. } => None,
+        }
+    }
+
+    /// Get function value for product domain.
+    /// Takes a tuple of Slids and converts them to sort-local indices for lookup.
+    pub fn get_function_product(&self, func_id: FuncId, domain_tuple: &[Slid]) -> Option<Slid> {
+        // Convert Slids to sort-local indices
+        let local_indices: Vec<usize> = domain_tuple
+            .iter()
+            .map(|&slid| self.sort_local_id(slid).index())
+            .collect();
+
+        match &self.functions[func_id] {
+            FunctionColumn::ProductLocal { storage, .. } => storage.get(&local_indices),
+            FunctionColumn::Local(_) | FunctionColumn::External(_) => None,
         }
     }
 
