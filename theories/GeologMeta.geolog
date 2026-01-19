@@ -346,13 +346,9 @@ theory GeologMeta {
   FuncVal/arg : FuncVal -> Elem;           // domain element (or product elem)
   FuncVal/result : FuncVal -> Elem;        // codomain element
 
-  // ============================================================
-  // FUNCTION VALUE RETRACTIONS
-  // ============================================================
-
-  FuncValRetract : Sort;
-  FuncValRetract/instance : FuncValRetract -> Instance;
-  FuncValRetract/funcval : FuncValRetract -> FuncVal;
+  // NOTE: No FuncValRetract sort - function values are IMMUTABLE.
+  // To "change" a function value, retract the domain element and create a new one.
+  // This ensures the Monotonic Submodel Property (see incremental_index_design.md).
 
   // ============================================================
   // RELATION TUPLES (delta: additions)
@@ -364,13 +360,10 @@ theory GeologMeta {
   RelTuple/rel : RelTuple -> Rel;            // which relation
   RelTuple/arg : RelTuple -> Elem;           // argument element
 
-  // ============================================================
-  // RELATION TUPLE RETRACTIONS
-  // ============================================================
-
-  RelTupleRetract : Sort;
-  RelTupleRetract/instance : RelTupleRetract -> Instance;
-  RelTupleRetract/tuple : RelTupleRetract -> RelTuple;
+  // NOTE: No RelTupleRetract sort - relation tuples are IMMUTABLE.
+  // Relations are boolean-valued functions: R(a,b) is defined at element creation time.
+  // To "change" a relation value, retract the involved elements and create new ones.
+  // This ensures the Monotonic Submodel Property (see incremental_index_design.md).
 
   // ============================================================
   // THEORY VERSIONING (same pattern as instances)
