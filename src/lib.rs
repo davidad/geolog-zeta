@@ -16,6 +16,7 @@ pub mod patch;
 pub mod pretty;
 pub mod repl;
 pub mod solver;
+pub mod store;
 pub mod tensor;
 pub mod universe;
 pub mod version;

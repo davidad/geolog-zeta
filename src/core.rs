@@ -956,6 +956,7 @@ impl Structure {
 
     /// Define a function value for a local codomain (Slid → Slid).
     /// Uses SortSlid indexing into the columnar function storage.
+    /// Automatically grows the column if needed.
     pub fn define_function(
         &mut self,
         func_id: FuncId,
@@ -963,10 +964,15 @@ impl Structure {
         codomain_slid: Slid,
     ) -> Result<(), String> {
         let domain_sort_slid = self.sort_local_id(domain_slid);
+        let idx = domain_sort_slid.index();
 
         match &mut self.functions[func_id] {
             FunctionColumn::Local(col) => {
-                if let Some(existing) = get_slid(col[domain_sort_slid.index()])
+                // Grow column if needed
+                if idx >= col.len() {
+                    col.resize(idx + 1, None); // None = undefined
+                }
+                if let Some(existing) = get_slid(col[idx])
                     && existing != codomain_slid
                 {
                     return Err(format!(
@@ -974,7 +980,7 @@ impl Structure {
                         func_id, domain_slid, existing, codomain_slid
                     ));
                 }
-                col[domain_sort_slid.index()] = some_slid(codomain_slid);
+                col[idx] = some_slid(codomain_slid);
                 Ok(())
             }
             FunctionColumn::External(_) => Err(format!(
@@ -990,6 +996,7 @@ impl Structure {
 
     /// Define a function value for an external codomain (Slid → Luid).
     /// Used for functions referencing parent instance elements.
+    /// Automatically grows the column if needed.
     pub fn define_function_ext(
         &mut self,
         func_id: FuncId,
@@ -998,10 +1005,15 @@ impl Structure {
     ) -> Result<(), String> {
         use crate::id::{get_luid, some_luid};
         let domain_sort_slid = self.sort_local_id(domain_slid);
+        let idx = domain_sort_slid.index();
 
         match &mut self.functions[func_id] {
             FunctionColumn::External(col) => {
-                if let Some(existing) = get_luid(col[domain_sort_slid.index()])
+                // Grow column if needed
+                if idx >= col.len() {
+                    col.resize(idx + 1, None); // None = undefined
+                }
+                if let Some(existing) = get_luid(col[idx])
                     && existing != codomain_luid
                 {
                     return Err(format!(
@@ -1009,7 +1021,7 @@ impl Structure {
                         func_id, domain_slid, existing, codomain_luid
                     ));
                 }
-                col[domain_sort_slid.index()] = some_luid(codomain_luid);
+                col[idx] = some_luid(codomain_luid);
                 Ok(())
             }
             FunctionColumn::Local(_) => Err(format!(
@@ -1062,8 +1074,9 @@ impl Structure {
 
     /// Get function value for local codomain (base domain only).
     pub fn get_function(&self, func_id: FuncId, domain_sort_slid: SortSlid) -> Option<Slid> {
+        let idx = domain_sort_slid.index();
         match &self.functions[func_id] {
-            FunctionColumn::Local(col) => get_slid(col[domain_sort_slid.index()]),
+            FunctionColumn::Local(col) => col.get(idx).and_then(|&opt| get_slid(opt)),
             FunctionColumn::External(_) | FunctionColumn::ProductLocal { .. } => None,
         }
     }
@@ -1071,8 +1084,9 @@ impl Structure {
     /// Get function value for external codomain (returns Luid).
     pub fn get_function_ext(&self, func_id: FuncId, domain_sort_slid: SortSlid) -> Option<Luid> {
         use crate::id::get_luid;
+        let idx = domain_sort_slid.index();
         match &self.functions[func_id] {
-            FunctionColumn::External(col) => get_luid(col[domain_sort_slid.index()]),
+            FunctionColumn::External(col) => col.get(idx).and_then(|&opt| get_luid(opt)),
             FunctionColumn::Local(_) | FunctionColumn::ProductLocal { .. } => None,
         }
     }
