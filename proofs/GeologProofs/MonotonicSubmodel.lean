@@ -414,17 +414,25 @@ theorem formula_satisfaction_monotone {M M' : Structure S (Type u)}
     exact top_arrow_surjective _
   | «false» =>
     -- ⊥ contains nothing: the underlying type is empty, so hsat is contradictory
-    -- The Geometric instance has a sorried OrderBot, making this case challenging
-    -- The proof strategy: Formula.interpret .false = ⊥, and y is in the underlying of ⊥
-    -- Since Geometric.has_false provides HasInitial (Subobject X), the ⊥ is initial
-    -- Initial subobjects in Type u have empty underlying types
-    --
-    -- NOTE: Instance mismatch between Geometric.instOrderBotSubobject (sorried) and
-    -- Mathlib's Subobject.orderBot prevents a clean proof. This requires either:
-    -- 1. Fixing model-theory-topos to define OrderBot properly
-    -- 2. Proving the two ⊥s are equal (blocked by sorry in Geometric)
-    -- 3. Using a more direct argument about underlying types
-    sorry -- Blocked by sorried OrderBot in model-theory-topos
+    -- Formula.interpret .false = ⊥, and we need to show hsat is vacuously true
+    unfold formulaSatisfied subobjectMem at hsat
+    simp only [Formula.interpret] at hsat
+    obtain ⟨y, _⟩ := hsat
+    -- y is in the underlying of ⊥ (using Geometric.instOrderBotSubobject)
+    -- Both Geometric's ⊥ and Mathlib's ⊥ are bottom in the same partial order, so they're equal.
+    -- Prove the two different ⊥s are equal by le_antisymm
+    have heq : ∀ {X : Type u},
+        @Bot.bot (Subobject X) (Geometric.instOrderBotSubobject X).toBot =
+        @Bot.bot (Subobject X) Subobject.orderBot.toBot := by
+      intro X
+      apply le_antisymm
+      · exact @OrderBot.bot_le _ _ (Geometric.instOrderBotSubobject X) _
+      · exact @OrderBot.bot_le _ _ Subobject.orderBot _
+    -- Rewrite y's type to use Mathlib's ⊥
+    rw [heq] at y
+    -- Now y : underlying of Mathlib's ⊥, which is empty
+    -- Derive False from y being in an empty type, then prove anything
+    exact False.elim (bot_underlying_isEmpty.false y)
   | conj φ ψ ihφ ihψ =>
     -- Conjunction: both components must hold
     -- Use: prod_eq_inf says f₁ ⨯ f₂ = f₁ ⊓ f₂
