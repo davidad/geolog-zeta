@@ -28,6 +28,8 @@
 
 mod pattern;
 mod exec;
+pub mod backend;
 
 pub use pattern::{Pattern, Constraint, Projection};
 pub use exec::{QueryResult, execute_pattern};
+pub use backend::{Bag, QueryOp, Predicate, JoinCond, execute};

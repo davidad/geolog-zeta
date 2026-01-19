@@ -13,6 +13,65 @@ pub fn elaborate_theory(env: &mut Env, theory: &ast::TheoryDecl) -> ElabResult<E
     local_env.current_theory = Some(theory.name.clone());
     local_env.signature = Signature::new();
 
+    // Track extended theories for transitive closure semantics
+    let mut extends_chain: Vec<String> = Vec::new();
+
+    // Process extends clause (if any)
+    // This is like a parameter, but:
+    // 1. Uses the parent theory name as the qualifier (e.g., GeologMeta/Srt)
+    // 2. Establishes an "is-a" relationship with transitive closure
+    if let Some(ref parent_path) = theory.extends {
+        let parent_name = parent_path.segments.join("/");
+        if let Some(parent_theory) = env.theories.get(&parent_name) {
+            // Record the extends relationship (including transitive parents)
+            extends_chain.push(parent_name.clone());
+            // TODO: if parent_theory has its own extends, add those transitively
+
+            // Copy all sorts with qualified names (ParentTheory/SortName)
+            for sort_name in &parent_theory.theory.signature.sorts {
+                let qualified_name = format!("{}/{}", parent_name, sort_name);
+                local_env.signature.add_sort(qualified_name);
+            }
+
+            // Copy all functions with qualified names
+            for func in &parent_theory.theory.signature.functions {
+                let qualified_name = format!("{}/{}", parent_name, func.name);
+                let domain = remap_derived_sort(
+                    &func.domain,
+                    &parent_theory.theory.signature,
+                    &local_env.signature,
+                    &parent_name,
+                );
+                let codomain = remap_derived_sort(
+                    &func.codomain,
+                    &parent_theory.theory.signature,
+                    &local_env.signature,
+                    &parent_name,
+                );
+                local_env
+                    .signature
+                    .add_function(qualified_name, domain, codomain);
+            }
+
+            // Copy all relations with qualified names
+            for rel in &parent_theory.theory.signature.relations {
+                let qualified_name = format!("{}/{}", parent_name, rel.name);
+                let domain = remap_derived_sort(
+                    &rel.domain,
+                    &parent_theory.theory.signature,
+                    &local_env.signature,
+                    &parent_name,
+                );
+                local_env.signature.add_relation(qualified_name, domain);
+            }
+
+            // Note: axioms are inherited but we don't copy them yet
+            // (they reference the parent's sort/func IDs which need remapping)
+        } else {
+            return Err(ElabError::UnknownTheory(parent_name));
+        }
+    }
+
     // Process parameters
     // When we have `theory (N : PetriNet instance) Trace { ... }`, we need to:
     // 1. Copy all sorts from PetriNet into local signature with qualified names (N/P, N/T, etc.)

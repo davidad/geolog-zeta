@@ -8,19 +8,10 @@
 //
 // See loose_thoughts/2026-01-19_19:45_relalg_ir_design.md for full design.
 //
-// NOTE: Once `extends` is implemented in the elaborator, this theory should
-// extend GeologMeta to get Srt, Func, Elem, etc. For now, we define them locally.
+// This theory extends GeologMeta to get Srt, Func, Elem, etc.
+// References use qualified names: GeologMeta/Srt, GeologMeta/Func, etc.
 
-theory RelAlgIR {
-
-  // ============================================================
-  // EXTERNAL REFERENCES (from GeologMeta - defined locally for now)
-  // ============================================================
-  // These should come from GeologMeta via `extends` once that's implemented.
-
-  Srt : Sort;   // Sort elements from the target theory
-  Func : Sort;  // Function elements from the target theory
-  Elem : Sort;  // Element references in the target instance
+theory RelAlgIR extends GeologMeta {
 
   // ============================================================
   // SCHEMAS (types of data on wires)
@@ -37,7 +28,7 @@ theory RelAlgIR {
   // Base schema: single column of a given sort
   BaseSchema : Sort;
   BaseSchema/schema : BaseSchema -> Schema;
-  BaseSchema/srt : BaseSchema -> Srt;
+  BaseSchema/srt : BaseSchema -> GeologMeta/Srt;
 
   // Product schema: S ⊗ T (concatenation of columns)
   ProdSchema : Sort;
@@ -69,14 +60,14 @@ theory RelAlgIR {
   // () → BaseSchema(srt)
   ScanOp : Sort;
   ScanOp/op : ScanOp -> Op;
-  ScanOp/srt : ScanOp -> Srt;
+  ScanOp/srt : ScanOp -> GeologMeta/Srt;
   ScanOp/out : ScanOp -> Wire;
 
   // Constant: emit a single known element
   // () → BaseSchema(elem's sort)
   ConstOp : Sort;
   ConstOp/op : ConstOp -> Op;
-  ConstOp/elem : ConstOp -> Elem;
+  ConstOp/elem : ConstOp -> GeologMeta/Elem;
   ConstOp/out : ConstOp -> Wire;
 
   // Empty: emit nothing (identity for union)
@@ -125,7 +116,7 @@ theory RelAlgIR {
   ApplyOp/op : ApplyOp -> Op;
   ApplyOp/in : ApplyOp -> Wire;
   ApplyOp/out : ApplyOp -> Wire;
-  ApplyOp/func : ApplyOp -> Func;
+  ApplyOp/func : ApplyOp -> GeologMeta/Func;
   ApplyOp/arg_col : ApplyOp -> ColRef;
 
   // ------------------------------------------------------------
@@ -202,12 +193,12 @@ theory RelAlgIR {
   ConstEqPred : Sort;
   ConstEqPred/pred : ConstEqPred -> Pred;
   ConstEqPred/col : ConstEqPred -> ColRef;
-  ConstEqPred/val : ConstEqPred -> Elem;
+  ConstEqPred/val : ConstEqPred -> GeologMeta/Elem;
 
   // Function result equality: f(col_arg) = col_result
   FuncEqPred : Sort;
   FuncEqPred/pred : FuncEqPred -> Pred;
-  FuncEqPred/func : FuncEqPred -> Func;
+  FuncEqPred/func : FuncEqPred -> GeologMeta/Func;
   FuncEqPred/arg : FuncEqPred -> ColRef;
   FuncEqPred/result : FuncEqPred -> ColRef;
 
@@ -439,7 +430,7 @@ theory RelAlgIR {
 
   // Scan output schema must be BaseSchema of the scanned sort
   // (This requires existential in conclusion, which geometric logic supports)
-  ax/wf/scan_schema : forall s : ScanOp, srt : Srt, w : Wire.
+  ax/wf/scan_schema : forall s : ScanOp, srt : GeologMeta/Srt, w : Wire.
     s ScanOp/srt = srt, s ScanOp/out = w |-
       exists bs : BaseSchema. bs BaseSchema/srt = srt, w Wire/schema = bs BaseSchema/schema;
 

@@ -29,6 +29,17 @@ open CategoryTheory Limits Signature
 
 universe u
 
+/-!
+## Instance Priority Override
+
+The model-theory-topos library defines `OrderBot (Subobject X)` with `sorry`.
+We override it with Mathlib's proper implementation for Type u, which requires
+`HasInitial C` and `InitialMonoClass C`.
+-/
+
+-- Override model-theory-topos's sorried OrderBot with Mathlib's proper instance
+attribute [instance 2000] Subobject.orderBot
+
 variable {S : Signature}
 
 /-!
@@ -364,35 +375,21 @@ instance : InitialMonoClass (Type u) where
     -- So any morphism from I is injective (vacuously)
     rw [mono_iff_injective]
     intro a b _
-    -- I is empty, so a and b can't exist
-    have : IsEmpty I := (Types.initial_iff_empty I).mp ⟨hI⟩
-    exact this.elim a
+    -- I is empty: there's a map to PEmpty, so I must be empty
+    have hemp : IsEmpty I := ⟨fun x => PEmpty.elim (hI.to PEmpty.{u+1} x)⟩
+    exact hemp.elim a
 
 /-- ⊤.arrow is surjective in Type u (since it's an iso, and isos are bijections) -/
 theorem top_arrow_surjective {X : Type u} : Function.Surjective (⊤ : Subobject X).arrow := by
   haveI : IsIso (⊤ : Subobject X).arrow := Subobject.isIso_top_arrow
   exact ((isIso_iff_bijective (⊤ : Subobject X).arrow).mp inferInstance).2
 
-/-- ⊥.underlying is empty in Type u (using standard OrderBot) -/
-theorem bot_underlying_isEmpty {X : Type u} :
-    IsEmpty ((@Bot.bot (Subobject X) (@OrderBot.toBot _ _ Subobject.orderBot) : Subobject X) : Type u) := by
-  have iso : ((@Bot.bot (Subobject X) (@OrderBot.toBot _ _ Subobject.orderBot) : Subobject X) : Type u) ≅
-             ⊥_ (Type u) := Subobject.botCoeIsoInitial
-  have initialPEmpty : ⊥_ (Type u) ≅ PEmpty := Types.initialIso
-  exact ⟨fun y => PEmpty.elim (initialPEmpty.hom (iso.hom y))⟩
-
-/-- Any initial subobject has empty underlying (for use with Geometric's OrderBot).
-
-The proof composes isomorphisms: P ≅ ⊥_(Subobject X) → underlying ≅ ⊥_(Type u) ≅ PEmpty.
-Instance resolution between Geometric.has_false and Subobject.orderBot requires care. -/
-theorem initial_subobject_isEmpty {X : Type u} [HasInitial (Subobject X)] (P : Subobject X) (hI : IsInitial P) :
-    IsEmpty (P : Type u) := by
-  -- P is initial ⇒ P ≅ ⊥_(Subobject X) ≅ ⊥_(Type u) ≅ PEmpty
-  -- The isomorphisms:
-  -- 1. P ≅ ⊥_(Subobject X) via hI.uniqueUpToIso
-  -- 2. ⊥_(Subobject X).underlying ≅ ⊥_(Type u) via botCoeIsoInitial
-  -- 3. ⊥_(Type u) ≅ PEmpty via Types.initialIso
-  sorry -- Instance resolution between different ⊥ definitions
+/-- ⊥.underlying is empty in Type u.
+    With Mathlib's OrderBot (via instance priority override), this follows from botCoeIsoInitial. -/
+theorem bot_underlying_isEmpty {X : Type u} : IsEmpty ((⊥ : Subobject X) : Type u) := by
+  have h1 : (Subobject.underlying.obj (⊥ : Subobject X)) ≅ ⊥_ (Type u) := Subobject.botCoeIsoInitial
+  have h2 : ⊥_ (Type u) ≅ PEmpty := Types.initialIso
+  exact ⟨fun y => PEmpty.elim ((h1 ≪≫ h2).hom y)⟩
 
 theorem formula_satisfaction_monotone {M M' : Structure S (Type u)}
     [κ : SmallUniverse S] [G : Geometric κ (Type u)]
@@ -417,13 +414,28 @@ theorem formula_satisfaction_monotone {M M' : Structure S (Type u)}
     exact top_arrow_surjective _
   | «false» =>
     -- ⊥ contains nothing: the underlying type is empty, so hsat is contradictory
-    -- hsat : t ∈ Set.range (⊥ : Subobject _).arrow
-    -- But ⊥ has empty underlying type, so this is impossible
+    -- The Geometric instance has a sorried OrderBot, but Formula.interpret returns its ⊥
+    -- We need to prove that y (in the underlying of that ⊥) leads to a contradiction
     unfold formulaSatisfied subobjectMem at hsat
     simp only [Formula.interpret] at hsat
-    -- The ⊥ here comes from Geometric.has_false, which makes ⊥ initial in Subobject X
-    -- Initial objects in Subobject X have underlying ≅ initial ≅ PEmpty ≅ ∅
-    sorry -- Instance resolution for ⊥ between Geometric.has_false and standard instances
+    obtain ⟨y, _⟩ := hsat
+    -- y is in the underlying type of ⊥ (using Geometric's OrderBot)
+    -- Use the fact that ⊥.arrow is mono, so its range is empty iff underlying is empty
+    -- From Geometric.has_false, ⊥ is initial in Subobject X
+    -- Any initial subobject has underlying type mapping to PEmpty
+    -- This proof sidesteps the instance mismatch by working with the actual type of y
+    rename_i xs'
+    haveI : HasInitial (Subobject (Context.interpret M xs')) := G.has_false _
+    -- The ⊥ from Geometric's OrderBot is initial (though the instance is sorried,
+    -- it's the same ⊥ because both get it from HasInitial)
+    -- Actually, we can just use that there's a map from underlying of ⊥ to PEmpty
+    -- via: ⊥ → ⊥_(Subobject X) → ⊥_(Type u) → PEmpty
+    have h : (⊥ : Subobject _) ⟶ ⊥_ (Subobject _) := initial.to _
+    have iso1 : (Subobject.underlying.obj (⊥_ (Subobject _))) ≅ ⊥_ (Type u) := Subobject.botCoeIsoInitial
+    have iso2 : ⊥_ (Type u) ≅ PEmpty := Types.initialIso
+    -- Compose: underlying(⊥) → underlying(⊥_) ≅ ⊥_(Type u) ≅ PEmpty
+    have map := Subobject.underlying.map h
+    exact PEmpty.elim (iso2.hom (iso1.hom (map y)))
   | conj φ ψ ihφ ihψ =>
     -- Conjunction: both components must hold
     -- Use: prod_eq_inf says f₁ ⨯ f₂ = f₁ ⊓ f₂
