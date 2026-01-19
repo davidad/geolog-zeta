@@ -79,8 +79,8 @@ define_id_with_rkyv!(
 );
 
 /// A Slid that can be stored in Option without doubling size.
-/// Uses NonMaxUsize so that Option<NonMaxUsize> is the same size as usize,
-/// with usize::MAX serving as the niche for None.
+/// Uses `NonMaxUsize` so that `Option<NonMaxUsize>` is the same size as `usize`,
+/// with `usize::MAX` serving as the niche for `None`.
 pub type OptSlid = Option<NonMaxUsize>;
 
 /// Convert a Slid to OptSlid.

@@ -167,11 +167,10 @@ impl Workspace {
         local_names: &HashMap<String, Slid>,
     ) -> Result<ResolvedElement, ResolveError> {
         // 1. Single-segment? Try local first
-        if path.len() == 1 {
-            if let Some(&slid) = local_names.get(&path[0]) {
+        if path.len() == 1
+            && let Some(&slid) = local_names.get(&path[0]) {
                 return Ok(ResolvedElement::Local(slid));
             }
-        }
 
         // 2. Try global naming resolution
         match self.naming.resolve(path) {

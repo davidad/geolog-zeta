@@ -351,7 +351,7 @@ pub struct Theory {
 }
 
 /// A theory can have parameters (other theories it depends on)
-/// Note: This is forward-declared; the actual type is Rc<ElaboratedTheory>
+/// Note: This is forward-declared; the actual type is `Rc<ElaboratedTheory>`
 /// but we can't reference it here due to ordering. We use a type alias.
 #[derive(Clone, Debug)]
 pub struct TheoryParam {
