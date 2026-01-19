@@ -22,7 +22,8 @@ macro_rules! define_id_with_rkyv {
         #[archive(check_bytes)]
         #[repr(transparent)]
         $v struct $name {
-            rep: $repr,
+            /// The underlying representation (public for zero-copy archived access)
+            pub rep: $repr,
         }
 
         impl NumericId for $name {

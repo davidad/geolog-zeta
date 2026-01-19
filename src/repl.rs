@@ -67,21 +67,21 @@ impl ReplState {
 
     /// Create a new REPL state with a persistence path
     ///
-    /// If the path exists, loads the persisted Store. Otherwise creates a new one.
-    /// Note: This loads the Store (GeologMeta, commits, etc.) but does NOT yet
-    /// reconstruct the runtime theories/instances. That requires a query engine.
+    /// If the path exists, loads the persisted Store and reconstructs runtime objects.
     pub fn with_path(path: impl Into<PathBuf>) -> Self {
         let path = path.into();
         let store = Store::load_or_create(&path);
 
-        // TODO: Reconstruct theories/instances from Store's GeologMeta
-        // This requires querying the GeologMeta to find all Theory/Instance
-        // elements and rebuilding ElaboratedTheory objects from their
-        // sorts/functions/relations. For now, we just load the Store.
+        // Reconstruct theories from persisted GeologMeta
+        let theories = store.reconstruct_all_theories();
+
+        // TODO: Reconstruct instances from Store's GeologMeta
+        // This requires building Structure objects from persisted Elem/FuncVal/RelTuple
+        // For now, instances need to be recreated each session.
 
         Self {
             store,
-            theories: HashMap::new(),
+            theories,
             instances: HashMap::new(),
             input_buffer: String::new(),
             bracket_depth: 0,
@@ -205,11 +205,12 @@ impl ReplState {
                     let num_functions = elab.theory.signature.functions.len();
                     let num_relations = elab.theory.signature.relations.len();
 
-                    // Store in transitional HashMap
-                    self.theories.insert(name.clone(), Rc::new(elab));
+                    // Register in Store with full signature
+                    let theory_slid = self.store.create_theory(&name)?;
+                    self.store.persist_signature(theory_slid, &elab.theory.signature)?;
 
-                    // Also register in Store as uncommitted
-                    let _ = self.store.create_theory(&name);
+                    // Store in transitional HashMap (will be removed once we query Store directly)
+                    self.theories.insert(name.clone(), Rc::new(elab));
 
                     results.push(ExecuteResult::Theory {
                         name,
@@ -329,14 +330,18 @@ impl ReplState {
 
         // Add persisted theories that aren't in runtime
         let runtime_names: HashSet<_> = self.theories.keys().cloned().collect();
-        for (name, kind, _slid) in self.store.list_bindings() {
+        for (name, kind, slid) in self.store.list_bindings() {
             if kind == BindingKind::Theory && !runtime_names.contains(&name) {
+                // Query the Store for theory structure
+                let sorts = self.store.query_theory_sorts(slid);
+                let funcs = self.store.query_theory_funcs(slid);
+                let rels = self.store.query_theory_rels(slid);
                 result.push(TheoryInfo {
                     name,
-                    num_sorts: 0,  // Unknown - would need query engine
-                    num_functions: 0,
-                    num_relations: 0,
-                    num_axioms: 0,
+                    num_sorts: sorts.len(),
+                    num_functions: funcs.len(),
+                    num_relations: rels.len(),
+                    num_axioms: 0,  // TODO: persist axioms
                 });
             }
         }

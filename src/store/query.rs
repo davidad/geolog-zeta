@@ -21,36 +21,31 @@ impl Store {
         // Collect retractions first (from all versions in chain)
         let mut version = Some(instance);
         while let Some(v) = version {
-            if let Some(retract_sort) = self.sort_ids.elem_retract {
-                if let Some(instance_func) = self.func_ids.elem_retract_instance {
-                    if let Some(elem_func) = self.func_ids.elem_retract_elem {
+            if let Some(retract_sort) = self.sort_ids.elem_retract
+                && let Some(instance_func) = self.func_ids.elem_retract_instance
+                    && let Some(elem_func) = self.func_ids.elem_retract_elem {
                         for retract in self.elements_of_sort(retract_sort) {
-                            if self.get_func(instance_func, retract) == Some(v) {
-                                if let Some(elem) = self.get_func(elem_func, retract) {
+                            if self.get_func(instance_func, retract) == Some(v)
+                                && let Some(elem) = self.get_func(elem_func, retract) {
                                     retractions.insert(elem);
                                 }
-                            }
                         }
                     }
-                }
-            }
             version = self.func_ids.instance_parent.and_then(|f| self.get_func(f, v));
         }
 
         // Now collect elements (filtering out retracted ones)
         let mut version = Some(instance);
         while let Some(v) = version {
-            if let Some(elem_sort) = self.sort_ids.elem {
-                if let Some(instance_func) = self.func_ids.elem_instance {
+            if let Some(elem_sort) = self.sort_ids.elem
+                && let Some(instance_func) = self.func_ids.elem_instance {
                     for elem in self.elements_of_sort(elem_sort) {
-                        if self.get_func(instance_func, elem) == Some(v) {
-                            if !retractions.contains(&elem) {
+                        if self.get_func(instance_func, elem) == Some(v)
+                            && !retractions.contains(&elem) {
                                 elements.push(elem);
                             }
-                        }
                     }
                 }
-            }
             version = self.func_ids.instance_parent.and_then(|f| self.get_func(f, v));
         }
 
@@ -67,23 +62,21 @@ impl Store {
         // Collect tuples from all versions in the chain
         let mut version = Some(instance);
         while let Some(v) = version {
-            if let Some(tuple_sort) = self.sort_ids.rel_tuple {
-                if let (Some(instance_func), Some(rel_func), Some(arg_func)) = (
+            if let Some(tuple_sort) = self.sort_ids.rel_tuple
+                && let (Some(instance_func), Some(rel_func), Some(arg_func)) = (
                     self.func_ids.rel_tuple_instance,
                     self.func_ids.rel_tuple_rel,
                     self.func_ids.rel_tuple_arg,
                 ) {
                     for tuple in self.elements_of_sort(tuple_sort) {
-                        if self.get_func(instance_func, tuple) == Some(v) {
-                            if let (Some(rel), Some(arg)) =
+                        if self.get_func(instance_func, tuple) == Some(v)
+                            && let (Some(rel), Some(arg)) =
                                 (self.get_func(rel_func, tuple), self.get_func(arg_func, tuple))
                             {
                                 tuples.push((tuple, rel, arg));
                             }
-                        }
                     }
                 }
-            }
             version = self.func_ids.instance_parent.and_then(|f| self.get_func(f, v));
         }
 
@@ -100,8 +93,8 @@ impl Store {
         // Collect function values from all versions in the chain
         let mut version = Some(instance);
         while let Some(v) = version {
-            if let Some(fv_sort) = self.sort_ids.func_val {
-                if let (
+            if let Some(fv_sort) = self.sort_ids.func_val
+                && let (
                     Some(instance_func),
                     Some(func_func),
                     Some(arg_func),
@@ -113,18 +106,16 @@ impl Store {
                     self.func_ids.func_val_result,
                 ) {
                     for fv in self.elements_of_sort(fv_sort) {
-                        if self.get_func(instance_func, fv) == Some(v) {
-                            if let (Some(func), Some(arg), Some(result)) = (
+                        if self.get_func(instance_func, fv) == Some(v)
+                            && let (Some(func), Some(arg), Some(result)) = (
                                 self.get_func(func_func, fv),
                                 self.get_func(arg_func, fv),
                                 self.get_func(result_func, fv),
                             ) {
                                 vals.push((fv, func, arg, result));
                             }
-                        }
                     }
                 }
-            }
             version = self.func_ids.instance_parent.and_then(|f| self.get_func(f, v));
         }
 

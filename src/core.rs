@@ -325,7 +325,7 @@ impl Term {
 /// A well-typed geometric formula
 #[derive(Clone, Debug)]
 pub enum Formula {
-    /// Relation (currently unused — geometric logic often encodes via equations)
+    /// Relation application: R(t) where R is a relation symbol and t is a term
     Rel(RelId, Term),
     /// Truth
     True,
@@ -465,11 +465,10 @@ impl ProductStorage {
                 while rows[tuple[0]].len() <= tuple[1] {
                     rows[tuple[0]].push(None);
                 }
-                if let Some(existing) = get_slid(rows[tuple[0]][tuple[1]]) {
-                    if existing != value {
+                if let Some(existing) = get_slid(rows[tuple[0]][tuple[1]])
+                    && existing != value {
                         return Err(existing);
                     }
-                }
                 rows[tuple[0]][tuple[1]] = some_slid(value);
                 Ok(())
             }
@@ -484,20 +483,18 @@ impl ProductStorage {
                 while planes[tuple[0]][tuple[1]].len() <= tuple[2] {
                     planes[tuple[0]][tuple[1]].push(None);
                 }
-                if let Some(existing) = get_slid(planes[tuple[0]][tuple[1]][tuple[2]]) {
-                    if existing != value {
+                if let Some(existing) = get_slid(planes[tuple[0]][tuple[1]][tuple[2]])
+                    && existing != value {
                         return Err(existing);
                     }
-                }
                 planes[tuple[0]][tuple[1]][tuple[2]] = some_slid(value);
                 Ok(())
             }
             ProductStorage::General(map) => {
-                if let Some(&existing) = map.get(tuple) {
-                    if existing != value {
+                if let Some(&existing) = map.get(tuple)
+                    && existing != value {
                         return Err(existing);
                     }
-                }
                 map.insert(tuple.to_vec(), value);
                 Ok(())
             }

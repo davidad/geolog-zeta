@@ -33,6 +33,7 @@ use crate::universe::Universe;
 
 pub mod append;
 pub mod batch;
+pub mod bootstrap_queries;
 pub mod commit;
 pub mod instance;
 pub mod materialize;

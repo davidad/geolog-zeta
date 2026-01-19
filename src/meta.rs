@@ -541,7 +541,8 @@ pub struct MetaReader<'a> {
     structure: &'a Structure,
     universe: &'a Universe,
     naming: &'a NamingIndex,
-    sig: &'a Signature,
+    /// The GeologMeta theory (Arc keeps signature alive)
+    meta: Arc<ElaboratedTheory>,
     // Cached function IDs for quick lookup
     func_ids: HashMap<&'static str, FuncId>,
     // Cached sort IDs
@@ -632,13 +633,11 @@ impl<'a> MetaReader<'a> {
             }
         }
 
-        // We need to keep sig alive, but it's behind Arc. Let's store the Arc.
-        // Actually, we can just clone the relevant parts we need.
         Self {
             structure,
             universe,
             naming,
-            sig: Box::leak(Box::new(meta.theory.signature.clone())),
+            meta,
             func_ids,
             sort_ids,
         }
@@ -680,7 +679,7 @@ impl<'a> MetaReader<'a> {
         };
 
         // Get the domain sort for this function
-        let func = &self.sig.functions[func_id];
+        let func = &self.meta.theory.signature.functions[func_id];
         let DerivedSort::Base(domain_sort) = &func.domain else {
             return vec![]; // Product domains not supported yet
         };
