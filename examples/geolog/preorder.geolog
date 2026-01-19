@@ -1,0 +1,42 @@
+// Preorder: a set with a reflexive, transitive relation
+//
+// This demonstrates RELATIONS (predicates) as opposed to functions.
+// A relation R : A -> Prop is a predicate on A.
+// For binary relations, we use a product domain: R : [x: A, y: A] -> Prop
+
+theory Preorder {
+  X : Sort;
+
+  // The ordering relation: x ≤ y
+  leq : [x: X, y: X] -> Prop;
+
+  // Reflexivity: x ≤ x
+  ax/refl : forall x : X.
+    |- [x: x, y: x] leq;
+
+  // Transitivity: x ≤ y ∧ y ≤ z → x ≤ z
+  ax/trans : forall x : X, y : X, z : X.
+    [x: x, y: y] leq, [x: y, y: z] leq |- [x: x, y: z] leq;
+}
+
+// The discrete preorder: only reflexive pairs
+// (no elements are comparable except to themselves)
+instance Discrete3 : Preorder = {
+  a : X;
+  b : X;
+  c : X;
+  // Reflexivity is the only ordering - no explicit relation tuples needed
+  // since the axiom will derive them
+}
+
+// A total order on 3 elements: a ≤ b ≤ c
+instance Chain3 : Preorder = {
+  bot : X;
+  mid : X;
+  top : X;
+
+  // Note: we'd need relation assertions here, but that syntax
+  // isn't implemented in instance elaboration yet.
+  // The theory defines what it MEANS to be a preorder;
+  // instances would assert which pairs are related.
+}

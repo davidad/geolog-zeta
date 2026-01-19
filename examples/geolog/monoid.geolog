@@ -1,0 +1,37 @@
+// Monoid: a set with an associative binary operation and identity element
+//
+// This is the simplest algebraic structure with interesting axioms.
+// Note: geolog uses postfix function application.
+//
+// LIMITATION: Instance elaboration doesn't yet support product-typed
+// function applications in equations. So we can define the theory
+// (which IS elaborated correctly), but concrete instances with the
+// multiplication table would need that feature.
+
+theory Monoid {
+  M : Sort;
+
+  // Binary operation: M × M → M
+  mul : [x: M, y: M] -> M;
+
+  // Identity element: we use a unary function from M to M that
+  // "picks out" the identity (any x maps to e)
+  // A cleaner approach would use Unit → M but that needs product support.
+  id : M -> M;
+
+  // Left identity: id(x) * y = y (id(x) is always e)
+  ax/left_id : forall x : M, y : M.
+    |- [x: x id, y: y] mul = y;
+
+  // Right identity: x * id(y) = x
+  ax/right_id : forall x : M, y : M.
+    |- [x: x, y: y id] mul = x;
+
+  // Associativity: (x * y) * z = x * (y * z)
+  ax/assoc : forall x : M, y : M, z : M.
+    |- [x: [x: x, y: y] mul, y: z] mul = [x: x, y: [x: y, y: z] mul] mul;
+
+  // id is constant: id(x) = id(y) for all x, y
+  ax/id_const : forall x : M, y : M.
+    |- x id = y id;
+}
