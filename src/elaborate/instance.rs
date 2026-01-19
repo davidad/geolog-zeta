@@ -319,73 +319,102 @@ pub fn elaborate_instance_ws(
 
             let rel = &theory.theory.signature.relations[rel_id];
 
-            // The term should be a record matching the relation's domain
-            match term {
-                ast::Term::Record(fields) => {
-                    // Build the tuple of Slids from the record fields
-                    let domain = &rel.domain;
-                    if let DerivedSort::Product(expected_fields) = domain {
-                        if fields.len() != expected_fields.len() {
-                            return Err(ElabError::UnsupportedFeature(format!(
-                                "relation {} expects {} fields, got {}",
-                                rel_name,
-                                expected_fields.len(),
-                                fields.len()
-                            )));
+            // Build the tuple of Slids from the term
+            let domain = &rel.domain;
+            let tuple = match (term, domain) {
+                // Unary relation with simple element: `element relation;`
+                (ast::Term::Path(_), DerivedSort::Product(expected_fields))
+                    if expected_fields.len() == 1 =>
+                {
+                    let slid = resolve_instance_element(term, &name_to_slid)?;
+
+                    // Type check
+                    let elem_sort_id = structure.sorts[slid.index()];
+                    if let &DerivedSort::Base(expected_sort_id) = &expected_fields[0].1 {
+                        if elem_sort_id != expected_sort_id {
+                            return Err(ElabError::DomainMismatch {
+                                func_name: rel_name.clone(),
+                                element_name: slid_to_name
+                                    .get(&slid)
+                                    .cloned()
+                                    .unwrap_or_else(|| format!("slid_{}", slid)),
+                                expected_sort: theory.theory.signature.sorts[expected_sort_id]
+                                    .clone(),
+                                actual_sort: theory.theory.signature.sorts[elem_sort_id].clone(),
+                            });
                         }
+                    }
+                    vec![slid]
+                }
 
-                        // Build tuple in the correct field order
-                        let mut tuple = Vec::with_capacity(expected_fields.len());
-                        for (expected_name, expected_sort) in expected_fields {
-                            let field_value = fields
-                                .iter()
-                                .find(|(name, _)| name == expected_name.as_str())
-                                .ok_or_else(|| {
-                                    ElabError::UnsupportedFeature(format!(
-                                        "missing field '{}' in relation assertion",
-                                        expected_name
-                                    ))
-                                })?;
-
-                            // Resolve the field value to a Slid
-                            let slid = resolve_instance_element(&field_value.1, &name_to_slid)?;
-
-                            // Type check: verify element sort matches field sort
-                            let elem_sort_id = structure.sorts[slid.index()];
-                            if let &DerivedSort::Base(expected_sort_id) = expected_sort {
-                                if elem_sort_id != expected_sort_id {
-                                    return Err(ElabError::DomainMismatch {
-                                        func_name: rel_name.clone(),
-                                        element_name: slid_to_name
-                                            .get(&slid)
-                                            .cloned()
-                                            .unwrap_or_else(|| format!("slid_{}", slid)),
-                                        expected_sort: theory.theory.signature.sorts[expected_sort_id]
-                                            .clone(),
-                                        actual_sort: theory.theory.signature.sorts[elem_sort_id].clone(),
-                                    });
-                                }
-                            }
-
-                            tuple.push(slid);
-                        }
-
-                        // Assert the relation tuple
-                        structure.assert_relation(rel_id, tuple);
-                    } else {
+                // Multi-ary relation with record: `[field: value, ...] relation;`
+                (ast::Term::Record(fields), DerivedSort::Product(expected_fields)) => {
+                    if fields.len() != expected_fields.len() {
                         return Err(ElabError::UnsupportedFeature(format!(
-                            "relation {} has non-product domain {:?}",
-                            rel_name, domain
+                            "relation {} expects {} fields, got {}",
+                            rel_name,
+                            expected_fields.len(),
+                            fields.len()
                         )));
                     }
+
+                    // Build tuple in the correct field order
+                    let mut tuple = Vec::with_capacity(expected_fields.len());
+                    for (expected_name, expected_sort) in expected_fields {
+                        let field_value = fields
+                            .iter()
+                            .find(|(name, _)| name == expected_name.as_str())
+                            .ok_or_else(|| {
+                                ElabError::UnsupportedFeature(format!(
+                                    "missing field '{}' in relation assertion",
+                                    expected_name
+                                ))
+                            })?;
+
+                        // Resolve the field value to a Slid
+                        let slid = resolve_instance_element(&field_value.1, &name_to_slid)?;
+
+                        // Type check: verify element sort matches field sort
+                        let elem_sort_id = structure.sorts[slid.index()];
+                        if let &DerivedSort::Base(expected_sort_id) = expected_sort {
+                            if elem_sort_id != expected_sort_id {
+                                return Err(ElabError::DomainMismatch {
+                                    func_name: rel_name.clone(),
+                                    element_name: slid_to_name
+                                        .get(&slid)
+                                        .cloned()
+                                        .unwrap_or_else(|| format!("slid_{}", slid)),
+                                    expected_sort: theory.theory.signature.sorts[expected_sort_id]
+                                        .clone(),
+                                    actual_sort: theory.theory.signature.sorts[elem_sort_id].clone(),
+                                });
+                            }
+                        }
+
+                        tuple.push(slid);
+                    }
+                    tuple
                 }
-                _ => {
+
+                // Mismatch: using simple element for non-unary relation
+                (ast::Term::Path(_), DerivedSort::Product(expected_fields)) => {
                     return Err(ElabError::UnsupportedFeature(format!(
-                        "relation assertion requires record term, got {:?}",
-                        term
+                        "relation {} has {} fields, use record syntax [field: value, ...]",
+                        rel_name,
+                        expected_fields.len()
                     )));
                 }
-            }
+
+                _ => {
+                    return Err(ElabError::UnsupportedFeature(format!(
+                        "relation {} has non-product domain {:?}",
+                        rel_name, domain
+                    )));
+                }
+            };
+
+            // Assert the relation tuple
+            structure.assert_relation(rel_id, tuple);
         }
     }
 

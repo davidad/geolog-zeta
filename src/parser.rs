@@ -443,16 +443,26 @@ fn instance_item() -> impl Parser<Token, InstanceItem, Error = Simple<Token>> + 
             .then_ignore(just(Token::Semicolon))
             .map(|(l, r)| InstanceItem::Equation(l, r));
 
-        // Relation assertion: [field: value, ...] relation_name;
-        // The record part is parsed as a term, relation name is an identifier
-        let relation_assertion = record_term()
+        // Relation assertion: [field: value, ...] relation_name; (multi-ary)
+        //                  or: element relation_name; (unary)
+        // Multi-ary with explicit record
+        let relation_assertion_record = record_term()
             .then(ident())
             .then_ignore(just(Token::Semicolon))
             .map(|(term, rel)| InstanceItem::RelationAssertion(term, rel));
 
-        // Try nested first (ident = {), then element (ident :), then relation ([ ...),
-        // then equation (fallback)
-        choice((nested, element, relation_assertion, equation))
+        // Unary relation: element relation_name;
+        // This parses as: path followed by another ident, then semicolon
+        // We wrap the element in a single-field record for uniform handling
+        let relation_assertion_unary = path()
+            .map(Term::Path)
+            .then(ident())
+            .then_ignore(just(Token::Semicolon))
+            .map(|(elem, rel)| InstanceItem::RelationAssertion(elem, rel));
+
+        // Try nested first (ident = {), then element (ident :), then record relation ([ ...),
+        // then unary relation (ident ident ;), then equation (fallback with =)
+        choice((nested, element, relation_assertion_record, relation_assertion_unary, equation))
     })
 }
 

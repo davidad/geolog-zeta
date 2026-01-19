@@ -33,9 +33,9 @@ instance SampleTodos : TodoList = {
   do_laundry : Item;
   clean_house : Item;
 
-  // Status: relation assertions using [fields] relation_name; syntax
-  [item: buy_groceries] completed;
-  [item: cook_dinner] high_priority;
+  // Status: unary relations use simple syntax
+  buy_groceries completed;
+  cook_dinner high_priority;
 
   // Dependencies: cook_dinner depends on buy_groceries
   [x: cook_dinner, y: buy_groceries] depends_on;
