@@ -67,6 +67,25 @@ impl FunctionPatch {
     }
 }
 
+/// Changes to relation assertions (tuples added/removed)
+///
+/// Tuples are stored as Vec<Uuid> since element Slids are unstable across versions.
+/// We track both assertions and retractions to support inversion.
+#[derive(Default, Clone, Debug, PartialEq, Eq, Archive, Deserialize, Serialize)]
+#[archive(check_bytes)]
+pub struct RelationPatch {
+    /// rel_id → set of tuples retracted (as UUID vectors)
+    pub retractions: BTreeMap<usize, BTreeSet<Vec<Uuid>>>,
+    /// rel_id → set of tuples asserted (as UUID vectors)
+    pub assertions: BTreeMap<usize, BTreeSet<Vec<Uuid>>>,
+}
+
+impl RelationPatch {
+    pub fn is_empty(&self) -> bool {
+        self.assertions.is_empty() && self.retractions.is_empty()
+    }
+}
+
 /// A complete patch between two structure versions
 ///
 /// Patches form a linked list via source_commit → target_commit.
@@ -84,31 +103,45 @@ pub struct Patch {
     pub num_sorts: usize,
     /// Number of functions in the theory (needed to rebuild structure)
     pub num_functions: usize,
+    /// Number of relations in the theory (needed to rebuild structure)
+    pub num_relations: usize,
     /// Element changes (additions/deletions)
     pub elements: ElementPatch,
     /// Function value changes
     pub functions: FunctionPatch,
+    /// Relation tuple changes (assertions/retractions)
+    pub relations: RelationPatch,
     /// Name changes (for self-contained patches)
     pub names: NamingPatch,
 }
 
 impl Patch {
     /// Create a new patch
-    pub fn new(source_commit: Option<Uuid>, num_sorts: usize, num_functions: usize) -> Self {
+    pub fn new(
+        source_commit: Option<Uuid>,
+        num_sorts: usize,
+        num_functions: usize,
+        num_relations: usize,
+    ) -> Self {
         Self {
             source_commit,
             target_commit: Uuid::now_v7(),
             num_sorts,
             num_functions,
+            num_relations,
             elements: ElementPatch::default(),
             functions: FunctionPatch::default(),
+            relations: RelationPatch::default(),
             names: NamingPatch::default(),
         }
     }
 
     /// Check if this patch makes any changes
     pub fn is_empty(&self) -> bool {
-        self.elements.is_empty() && self.functions.is_empty() && self.names.is_empty()
+        self.elements.is_empty()
+            && self.functions.is_empty()
+            && self.relations.is_empty()
+            && self.names.is_empty()
     }
 
     /// Invert this patch (swap old/new, additions/deletions)
@@ -116,12 +149,14 @@ impl Patch {
     /// Note: Inversion of element additions requires knowing the sort_id of deleted elements,
     /// which we don't track in deletions. This is a known limitation - sort info is lost on invert.
     /// Names are fully invertible since we track the full qualified name.
+    /// Relations are fully invertible (assertions ↔ retractions).
     pub fn invert(&self) -> Patch {
         Patch {
             source_commit: Some(self.target_commit),
             target_commit: self.source_commit.unwrap_or_else(Uuid::now_v7),
             num_sorts: self.num_sorts,
             num_functions: self.num_functions,
+            num_relations: self.num_relations,
             elements: ElementPatch {
                 deletions: self.elements.additions.keys().copied().collect(),
                 additions: self
@@ -160,6 +195,11 @@ impl Patch {
                     })
                     .collect(),
             },
+            relations: RelationPatch {
+                // Swap assertions ↔ retractions
+                retractions: self.relations.assertions.clone(),
+                assertions: self.relations.retractions.clone(),
+            },
             names: NamingPatch {
                 deletions: self.names.additions.keys().copied().collect(),
                 additions: self
@@ -175,7 +215,7 @@ impl Patch {
 
 // ============ Diff and Apply operations ============
 
-use crate::core::Structure;
+use crate::core::{RelationStorage, Structure};
 use crate::id::{Luid, get_slid, some_slid};
 use crate::naming::NamingIndex;
 use crate::universe::Universe;
@@ -195,6 +235,7 @@ pub fn diff(
         None, // Will be set by caller if needed
         new.num_sorts(),
         new.num_functions(),
+        new.relations.len(),
     );
 
     // Find element deletions: elements in old but not in new
@@ -297,6 +338,87 @@ pub fn diff(
         if !new_vals.is_empty() {
             patch.functions.old_values.insert(func_id, old_vals);
             patch.functions.new_values.insert(func_id, new_vals);
+        }
+    }
+
+    // Find relation changes
+    // Compare tuples in each relation between old and new
+    let num_relations = new.relations.len().min(old.relations.len());
+    for rel_id in 0..num_relations {
+        let old_rel = &old.relations[rel_id];
+        let new_rel = &new.relations[rel_id];
+
+        // Helper: convert a Slid tuple to UUID tuple
+        let slid_tuple_to_uuids = |tuple: &[Slid], structure: &Structure| -> Option<Vec<Uuid>> {
+            tuple
+                .iter()
+                .map(|&slid| {
+                    let luid = structure.luids[slid.index()];
+                    universe.get(luid)
+                })
+                .collect()
+        };
+
+        // Find tuples in old but not in new (retractions)
+        let mut retractions: BTreeSet<Vec<Uuid>> = BTreeSet::new();
+        for tuple in old_rel.iter() {
+            // Check if this tuple (by UUID) exists in new
+            if let Some(uuid_tuple) = slid_tuple_to_uuids(tuple, old) {
+                // See if we can find the same UUID tuple in new
+                let exists_in_new = new_rel.iter().any(|new_tuple| {
+                    slid_tuple_to_uuids(new_tuple, new)
+                        .map(|new_uuids| new_uuids == uuid_tuple)
+                        .unwrap_or(false)
+                });
+                if !exists_in_new {
+                    retractions.insert(uuid_tuple);
+                }
+            }
+        }
+
+        // Find tuples in new but not in old (assertions)
+        let mut assertions: BTreeSet<Vec<Uuid>> = BTreeSet::new();
+        for tuple in new_rel.iter() {
+            if let Some(uuid_tuple) = slid_tuple_to_uuids(tuple, new) {
+                let exists_in_old = old_rel.iter().any(|old_tuple| {
+                    slid_tuple_to_uuids(old_tuple, old)
+                        .map(|old_uuids| old_uuids == uuid_tuple)
+                        .unwrap_or(false)
+                });
+                if !exists_in_old {
+                    assertions.insert(uuid_tuple);
+                }
+            }
+        }
+
+        if !retractions.is_empty() {
+            patch.relations.retractions.insert(rel_id, retractions);
+        }
+        if !assertions.is_empty() {
+            patch.relations.assertions.insert(rel_id, assertions);
+        }
+    }
+
+    // Handle new relations in new that don't exist in old
+    for rel_id in num_relations..new.relations.len() {
+        let new_rel = &new.relations[rel_id];
+        let mut assertions: BTreeSet<Vec<Uuid>> = BTreeSet::new();
+
+        for tuple in new_rel.iter() {
+            let uuid_tuple: Option<Vec<Uuid>> = tuple
+                .iter()
+                .map(|&slid| {
+                    let luid = new.luids[slid.index()];
+                    universe.get(luid)
+                })
+                .collect();
+            if let Some(uuids) = uuid_tuple {
+                assertions.insert(uuids);
+            }
+        }
+
+        if !assertions.is_empty() {
+            patch.relations.assertions.insert(rel_id, assertions);
         }
     }
 
@@ -446,6 +568,85 @@ pub fn apply_patch(
                     if idx < result_func_col.len() {
                         result_func_col[idx] = some_slid(codomain_slid);
                     }
+                }
+            }
+        }
+    }
+
+    // Initialize relation storage
+    // Infer arities from base if available, otherwise from patch assertions
+    let relation_arities: Vec<usize> = (0..patch.num_relations)
+        .map(|rel_id| {
+            // Try base first
+            if rel_id < base.relations.len() {
+                base.relations[rel_id].arity()
+            } else if let Some(assertions) = patch.relations.assertions.get(&rel_id) {
+                // Infer from first assertion
+                assertions.iter().next().map(|t| t.len()).unwrap_or(0)
+            } else {
+                0
+            }
+        })
+        .collect();
+    result.init_relations(&relation_arities);
+
+    // Copy relation tuples from base (for non-deleted elements)
+    for rel_id in 0..base.relations.len().min(patch.num_relations) {
+        let base_rel = &base.relations[rel_id];
+
+        for tuple in base_rel.iter() {
+            // Convert Slid tuple to UUID tuple to check if still valid
+            let uuid_tuple: Option<Vec<Uuid>> = tuple
+                .iter()
+                .map(|&slid| {
+                    let luid = base.luids[slid.index()];
+                    universe.get(luid)
+                })
+                .collect();
+
+            if let Some(uuid_tuple) = uuid_tuple {
+                // Check if this tuple should be retracted
+                let should_retract = patch
+                    .relations
+                    .retractions
+                    .get(&rel_id)
+                    .map(|r| r.contains(&uuid_tuple))
+                    .unwrap_or(false);
+
+                if !should_retract {
+                    // Check all elements still exist and convert to new Slids
+                    let new_tuple: Option<Vec<Slid>> = uuid_tuple
+                        .iter()
+                        .map(|uuid| {
+                            universe
+                                .lookup(uuid)
+                                .and_then(|luid| result.luid_to_slid.get(&luid).copied())
+                        })
+                        .collect();
+
+                    if let Some(new_tuple) = new_tuple {
+                        result.assert_relation(rel_id, new_tuple);
+                    }
+                }
+            }
+        }
+    }
+
+    // Apply relation assertions from patch
+    for (rel_id, assertions) in &patch.relations.assertions {
+        if *rel_id < patch.num_relations {
+            for uuid_tuple in assertions {
+                let slid_tuple: Option<Vec<Slid>> = uuid_tuple
+                    .iter()
+                    .map(|uuid| {
+                        universe
+                            .lookup(uuid)
+                            .and_then(|luid| result.luid_to_slid.get(&luid).copied())
+                    })
+                    .collect();
+
+                if let Some(slid_tuple) = slid_tuple {
+                    result.assert_relation(*rel_id, slid_tuple);
                 }
             }
         }
