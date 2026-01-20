@@ -406,8 +406,8 @@ fn elaborate_instance_ctx_inner(
                                 let value_slid = resolve_instance_element(field_term, &name_to_slid)?;
                                 let value_sort_id = structure.sorts[value_slid.index()];
 
-                                if let DerivedSort::Base(expected_sort_id) = &expected_sort.1 {
-                                    if value_sort_id != *expected_sort_id {
+                                if let DerivedSort::Base(expected_sort_id) = &expected_sort.1
+                                    && value_sort_id != *expected_sort_id {
                                         return Err(ElabError::CodomainMismatch {
                                             func_name: func.name.clone(),
                                             element_name: format!("field '{}': {}", field_name,
@@ -416,7 +416,6 @@ fn elaborate_instance_ctx_inner(
                                             actual_sort: theory.theory.signature.sorts[value_sort_id].clone(),
                                         });
                                     }
-                                }
 
                                 codomain_values.push((field_name.as_str(), value_slid));
                             }

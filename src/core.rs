@@ -1278,14 +1278,13 @@ impl Structure {
                             field_name, field_names
                         ))?;
 
-                    if let Some(existing) = get_slid(field_columns[field_idx][idx]) {
-                        if existing != *slid {
+                    if let Some(existing) = get_slid(field_columns[field_idx][idx])
+                        && existing != *slid {
                             return Err(format!(
                                 "conflicting definition: func {}(slid {}).{} already defined as slid {}, cannot redefine as slid {}",
                                 func_id, domain_slid, field_name, existing, slid
                             ));
                         }
-                    }
                     field_columns[field_idx][idx] = some_slid(*slid);
                 }
                 let _ = domain_sort; // silence unused warning

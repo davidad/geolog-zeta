@@ -525,13 +525,12 @@ pub fn execute(plan: &QueryOp, structure: &Structure) -> Bag {
                 if let Some(&arg) = tuple.get(*arg_col) {
                     let sort_slid = structure.sort_local_id(arg);
                     // Get product codomain and look up specific field
-                    if let Some(fields) = structure.get_function_product_codomain(*func_idx, sort_slid) {
-                        if let Some((_, field_val)) = fields.iter().find(|(n, _)| n == field_name) {
+                    if let Some(fields) = structure.get_function_product_codomain(*func_idx, sort_slid)
+                        && let Some((_, field_val)) = fields.iter().find(|(n, _)| n == field_name) {
                             let mut extended = tuple.clone();
                             extended.push(*field_val);
                             result.insert(extended, *mult);
                         }
-                    }
                     // If field undefined, tuple is dropped
                 }
             }
@@ -733,13 +732,12 @@ fn execute_stream_stateless(plan: &QueryOp, structure: &Structure, ctx: &mut Str
             for (tuple, mult) in input_bag.iter() {
                 if let Some(&arg) = tuple.get(*arg_col) {
                     let sort_slid = structure.sort_local_id(arg);
-                    if let Some(fields) = structure.get_function_product_codomain(*func_idx, sort_slid) {
-                        if let Some((_, field_val)) = fields.iter().find(|(n, _)| n == field_name) {
+                    if let Some(fields) = structure.get_function_product_codomain(*func_idx, sort_slid)
+                        && let Some((_, field_val)) = fields.iter().find(|(n, _)| n == field_name) {
                             let mut extended = tuple.clone();
                             extended.push(*field_val);
                             result.insert(extended, *mult);
                         }
-                    }
                 }
             }
             result
@@ -976,13 +974,12 @@ pub fn execute_optimized(plan: &QueryOp, structure: &Structure) -> Bag {
             for (tuple, mult) in input_bag.iter() {
                 if let Some(&arg) = tuple.get(*arg_col) {
                     let sort_slid = structure.sort_local_id(arg);
-                    if let Some(fields) = structure.get_function_product_codomain(*func_idx, sort_slid) {
-                        if let Some((_, field_val)) = fields.iter().find(|(n, _)| n == field_name) {
+                    if let Some(fields) = structure.get_function_product_codomain(*func_idx, sort_slid)
+                        && let Some((_, field_val)) = fields.iter().find(|(n, _)| n == field_name) {
                             let mut extended = tuple.clone();
                             extended.push(*field_val);
                             result.insert(extended, *mult);
                         }
-                    }
                 }
             }
             result

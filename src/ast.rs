@@ -204,11 +204,10 @@ impl TypeExpr {
 
     /// Check if this is a single path (common case)
     pub fn as_single_path(&self) -> Option<&Path> {
-        if self.tokens.len() == 1 {
-            if let TypeToken::Path(p) = &self.tokens[0] {
+        if self.tokens.len() == 1
+            && let TypeToken::Path(p) = &self.tokens[0] {
                 return Some(p);
             }
-        }
         None
     }
 
@@ -240,11 +239,10 @@ impl TypeExpr {
 
     /// Check if this is a record type
     pub fn as_record(&self) -> Option<&Vec<(String, TypeExpr)>> {
-        if self.tokens.len() == 1 {
-            if let TypeToken::Record(fields) = &self.tokens[0] {
+        if self.tokens.len() == 1
+            && let TypeToken::Record(fields) = &self.tokens[0] {
                 return Some(fields);
             }
-        }
         None
     }
 }

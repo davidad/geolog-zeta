@@ -844,21 +844,19 @@ fn extract_ensure_function_pattern(
     match formula {
         Formula::Eq(left, right) => {
             // Check for f(arg) = new_var
-            if let (Term::App(func_idx, arg), Term::Var(var_name, _)) = (left, right) {
-                if var_name == new_var {
+            if let (Term::App(func_idx, arg), Term::Var(var_name, _)) = (left, right)
+                && var_name == new_var {
                     // Found: f(arg) = new_var
                     let arg_col = term_to_column(arg, var_indices)?;
                     return Ok(Some((*func_idx, arg_col)));
                 }
-            }
             // Check for new_var = f(arg)
-            if let (Term::Var(var_name, _), Term::App(func_idx, arg)) = (left, right) {
-                if var_name == new_var {
+            if let (Term::Var(var_name, _), Term::App(func_idx, arg)) = (left, right)
+                && var_name == new_var {
                     // Found: new_var = f(arg)
                     let arg_col = term_to_column(arg, var_indices)?;
                     return Ok(Some((*func_idx, arg_col)));
                 }
-            }
             Ok(None)
         }
         // Handle conjunction - look for the pattern in any conjunct

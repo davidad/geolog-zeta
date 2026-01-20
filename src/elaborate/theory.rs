@@ -305,8 +305,8 @@ pub fn elaborate_theory(env: &mut Env, theory: &ast::TheoryDecl) -> ElabResult<E
 
                 // Also add the content (sorts, functions) from the field's theory
                 // This enables accessing things like iso/fwd when we have `iso : X Y Iso instance`
-                if let Ok(field_theory_name) = extract_theory_name(&inner) {
-                    if let Some(field_theory) = env.theories.get(&field_theory_name) {
+                if let Ok(field_theory_name) = extract_theory_name(&inner)
+                    && let Some(field_theory) = env.theories.get(&field_theory_name) {
                         let field_prefix = name.clone();
 
                         // Build a mapping from source sort names to target sort names
@@ -366,7 +366,6 @@ pub fn elaborate_theory(env: &mut Env, theory: &ast::TheoryDecl) -> ElabResult<E
                             }
                         }
                     }
-                }
             }
             _ => {}
         }
@@ -432,18 +431,16 @@ fn remap_for_instance_field(
             let sort_name = &source_sig.sorts[*source_id];
 
             // Check Sort parameter substitution (e.g., X -> RP/initial/Token)
-            if let Some(replacement) = sort_param_map.get(sort_name) {
-                if let Some(target_id) = target_sig.lookup_sort(replacement) {
+            if let Some(replacement) = sort_param_map.get(sort_name)
+                && let Some(target_id) = target_sig.lookup_sort(replacement) {
                     return Some(DerivedSort::Base(target_id));
                 }
-            }
 
             // Check if it's an instance param sort (already qualified, e.g., N/P)
-            if sort_name.contains('/') {
-                if let Some(target_id) = target_sig.lookup_sort(sort_name) {
+            if sort_name.contains('/')
+                && let Some(target_id) = target_sig.lookup_sort(sort_name) {
                     return Some(DerivedSort::Base(target_id));
                 }
-            }
 
             // Check if it's a local sort (needs prefix, e.g., Token -> initial/Token)
             let prefixed = format!("{}/{}", field_prefix, sort_name);
@@ -535,12 +532,7 @@ fn substitute_sort_params(
                 return None;
             }
             // Not a parameter - try to find in target as-is
-            if let Some(target_id) = target_sig.lookup_sort(sort_name) {
-                Some(DerivedSort::Base(target_id))
-            } else {
-                // Sort doesn't exist in target - skip this
-                None
-            }
+            target_sig.lookup_sort(sort_name).map(DerivedSort::Base)
         }
         DerivedSort::Product(fields) => {
             let remapped_fields: Option<Vec<_>> = fields
@@ -570,15 +562,14 @@ fn remap_derived_sort_with_subst(
             let sort_name = &source_sig.sorts[*source_id];
 
             // Check if this sort starts with a param name that we're substituting
-            if let Some((prefix, suffix)) = sort_name.split_once('/') {
-                if let Some(subst) = param_subst.get(prefix) {
+            if let Some((prefix, suffix)) = sort_name.split_once('/')
+                && let Some(subst) = param_subst.get(prefix) {
                     // Substitute the prefix
                     let substituted_name = format!("{}/{}", subst, suffix);
                     if let Some(target_id) = target_sig.lookup_sort(&substituted_name) {
                         return DerivedSort::Base(target_id);
                     }
                 }
-            }
 
             // Otherwise, use the default prefixing behavior
             let qualified_name = format!("{}/{}", param_name, sort_name);
@@ -697,8 +688,8 @@ pub fn remap_sort_for_param_import(
     local_arguments: &[(String, String)],
 ) -> String {
     // Check if this sort starts with a param name that we're substituting
-    if let Some((prefix, suffix)) = sort_name.split_once('/') {
-        if let Some(bound_instance) = param_subst.get(prefix) {
+    if let Some((prefix, suffix)) = sort_name.split_once('/')
+        && let Some(bound_instance) = param_subst.get(prefix) {
             // This sort is from a param in the param instance.
             // Find which local param is bound to the same instance.
             for (local_param_name, local_instance) in local_arguments {
@@ -711,7 +702,6 @@ pub fn remap_sort_for_param_import(
             // just use param_name prefix
             return format!("{}/{}", param_name, sort_name);
         }
-    }
 
     // Unqualified sort or no substitution applicable - prefix with param_name
     format!("{}/{}", param_name, sort_name)

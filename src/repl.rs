@@ -314,7 +314,7 @@ impl ReplState {
                     });
                 }
                 ast::Declaration::Query(q) => {
-                    let result = self.execute_query(&q)?;
+                    let result = self.execute_query(q)?;
                     results.push(ExecuteResult::Query(result));
                 }
             }
@@ -496,7 +496,7 @@ impl ReplState {
                 .ok_or_else(|| format!("Unknown theory: {}", param_entry.theory_name))?;
 
             // Import each element from the param instance
-            for (&slid, _elem_name) in &param_entry.slid_to_name {
+            for &slid in param_entry.slid_to_name.keys() {
                 let param_sort_id = param_entry.structure.sorts[slid.index()];
                 let param_sort_name = &param_theory.theory.signature.sorts[param_sort_id];
 
@@ -554,14 +554,13 @@ impl ReplState {
                     if let Some(local_sort_id) = local_sort_id {
                         // Get the Luid and Uuid
                         let luid = nested_struct.get_luid(slid);
-                        if let Some(uuid) = self.store.universe.get(luid) {
-                            if !imported_uuids.contains(&uuid) {
+                        if let Some(uuid) = self.store.universe.get(luid)
+                            && !imported_uuids.contains(&uuid) {
                                 imported_uuids.insert(uuid);
                                 let new_luid = universe.intern(uuid);
                                 let local_slid = structure.add_element_with_luid(new_luid, local_sort_id);
                                 luid_to_new_slid.insert(luid, local_slid);
                             }
-                        }
                     }
                 }
             }
