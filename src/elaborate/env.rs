@@ -238,6 +238,66 @@ pub fn elaborate_formula(env: &Env, ctx: &Context, formula: &ast::Formula) -> El
     }
 }
 
+/// Remap a DerivedSort for nested instance fields.
+///
+/// When copying sorts/functions from a nested instance field's theory into the local signature,
+/// we need different remapping rules:
+/// - Unqualified sorts (like "Token" in Marking) get prefixed with field_prefix (e.g., "RP/initial/Token")
+/// - Already-qualified sorts (like "N/P" in Marking) map to the parent param (e.g., just "N/P")
+///
+/// # Arguments
+/// * `field_prefix` - The prefix for the nested field (e.g., "RP/initial")
+/// * `parent_param` - The parent parameter name (e.g., "RP"), used to strip when mapping qualified sorts
+#[allow(dead_code)]
+pub(crate) fn remap_derived_sort_for_nested(
+    sort: &DerivedSort,
+    source_sig: &Signature,
+    target_sig: &Signature,
+    field_prefix: &str,
+    parent_param: &str,
+) -> DerivedSort {
+    match sort {
+        DerivedSort::Base(source_id) => {
+            let sort_name = &source_sig.sorts[*source_id];
+            let qualified_name = if sort_name.contains('/') {
+                // Already qualified (e.g., "N/P" from a parameterized theory)
+                // Try to find it directly in the target (e.g., "N/P" should exist from outer param)
+                // If not found, try with parent param prefix (e.g., "RP/N/P")
+                if target_sig.lookup_sort(sort_name).is_some() {
+                    sort_name.clone()
+                } else {
+                    format!("{}/{}", parent_param, sort_name)
+                }
+            } else {
+                // Unqualified sort from the field's theory - prefix with field_prefix
+                format!("{}/{}", field_prefix, sort_name)
+            };
+            if let Some(target_id) = target_sig.lookup_sort(&qualified_name) {
+                DerivedSort::Base(target_id)
+            } else {
+                // Fallback: just use the source ID (shouldn't happen in well-formed code)
+                eprintln!(
+                    "Warning: could not remap sort '{}' (qualified: '{}') in nested field",
+                    sort_name, qualified_name
+                );
+                sort.clone()
+            }
+        }
+        DerivedSort::Product(fields) => {
+            let remapped_fields = fields
+                .iter()
+                .map(|(name, s)| {
+                    (
+                        name.clone(),
+                        remap_derived_sort_for_nested(s, source_sig, target_sig, field_prefix, parent_param),
+                    )
+                })
+                .collect();
+            DerivedSort::Product(remapped_fields)
+        }
+    }
+}
+
 /// Remap a DerivedSort from one signature namespace to another.
 ///
 /// When copying sorts/functions from a param theory into the local signature,

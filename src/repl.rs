@@ -448,6 +448,13 @@ impl ReplState {
                         (r.name.clone(), domain)
                     })
                     .collect(),
+                instance_fields: theory
+                    .theory
+                    .signature
+                    .instance_fields
+                    .iter()
+                    .map(|f| (f.name.clone(), f.theory_type.clone()))
+                    .collect(),
                 axioms: theory
                     .theory
                     .axioms
@@ -1078,6 +1085,8 @@ pub struct TheoryDetail {
     pub sorts: Vec<String>,
     pub functions: Vec<(String, String, String)>,
     pub relations: Vec<(String, String)>,
+    /// Instance fields: (name, theory_type)
+    pub instance_fields: Vec<(String, String)>,
     pub axioms: Vec<AxiomDetail>,
 }
 
@@ -1182,6 +1191,10 @@ pub fn format_theory_detail(detail: &TheoryDetail) -> String {
 
     for (name, domain) in &detail.relations {
         out.push_str(&format!("  {} : {} -> Prop;\n", name, domain));
+    }
+
+    for (name, theory_type) in &detail.instance_fields {
+        out.push_str(&format!("  {} : {} instance;\n", name, theory_type));
     }
 
     for axiom in &detail.axioms {
