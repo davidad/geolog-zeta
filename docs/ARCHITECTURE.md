@@ -193,7 +193,7 @@ Sequent {
 
 See `bd ready` for current work items. Key frontiers:
 
-- **Solver completion** (`geolog-xj2`): Full geometric logic model finding
-- **Congruence closure** (`geolog-fjy`): Equation handling in solver
-- **Leapfrog Triejoin** (`geolog-bpd`): Efficient multi-way joins
-- **Product instance elaboration** (`geolog-ulh`): `[x: a, y: b] mul = c` syntax
+- **Query engine** (`geolog-7tt`, `geolog-32x`): Chase algorithm and RelAlgIR compiler
+- **Solver completion** (`geolog-xj2`): Forward chaining and derivation search
+- **Nested instance elaboration** (`geolog-1d4`): Inline instance definitions
+- **Monotonic Submodel proofs** (`geolog-rgg`): Lean4 formalization

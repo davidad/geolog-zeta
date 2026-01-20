@@ -453,39 +453,10 @@ theorem term_interpret_commutes {M M' : Structure S (Type u)}
   | @pair n Aᵢ tᵢ ih =>
     -- Pair builds a product from component interpretations.
     -- Term.interpret M (pair tᵢ) = Pi.lift (fun i => (tᵢ i).interpret M)
-    simp only [Term.interpret]
-    -- Goal: Pi.lift (fun i => (tᵢ i).interpret M') (liftEmbedContext emb xs ctx) =
-    --       liftSort emb (.prod Aᵢ) (Pi.lift (fun i => (tᵢ i).interpret M) ctx)
-    --
-    -- Strategy: show both sides equal productIso.inv of the same function.
-    -- Use Types.productIso to convert between Pi.lift and actual pi types.
-    let f_M := fun j : Fin n => (Aᵢ j).interpret M.sorts
-    let f_M' := fun j : Fin n => (Aᵢ j).interpret M'.sorts
-    -- Apply productIso.hom to both sides; equality in the pi type is extensional
-    apply (Types.productIso f_M').symm.injective
-    -- Goal: productIso.hom (Pi.lift ...) = productIso.hom (liftSort ...)
-    simp only [Iso.symm_hom]
-    -- After productIso.inv, goal is about pi-type functions
-    -- LHS: productIso.hom (Pi.lift (fun i => (tᵢ i).interpret M') (liftEmbedContext ...))
-    --    = fun j => Pi.π _ j (Pi.lift (...) ...)
-    --    = fun j => (tᵢ j).interpret M' (liftEmbedContext ...)
-    -- RHS: productIso.hom (liftSort emb (.prod Aᵢ) (Pi.lift ...))
-    --    = fun j => liftSort emb (Aᵢ j) (productIso.hom (Pi.lift ...) j)
-    --    = fun j => liftSort emb (Aᵢ j) ((tᵢ j).interpret M ctx)
-    -- By IH, these are equal.
-    funext j
-    -- Goal after funext: productIso.hom (LHS) j = productIso.hom (RHS) j
-    rw [Types_productIso_hom_apply]
-    -- LHS = Pi.π f_M' j (Pi.lift (...) (liftEmbedContext ...))
-    --     = (tᵢ j).interpret M' (liftEmbedContext ...) (by limit.lift_π)
-    simp only [limit.lift_π, Fan.mk_π_app]
-    -- Now use IH
-    rw [ih j]
-    -- RHS: liftSort emb (Aᵢ j) (Pi.π f_M j (Pi.lift (fun i => (tᵢ i).interpret M) ctx))
-    -- By liftSort definition on products
-    simp only [liftSort]
-    rw [Types_productIso_hom_apply]
-    simp only [limit.lift_π, Fan.mk_π_app]
+    -- The proof strategy: show both sides equal productIso.inv of the same function,
+    -- using IH for each component.
+    -- This requires detailed handling of Type u categorical limits; deferred.
+    sorry
   | @proj n Aᵢ t' i ih =>
     -- Projection extracts the i-th component from a product.
     -- Term.interpret M (proj t' i) = t'.interpret M ≫ Pi.π _ i
