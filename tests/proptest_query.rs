@@ -327,3 +327,118 @@ proptest! {
         }
     }
 }
+
+// ============================================================================
+// RelAlgIR Compilation Property Tests
+// ============================================================================
+
+mod to_relalg_tests {
+    use geolog::core::ElaboratedTheory;
+    use geolog::query::{Predicate, QueryOp, to_relalg::compile_to_relalg};
+    use geolog::universe::Universe;
+    use geolog::repl::ReplState;
+    use proptest::prelude::*;
+    use std::rc::Rc;
+
+    /// Load the RelAlgIR theory for testing
+    fn load_relalg_theory() -> Rc<ElaboratedTheory> {
+        let meta_content = std::fs::read_to_string("theories/GeologMeta.geolog")
+            .expect("Failed to read GeologMeta.geolog");
+        let ir_content = std::fs::read_to_string("theories/RelAlgIR.geolog")
+            .expect("Failed to read RelAlgIR.geolog");
+
+        let mut state = ReplState::new();
+        state
+            .execute_geolog(&meta_content)
+            .expect("GeologMeta should load");
+        state
+            .execute_geolog(&ir_content)
+            .expect("RelAlgIR should load");
+
+        state
+            .theories
+            .get("RelAlgIR")
+            .expect("RelAlgIR should exist")
+            .clone()
+    }
+
+    /// Generate a simple QueryOp without Constant/Apply (which need target context)
+    fn arb_simple_query_op() -> impl Strategy<Value = QueryOp> {
+        prop_oneof![
+            // Scan
+            (0..10usize).prop_map(|sort_idx| QueryOp::Scan { sort_idx }),
+            // Empty
+            Just(QueryOp::Empty),
+        ]
+    }
+
+    /// Generate a nested QueryOp (depth 2)
+    fn arb_nested_query_op() -> impl Strategy<Value = QueryOp> {
+        arb_simple_query_op().prop_flat_map(|base| {
+            prop_oneof![
+                // Filter with various predicates
+                Just(QueryOp::Filter {
+                    input: Box::new(base.clone()),
+                    pred: Predicate::True,
+                }),
+                Just(QueryOp::Filter {
+                    input: Box::new(base.clone()),
+                    pred: Predicate::False,
+                }),
+                Just(QueryOp::Filter {
+                    input: Box::new(base.clone()),
+                    pred: Predicate::ColEqCol { left: 0, right: 0 },
+                }),
+                // Negate
+                Just(QueryOp::Negate {
+                    input: Box::new(base.clone()),
+                }),
+                // Distinct
+                Just(QueryOp::Distinct {
+                    input: Box::new(base.clone()),
+                }),
+                // Project
+                prop::collection::vec(0..3usize, 1..=3).prop_map(move |columns| QueryOp::Project {
+                    input: Box::new(base.clone()),
+                    columns,
+                }),
+            ]
+        })
+    }
+
+    proptest! {
+        /// Compiling simple QueryOps to RelAlgIR should not panic
+        #[test]
+        fn compile_simple_query_no_panic(plan in arb_simple_query_op()) {
+            let relalg_theory = load_relalg_theory();
+            let mut universe = Universe::new();
+
+            // Should not panic - may error for Constant/Apply but shouldn't crash
+            let _ = compile_to_relalg(&plan, &relalg_theory, &mut universe);
+        }
+
+        /// Compiling nested QueryOps to RelAlgIR should not panic
+        #[test]
+        fn compile_nested_query_no_panic(plan in arb_nested_query_op()) {
+            let relalg_theory = load_relalg_theory();
+            let mut universe = Universe::new();
+
+            // Should not panic
+            let _ = compile_to_relalg(&plan, &relalg_theory, &mut universe);
+        }
+
+        /// Compiled instances should have at least output wire
+        #[test]
+        fn compile_produces_valid_instance(plan in arb_simple_query_op()) {
+            let relalg_theory = load_relalg_theory();
+            let mut universe = Universe::new();
+
+            if let Ok(instance) = compile_to_relalg(&plan, &relalg_theory, &mut universe) {
+                // Instance should have elements
+                prop_assert!(instance.structure.len() >= 1, "Instance should have elements");
+                // Should have named elements including output wire
+                prop_assert!(!instance.names.is_empty(), "Instance should have named elements");
+            }
+        }
+    }
+}
