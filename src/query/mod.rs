@@ -33,6 +33,7 @@ pub mod optimize;
 pub mod compile;
 mod store_queries;
 pub mod to_relalg;
+pub mod from_relalg;
 
 pub use pattern::{Pattern, Constraint, Projection};
 pub use exec::{QueryResult, execute_pattern};
