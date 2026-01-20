@@ -1,0 +1,161 @@
+// Petri Net Reachability - Full Example
+//
+// This demonstrates the core ideas from the original geolog design document:
+// modeling Petri net reachability using geometric logic with the chase algorithm.
+//
+// Original design: loose_thoughts/2025-12-12_12:10.md
+//
+// Key concepts:
+// - PetriNet: places, transitions, input/output arcs
+// - Marking: assignment of tokens to places (parameterized theory)
+// - Trace: sequence of transition firings connecting markings
+// - Reachability: computed via chase algorithm
+
+// ============================================================
+// THEORY: PetriNet
+// ============================================================
+
+theory PetriNet {
+  P : Sort;      // Places
+  T : Sort;      // Transitions
+  In : Sort;     // Input arcs (place -> transition)
+  Out : Sort;    // Output arcs (transition -> place)
+
+  // Arc structure
+  in/place : In -> P;
+  in/trans : In -> T;
+  out/trans : Out -> T;
+  out/place : Out -> P;
+}
+
+// ============================================================
+// THEORY: Marking (parameterized)
+// A marking assigns tokens to places in a specific net
+// ============================================================
+
+theory (N : PetriNet instance) Marking {
+  Token : Sort;
+  of : Token -> N/P;
+}
+
+// ============================================================
+// THEORY: PlaceReachability
+// Simplified reachability at the place level
+// ============================================================
+
+theory PlaceReachability {
+  P : Sort;
+  T : Sort;
+
+  // Which transition connects which places
+  // Fires(t, from, to) means transition t can move a token from 'from' to 'to'
+  Fires : [trans: T, from: P, to: P] -> Prop;
+
+  // Reachability relation (transitive closure)
+  CanReach : [from: P, to: P] -> Prop;
+
+  // Reflexivity: every place can reach itself
+  ax/refl : forall p : P.
+    |- [from: p, to: p] CanReach;
+
+  // Transition firing creates reachability
+  ax/fire : forall t : T, x : P, y : P.
+    [trans: t, from: x, to: y] Fires |- [from: x, to: y] CanReach;
+
+  // Transitivity: reachability composes
+  ax/trans : forall x : P, y : P, z : P.
+    [from: x, to: y] CanReach, [from: y, to: z] CanReach |- [from: x, to: z] CanReach;
+}
+
+// ============================================================
+// INSTANCE: SimpleNet
+// A -> B -> C with bidirectional A <-> B
+//
+//   (A) <--[ba]-- (B) --[bc]--> (C)
+//    |             ^
+//    +---[ab]------+
+// ============================================================
+
+instance SimpleNet : PlaceReachability = {
+  // Places
+  A : P;
+  B : P;
+  C : P;
+
+  // Transitions
+  ab : T;   // A -> B
+  ba : T;   // B -> A
+  bc : T;   // B -> C
+
+  // Firing relations
+  [trans: ab, from: A, to: B] Fires;
+  [trans: ba, from: B, to: A] Fires;
+  [trans: bc, from: B, to: C] Fires;
+}
+
+// ============================================================
+// INSTANCE: MutexNet
+// Two processes competing for a mutex
+//
+//   idle1 --[enter1]--> crit1 --[exit1]--> idle1
+//              ^                    |
+//              |       mutex        |
+//              |                    v
+//   idle2 --[enter2]--> crit2 --[exit2]--> idle2
+// ============================================================
+
+instance MutexNet : PlaceReachability = {
+  // Places
+  idle1 : P;
+  crit1 : P;
+  idle2 : P;
+  crit2 : P;
+  mutex : P;
+
+  // Transitions
+  enter1 : T;
+  exit1 : T;
+  enter2 : T;
+  exit2 : T;
+
+  // Process 1 acquires mutex: idle1 + mutex -> crit1
+  // (simplified: we track place-level, not token-level)
+  [trans: enter1, from: idle1, to: crit1] Fires;
+  [trans: enter1, from: mutex, to: crit1] Fires;
+
+  // Process 1 releases mutex: crit1 -> idle1 + mutex
+  [trans: exit1, from: crit1, to: idle1] Fires;
+  [trans: exit1, from: crit1, to: mutex] Fires;
+
+  // Process 2 acquires mutex: idle2 + mutex -> crit2
+  [trans: enter2, from: idle2, to: crit2] Fires;
+  [trans: enter2, from: mutex, to: crit2] Fires;
+
+  // Process 2 releases mutex: crit2 -> idle2 + mutex
+  [trans: exit2, from: crit2, to: idle2] Fires;
+  [trans: exit2, from: crit2, to: mutex] Fires;
+}
+
+// ============================================================
+// INSTANCE: ProducerConsumerNet
+// Producer creates items, consumer processes them
+//
+//   ready --[produce]--> buffer --[consume]--> done
+// ============================================================
+
+instance ProducerConsumerNet : PlaceReachability = {
+  // Places
+  ready : P;
+  buffer : P;
+  done : P;
+
+  // Transitions
+  produce : T;
+  consume : T;
+
+  // Produce: ready -> buffer
+  [trans: produce, from: ready, to: buffer] Fires;
+
+  // Consume: buffer -> done
+  [trans: consume, from: buffer, to: done] Fires;
+}

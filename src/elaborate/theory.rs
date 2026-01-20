@@ -224,6 +224,16 @@ pub fn elaborate_theory(env: &mut Env, theory: &ast::TheoryDecl) -> ElabResult<E
                 let domain = elaborate_type(&local_env, ty)?;
                 local_env.signature.add_relation(name.clone(), domain);
             }
+            // Instance-typed field declarations (nested instances)
+            // e.g., `initial_marking : N Marking instance;`
+            ast::TheoryItem::Field(name, ast::TypeExpr::Instance(inner)) => {
+                // For now, store the theory type expression as a string
+                // This will be resolved at instance elaboration time
+                let theory_type_str = format_type_expr(inner);
+                local_env
+                    .signature
+                    .add_instance_field(name.clone(), theory_type_str);
+            }
             _ => {}
         }
     }
@@ -272,4 +282,29 @@ pub fn elaborate_theory(env: &mut Env, theory: &ast::TheoryDecl) -> ElabResult<E
             axioms,
         },
     })
+}
+
+/// Format a type expression as a string (for storing instance field types)
+fn format_type_expr(ty: &ast::TypeExpr) -> String {
+    match ty {
+        ast::TypeExpr::Path(path) => path.to_string(),
+        ast::TypeExpr::App(base, arg) => {
+            format!("{} {}", format_type_expr(base), format_type_expr(arg))
+        }
+        ast::TypeExpr::Instance(inner) => {
+            format!("{} instance", format_type_expr(inner))
+        }
+        ast::TypeExpr::Sort => "Sort".to_string(),
+        ast::TypeExpr::Prop => "Prop".to_string(),
+        ast::TypeExpr::Record(fields) => {
+            let field_strs: Vec<String> = fields
+                .iter()
+                .map(|(name, ty)| format!("{}: {}", name, format_type_expr(ty)))
+                .collect();
+            format!("[{}]", field_strs.join(", "))
+        }
+        ast::TypeExpr::Arrow(from, to) => {
+            format!("{} -> {}", format_type_expr(from), format_type_expr(to))
+        }
+    }
 }

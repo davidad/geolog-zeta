@@ -433,12 +433,24 @@ impl ReplState {
         // Check instances
         if let Some(entry) = self.instances.get(name) {
             let theory = self.theories.get(&entry.theory_name)?;
+
+            // Collect nested instance info
+            let nested: Vec<(String, usize)> = entry
+                .structure
+                .nested
+                .iter()
+                .map(|(field_name, nested_struct)| {
+                    (field_name.clone(), nested_struct.len())
+                })
+                .collect();
+
             return Some(InspectResult::Instance(InstanceDetail {
                 name: name.to_string(),
                 theory_name: entry.theory_name.clone(),
                 elements: self.collect_elements(entry, &theory.theory.signature),
                 functions: self.collect_function_values(entry, &theory.theory.signature),
                 relations: self.collect_relation_tuples(entry, &theory.theory.signature),
+                nested,
             }));
         }
 
@@ -1057,6 +1069,8 @@ pub struct InstanceDetail {
     pub functions: Vec<(String, Vec<String>)>,
     /// Relations: (name, list of tuples-as-element-names)
     pub relations: Vec<(String, Vec<Vec<String>>)>,
+    /// Nested instances: (field_name, element_count)
+    pub nested: Vec<(String, usize)>,
 }
 
 #[derive(Debug)]
@@ -1102,6 +1116,14 @@ pub fn format_instance_detail(detail: &InstanceDetail) -> String {
                     rel_name
                 ));
             }
+        }
+    }
+
+    // Nested instances
+    if !detail.nested.is_empty() {
+        out.push_str("  // Nested instances:\n");
+        for (field_name, element_count) in &detail.nested {
+            out.push_str(&format!("  {} = {{ /* {} elements */ }};\n", field_name, element_count));
         }
     }
 

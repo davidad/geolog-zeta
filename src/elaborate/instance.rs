@@ -486,14 +486,66 @@ pub fn elaborate_instance_ctx(
         }
     }
 
-    // 6. Fourth pass: nested instances (TODO for Phase 2)
+    // 6. Fourth pass: nested instances
+    // For each nested instance like `initial_marking = { t : Token; ... };`
+    // 1. Find the instance field declaration in the theory
+    // 2. Resolve its theory type (e.g., "N Marking") with parameter substitution
+    // 3. Recursively elaborate the nested instance body
+    // 4. Store in the parent structure's `nested` HashMap
     for item in &instance.body {
-        if let ast::InstanceItem::NestedInstance(name, _nested) = &item.node {
-            // For now, just note that we're skipping these
-            return Err(ElabError::UnsupportedFeature(format!(
-                "nested instance: {}",
-                name
-            )));
+        if let ast::InstanceItem::NestedInstance(field_name, nested_decl) = &item.node {
+            // 1. Look up the instance field in the parent theory signature
+            let field_idx = theory
+                .theory
+                .signature
+                .lookup_instance_field(field_name)
+                .ok_or_else(|| {
+                    ElabError::UnknownVariable(format!("nested instance field: {}", field_name))
+                })?;
+
+            let instance_field = &theory.theory.signature.instance_fields[field_idx];
+
+            // 2. Resolve the theory type with parameter substitution
+            // The theory_type string is like "N Marking"
+            // We need to substitute parameter names with actual instance names
+            let mut resolved_theory_type = instance_field.theory_type.clone();
+            for (param_name, actual_instance_name) in &resolved.arguments {
+                // Simple substitution: replace param name at word boundaries
+                resolved_theory_type = resolved_theory_type.replace(param_name, actual_instance_name);
+            }
+
+            // 3. Find the resolved theory
+            // Parse the resolved type string to get the theory name
+            // For "ExampleNet Marking", we need to get the "Marking" theory
+            let nested_theory_name = resolved_theory_type
+                .split_whitespace()
+                .last()
+                .unwrap_or(&resolved_theory_type)
+                .to_string();
+
+            let nested_theory = ctx.theories.get(&nested_theory_name).ok_or_else(|| {
+                ElabError::UnknownTheory(format!(
+                    "nested instance theory: {} (from field type: {})",
+                    nested_theory_name, instance_field.theory_type
+                ))
+            })?;
+
+            // 4. Create a new instance declaration with the resolved type
+            // Build the type expression from the resolved string
+            let nested_instance_decl = ast::InstanceDecl {
+                theory: parse_type_expr_from_string(&resolved_theory_type)?,
+                name: format!("{}_{}", instance.name, field_name),
+                body: nested_decl.body.clone(),
+            };
+
+            // 5. Recursively elaborate the nested instance
+            let nested_result = elaborate_instance_ctx(ctx, &nested_instance_decl)?;
+
+            // 6. Store the nested structure using the field name as the key
+            structure.nested.insert(field_name.clone(), nested_result.structure);
+
+            // Suppress unused variable warning
+            let _ = nested_theory; // Used for type checking (could add validation later)
         }
     }
 
@@ -849,4 +901,38 @@ fn cartesian_product(sets: &[Vec<Slid>]) -> Vec<Vec<Slid>> {
         result = new_result;
     }
     result
+}
+
+/// Parse a simple type expression from a string like "ExampleNet Marking"
+///
+/// This handles:
+/// - Simple paths: "PetriNet" -> Path(["PetriNet"])
+/// - Applied types: "ExampleNet Marking" -> App(Path(["ExampleNet"]), Path(["Marking"]))
+fn parse_type_expr_from_string(s: &str) -> ElabResult<ast::TypeExpr> {
+    let tokens: Vec<&str> = s.split_whitespace().collect();
+
+    if tokens.is_empty() {
+        return Err(ElabError::UnsupportedFeature(
+            "empty type expression".to_string(),
+        ));
+    }
+
+    if tokens.len() == 1 {
+        // Simple path
+        Ok(ast::TypeExpr::Path(ast::Path::single(
+            tokens[0].to_string(),
+        )))
+    } else {
+        // Applied type: "A B C" -> App(App(A, B), C)
+        // Actually in our AST, App(base, arg) so "A B C" parses as App(App(A, B), C)
+        // meaning C is applied to (A applied to B)
+        let mut result = ast::TypeExpr::Path(ast::Path::single(tokens[0].to_string()));
+        for &token in &tokens[1..] {
+            result = ast::TypeExpr::App(
+                Box::new(result),
+                Box::new(ast::TypeExpr::Path(ast::Path::single(token.to_string()))),
+            );
+        }
+        Ok(result)
+    }
 }

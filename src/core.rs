@@ -83,7 +83,17 @@ pub struct RelationSymbol {
     pub domain: DerivedSort,
 }
 
-/// A signature: sorts + function symbols + relation symbols
+/// An instance field declaration (a field that holds a sub-instance)
+/// e.g., `initial_marking : N Marking instance;`
+#[derive(Clone, Debug)]
+pub struct InstanceFieldSymbol {
+    pub name: String,
+    /// The theory type expression (e.g., "N Marking" as a string for now)
+    /// This needs to be resolved with actual parameter bindings during instance elaboration
+    pub theory_type: String,
+}
+
+/// A signature: sorts + function symbols + relation symbols + instance fields
 #[derive(Clone, Debug, Default)]
 pub struct Signature {
     /// Sort names, indexed by SortId
@@ -98,6 +108,10 @@ pub struct Signature {
     pub relations: Vec<RelationSymbol>,
     /// Map from relation name to RelId
     pub rel_names: HashMap<String, RelId>,
+    /// Instance field declarations (fields that hold sub-instances)
+    pub instance_fields: Vec<InstanceFieldSymbol>,
+    /// Map from instance field name to index
+    pub instance_field_names: HashMap<String, usize>,
 }
 
 impl Signature {
@@ -145,6 +159,20 @@ impl Signature {
 
     pub fn lookup_rel(&self, name: &str) -> Option<RelId> {
         self.rel_names.get(name).copied()
+    }
+
+    /// Add an instance field declaration.
+    /// Returns the field index (0-based).
+    pub fn add_instance_field(&mut self, name: String, theory_type: String) -> usize {
+        let id = self.instance_fields.len();
+        self.instance_field_names.insert(name.clone(), id);
+        self.instance_fields.push(InstanceFieldSymbol { name, theory_type });
+        id
+    }
+
+    /// Look up an instance field by name
+    pub fn lookup_instance_field(&self, name: &str) -> Option<usize> {
+        self.instance_field_names.get(name).copied()
     }
 }
 
@@ -796,8 +824,10 @@ pub struct Structure {
     /// E.g., for `problem0 : ExampleNet ReachabilityProblem`, this contains {"N": uuid_of_ExampleNet}
     pub parents: HashMap<String, Uuid>,
 
-    /// Nested structures (for instance-valued fields)
-    pub nested: HashMap<Luid, Structure>,
+    /// Nested structures (for instance-valued fields).
+    /// Maps field name → nested Structure.
+    /// E.g., for `initial_marking = { ... }`, this contains {"initial_marking": Structure}
+    pub nested: HashMap<String, Structure>,
 }
 
 /// Function init info: domain sort ID and whether codomain is external
