@@ -225,6 +225,91 @@ fn test_preorder_example_parses() {
 }
 
 // ============================================================================
+// Theories: GeologMeta and RelAlgIR
+// ============================================================================
+
+#[test]
+fn test_geolog_meta_loads() {
+    let path = Path::new("theories/GeologMeta.geolog");
+    let state = load_geolog_file(path).expect("GeologMeta.geolog should parse and elaborate");
+
+    let meta = state.theories.get("GeologMeta").expect("GeologMeta theory should exist");
+
+    // GeologMeta is a large theory: 40 sorts, 76 functions, 3 relations
+    assert_eq!(meta.theory.signature.sorts.len(), 40, "GeologMeta should have 40 sorts");
+    assert_eq!(meta.theory.signature.functions.len(), 76, "GeologMeta should have 76 functions");
+    assert_eq!(meta.theory.signature.relations.len(), 3, "GeologMeta should have 3 relations");
+
+    // Check some key sorts exist
+    assert!(meta.theory.signature.lookup_sort("Theory").is_some(), "Theory sort should exist");
+    assert!(meta.theory.signature.lookup_sort("Srt").is_some(), "Srt sort should exist");
+    assert!(meta.theory.signature.lookup_sort("Func").is_some(), "Func sort should exist");
+    assert!(meta.theory.signature.lookup_sort("Elem").is_some(), "Elem sort should exist");
+}
+
+#[test]
+fn test_relalg_ir_loads() {
+    // First load GeologMeta (RelAlgIR extends it)
+    let meta_content = fs::read_to_string("theories/GeologMeta.geolog")
+        .expect("Failed to read GeologMeta.geolog");
+    let ir_content = fs::read_to_string("theories/RelAlgIR.geolog")
+        .expect("Failed to read RelAlgIR.geolog");
+
+    let mut state = ReplState::new();
+
+    state.execute_geolog(&meta_content)
+        .expect("GeologMeta should load");
+    state.execute_geolog(&ir_content)
+        .expect("RelAlgIR should load");
+
+    let ir = state.theories.get("RelAlgIR").expect("RelAlgIR theory should exist");
+
+    // RelAlgIR has 78 sorts (40 from GeologMeta + 38 own)
+    assert_eq!(ir.theory.signature.sorts.len(), 78, "RelAlgIR should have 78 sorts");
+
+    // Check GeologMeta sorts are correctly qualified
+    assert!(ir.theory.signature.lookup_sort("GeologMeta/Srt").is_some(),
+        "GeologMeta/Srt should exist (inherited sort)");
+    assert!(ir.theory.signature.lookup_sort("GeologMeta/Func").is_some(),
+        "GeologMeta/Func should exist (inherited sort)");
+
+    // Check RelAlgIR's own sorts exist (no prefix)
+    assert!(ir.theory.signature.lookup_sort("Wire").is_some(),
+        "Wire sort should exist");
+    assert!(ir.theory.signature.lookup_sort("Op").is_some(),
+        "Op sort should exist");
+    assert!(ir.theory.signature.lookup_sort("ScanOp").is_some(),
+        "ScanOp sort should exist");
+
+    // Check functions are correctly qualified
+    // GeologMeta's "Func/dom" should become "GeologMeta/Func/dom"
+    assert!(ir.theory.signature.lookup_func("GeologMeta/Func/dom").is_some(),
+        "GeologMeta/Func/dom should exist (inherited function)");
+    assert!(ir.theory.signature.lookup_func("GeologMeta/Func/cod").is_some(),
+        "GeologMeta/Func/cod should exist (inherited function)");
+
+    // RelAlgIR's own functions
+    assert!(ir.theory.signature.lookup_func("Wire/schema").is_some(),
+        "Wire/schema should exist");
+    assert!(ir.theory.signature.lookup_func("ScanOp/out").is_some(),
+        "ScanOp/out should exist");
+
+    // Check functions referencing inherited sorts have correct domain/codomain
+    // ScanOp/srt : ScanOp -> GeologMeta/Srt
+    let scan_srt = ir.theory.signature.lookup_func("ScanOp/srt")
+        .expect("ScanOp/srt should exist");
+    let func_info = &ir.theory.signature.functions[scan_srt];
+    match &func_info.codomain {
+        geolog::core::DerivedSort::Base(sort_id) => {
+            let sort_name = &ir.theory.signature.sorts[*sort_id];
+            assert_eq!(sort_name, "GeologMeta/Srt",
+                "ScanOp/srt codomain should be GeologMeta/Srt");
+        }
+        _ => panic!("ScanOp/srt codomain should be a base sort"),
+    }
+}
+
+// ============================================================================
 // Meta-test: all examples should parse
 // ============================================================================
 
