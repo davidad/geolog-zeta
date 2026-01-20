@@ -1,0 +1,236 @@
+//! Unit tests for chase algorithm
+
+use geolog::core::{
+    Context, DerivedSort, ElaboratedTheory, Formula, RelationStorage, Sequent, Signature, Structure, Term, Theory,
+};
+use geolog::query::chase::{
+    chase_fixpoint, chase_step, compile_axiom, compile_theory_axioms, ChaseHead, ChaseRule,
+};
+use geolog::universe::Universe;
+
+/// Create a simple test theory with one sort and one binary relation
+fn simple_theory_with_relation() -> Theory {
+    let mut sig = Signature::default();
+    sig.add_sort("V".to_string());
+    sig.add_relation("Edge".to_string(), DerivedSort::Base(0));
+    Theory {
+        name: "Graph".to_string(),
+        signature: sig,
+        axioms: vec![],
+    }
+}
+
+/// Create a theory with transitive closure axiom: Edge(x,y), Edge(y,z) ⊢ Path(x,z)
+fn transitive_closure_theory() -> Theory {
+    let mut sig = Signature::default();
+    sig.add_sort("V".to_string());
+    sig.add_relation("Edge".to_string(), DerivedSort::Base(0));
+    sig.add_relation("Path".to_string(), DerivedSort::Base(0));
+
+    // Axiom 1: Edge(x,y) ⊢ Path(x,y)  (base case)
+    let base_axiom = Sequent {
+        context: Context {
+            vars: vec![
+                ("x".to_string(), DerivedSort::Base(0)),
+                ("y".to_string(), DerivedSort::Base(0)),
+            ],
+        },
+        premise: Formula::Rel(0, Term::Var("x".to_string(), DerivedSort::Base(0))),
+        conclusion: Formula::Rel(1, Term::Var("x".to_string(), DerivedSort::Base(0))),
+    };
+
+    // TODO: Axiom 2 needs conjunction which requires more complex query compilation
+    // For now, test with just the base case
+
+    Theory {
+        name: "TransitiveClosure".to_string(),
+        signature: sig,
+        axioms: vec![base_axiom],
+    }
+}
+
+#[test]
+fn test_compile_axiom_basic() {
+    let theory = simple_theory_with_relation();
+    let sig = &theory.signature;
+
+    // Create a simple axiom: x:V ⊢ R(x)
+    let axiom = Sequent {
+        context: Context {
+            vars: vec![("x".to_string(), DerivedSort::Base(0))],
+        },
+        premise: Formula::True,
+        conclusion: Formula::Rel(0, Term::Var("x".to_string(), DerivedSort::Base(0))),
+    };
+
+    let rule = compile_axiom(&axiom, sig, "test_rule".to_string()).unwrap();
+
+    assert_eq!(rule.name, "test_rule");
+    assert_eq!(rule.var_indices.len(), 1);
+    assert_eq!(rule.var_indices.get("x"), Some(&0));
+
+    // Check head is AddRelation
+    match &rule.head {
+        ChaseHead::AddRelation { rel_id, arg_indices } => {
+            assert_eq!(*rel_id, 0);
+            assert_eq!(arg_indices, &vec![0]);
+        }
+        _ => panic!("Expected AddRelation head"),
+    }
+}
+
+#[test]
+fn test_compile_axiom_conjunction_conclusion() {
+    let mut sig = Signature::default();
+    sig.add_sort("V".to_string());
+    sig.add_relation("R".to_string(), DerivedSort::Base(0));
+    sig.add_relation("S".to_string(), DerivedSort::Base(0));
+
+    // Axiom: x:V ⊢ R(x) ∧ S(x)
+    let axiom = Sequent {
+        context: Context {
+            vars: vec![("x".to_string(), DerivedSort::Base(0))],
+        },
+        premise: Formula::True,
+        conclusion: Formula::Conj(vec![
+            Formula::Rel(0, Term::Var("x".to_string(), DerivedSort::Base(0))),
+            Formula::Rel(1, Term::Var("x".to_string(), DerivedSort::Base(0))),
+        ]),
+    };
+
+    let rule = compile_axiom(&axiom, &sig, "conj_rule".to_string()).unwrap();
+
+    // Check head is Multi with two AddRelation
+    match &rule.head {
+        ChaseHead::Multi(heads) => {
+            assert_eq!(heads.len(), 2);
+            for head in heads {
+                match head {
+                    ChaseHead::AddRelation { .. } => {}
+                    _ => panic!("Expected AddRelation in Multi head"),
+                }
+            }
+        }
+        _ => panic!("Expected Multi head"),
+    }
+}
+
+#[test]
+fn test_chase_step_adds_relation() {
+    let mut universe = Universe::new();
+    let mut structure = Structure::new(1);
+
+    // Add some elements
+    let (a, _) = structure.add_element(&mut universe, 0);
+    let (b, _) = structure.add_element(&mut universe, 0);
+    let (c, _) = structure.add_element(&mut universe, 0);
+
+    // Initialize one relation with arity 1
+    structure.init_relations(&[1]);
+
+    // Create theory and compile rule
+    let theory = simple_theory_with_relation();
+
+    // Simple rule: just scan sort 0 and add to relation
+    let rule = ChaseRule {
+        name: "add_all".to_string(),
+        var_indices: [("x".to_string(), 0)].into_iter().collect(),
+        query: geolog::query::backend::QueryOp::Scan { sort_idx: 0 },
+        head: ChaseHead::AddRelation {
+            rel_id: 0,
+            arg_indices: vec![0],
+        },
+    };
+
+    // Execute chase step
+    let changed = chase_step(&[rule], &mut structure, &mut universe, &theory.signature).unwrap();
+
+    assert!(changed);
+    assert_eq!(structure.get_relation(0).len(), 3);
+    assert!(structure.query_relation(0, &[a]));
+    assert!(structure.query_relation(0, &[b]));
+    assert!(structure.query_relation(0, &[c]));
+
+    // Second chase step should not change anything
+    let rule2 = ChaseRule {
+        name: "add_all".to_string(),
+        var_indices: [("x".to_string(), 0)].into_iter().collect(),
+        query: geolog::query::backend::QueryOp::Scan { sort_idx: 0 },
+        head: ChaseHead::AddRelation {
+            rel_id: 0,
+            arg_indices: vec![0],
+        },
+    };
+
+    let changed2 = chase_step(&[rule2], &mut structure, &mut universe, &theory.signature).unwrap();
+    assert!(!changed2);
+}
+
+#[test]
+fn test_chase_fixpoint() {
+    let mut universe = Universe::new();
+    let mut structure = Structure::new(1);
+
+    // Add elements
+    let (a, _) = structure.add_element(&mut universe, 0);
+    let (b, _) = structure.add_element(&mut universe, 0);
+
+    // Initialize relation
+    structure.init_relations(&[1]);
+
+    let theory = simple_theory_with_relation();
+
+    let rule = ChaseRule {
+        name: "add_all".to_string(),
+        var_indices: [("x".to_string(), 0)].into_iter().collect(),
+        query: geolog::query::backend::QueryOp::Scan { sort_idx: 0 },
+        head: ChaseHead::AddRelation {
+            rel_id: 0,
+            arg_indices: vec![0],
+        },
+    };
+
+    let iterations = chase_fixpoint(&[rule], &mut structure, &mut universe, &theory.signature, 100).unwrap();
+
+    assert_eq!(iterations, 2); // One to add, one to confirm fixpoint
+    assert_eq!(structure.get_relation(0).len(), 2);
+    assert!(structure.query_relation(0, &[a]));
+    assert!(structure.query_relation(0, &[b]));
+}
+
+#[test]
+fn test_chase_with_empty_structure() {
+    let mut universe = Universe::new();
+    let mut structure = Structure::new(1);
+    structure.init_relations(&[1]);
+
+    let theory = simple_theory_with_relation();
+
+    let rule = ChaseRule {
+        name: "add_all".to_string(),
+        var_indices: [("x".to_string(), 0)].into_iter().collect(),
+        query: geolog::query::backend::QueryOp::Scan { sort_idx: 0 },
+        head: ChaseHead::AddRelation {
+            rel_id: 0,
+            arg_indices: vec![0],
+        },
+    };
+
+    let iterations = chase_fixpoint(&[rule], &mut structure, &mut universe, &theory.signature, 100).unwrap();
+
+    assert_eq!(iterations, 1); // Only one iteration needed (no elements to process)
+    assert_eq!(structure.get_relation(0).len(), 0);
+}
+
+#[test]
+fn test_compile_theory_axioms() {
+    let theory = ElaboratedTheory {
+        theory: transitive_closure_theory(),
+        params: vec![],
+    };
+
+    let rules = compile_theory_axioms(&theory).unwrap();
+
+    assert_eq!(rules.len(), 1);
+    assert_eq!(rules[0].name, "axiom_0");
+}
