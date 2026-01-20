@@ -244,22 +244,27 @@ pub fn elaborate_formula(env: &Env, ctx: &Context, formula: &ast::Formula) -> El
 /// the sort IDs need to be remapped. For example, if PetriNet has sort P at id=0,
 /// and we copy it as "N/P" into local signature at id=2, then any DerivedSort::Base(0)
 /// needs to become DerivedSort::Base(2).
+///
+/// The `preserve_existing_prefix` flag controls requalification behavior:
+/// - false (instance params): always prefix with param_name. N/X becomes M/N/X.
+/// - true (extends): preserve existing qualifier. N/X stays N/X.
 pub(crate) fn remap_derived_sort(
     sort: &DerivedSort,
     source_sig: &Signature,
     target_sig: &Signature,
     param_name: &str,
+    preserve_existing_prefix: bool,
 ) -> DerivedSort {
     match sort {
         DerivedSort::Base(source_id) => {
             // Look up the sort name in the source signature
             let sort_name = &source_sig.sorts[*source_id];
             // Find the corresponding qualified name in target signature
-            // If the sort is already qualified (contains '/'), use it as-is (from grandparent)
-            // Otherwise, prefix with param_name (parent's own sort)
-            let qualified_name = if sort_name.contains('/') {
+            let qualified_name = if preserve_existing_prefix && sort_name.contains('/') {
+                // Extends case: already-qualified names keep their original qualifier
                 sort_name.clone()
             } else {
+                // Instance param case OR unqualified name: prefix with param_name
                 format!("{}/{}", param_name, sort_name)
             };
             let target_id = target_sig
@@ -273,7 +278,7 @@ pub(crate) fn remap_derived_sort(
                 .map(|(name, s)| {
                     (
                         name.clone(),
-                        remap_derived_sort(s, source_sig, target_sig, param_name),
+                        remap_derived_sort(s, source_sig, target_sig, param_name, preserve_existing_prefix),
                     )
                 })
                 .collect();

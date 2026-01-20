@@ -64,12 +64,14 @@ pub fn elaborate_theory(env: &mut Env, theory: &ast::TheoryDecl) -> ElabResult<E
                     &parent_theory.theory.signature,
                     &local_env.signature,
                     prefix,
+                    true, // preserve_existing_prefix for extends
                 );
                 let codomain = remap_derived_sort(
                     &func.codomain,
                     &parent_theory.theory.signature,
                     &local_env.signature,
                     prefix,
+                    true, // preserve_existing_prefix for extends
                 );
                 local_env
                     .signature
@@ -89,6 +91,7 @@ pub fn elaborate_theory(env: &mut Env, theory: &ast::TheoryDecl) -> ElabResult<E
                     &parent_theory.theory.signature,
                     &local_env.signature,
                     prefix,
+                    true, // preserve_existing_prefix for extends
                 );
                 local_env.signature.add_relation(qualified_name, domain);
             }
@@ -128,12 +131,14 @@ pub fn elaborate_theory(env: &mut Env, theory: &ast::TheoryDecl) -> ElabResult<E
                                 &base_theory.theory.signature,
                                 &local_env.signature,
                                 &param.name,
+                                false, // instance params always re-prefix
                             );
                             let codomain = remap_derived_sort(
                                 &func.codomain,
                                 &base_theory.theory.signature,
                                 &local_env.signature,
                                 &param.name,
+                                false, // instance params always re-prefix
                             );
                             local_env
                                 .signature
@@ -148,6 +153,7 @@ pub fn elaborate_theory(env: &mut Env, theory: &ast::TheoryDecl) -> ElabResult<E
                                 &base_theory.theory.signature,
                                 &local_env.signature,
                                 &param.name,
+                                false, // instance params always re-prefix
                             );
                             local_env.signature.add_relation(qualified_name, domain);
                         }

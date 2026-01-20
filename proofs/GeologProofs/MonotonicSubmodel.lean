@@ -368,10 +368,14 @@ theorem rel_preserve_general {M M' : Structure S (Type u)}
     subobjectMem (M.Relations R) x →
     subobjectMem (M'.Relations R) (liftSort emb.toStructureEmbedding R.domain x) := by
   intro hmem
-  -- The proof depends on R.domain structure:
-  -- For .inj B: liftSort = emb.embed, use emb.rel_preserve
-  -- For .prod Aᵢ: need to show the lifted tuple preserves the relation
-  -- This requires that RelPreservingEmbedding's rel_preserve works for derived sort domains
+  -- The proof depends on R.domain structure.
+  -- For .inj B: liftSort emb (.inj B) = emb.embed B, so we use emb.rel_preserve directly.
+  -- For .prod Aᵢ: We need liftSort on products, but current RelPreservingEmbedding.rel_preserve
+  --               only handles base sort domains (requires hdom : R.domain = DerivedSorts.inj A).
+  -- DESIGN NOTE: To complete this proof, either:
+  --   1. Strengthen RelPreservingEmbedding to handle product domains, or
+  --   2. Prove all relations have base sort domains (signature restriction), or
+  --   3. Add a lemma showing product-domain relations reduce to base-sort cases.
   sorry
 
 /-!

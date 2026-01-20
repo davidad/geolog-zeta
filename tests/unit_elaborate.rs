@@ -624,3 +624,90 @@ instance C : Child = {
         panic!("expected instance");
     }
 }
+
+#[test]
+fn test_nested_parameterized_theories() {
+    // Test deep nesting: C depends on B which depends on A
+    // theory A { X : Sort; }
+    // theory (N : A instance) B { Y : Sort; f : Y -> N/X; }
+    // theory (M : B instance) C { Z : Sort; g : Z -> M/Y; h : Z -> M/N/X; }
+    //
+    // C should have sorts: M/N/X (from A via B), M/Y (from B), Z (own)
+    let input = r#"
+theory A { X : Sort; }
+
+theory (N : A instance) B {
+    Y : Sort;
+    f : Y -> N/X;
+}
+
+theory (M : B instance) C {
+    Z : Sort;
+    g : Z -> M/Y;
+    h : Z -> M/N/X;
+}
+"#;
+    let file = parse(input).expect("parse failed");
+    let mut env = Env::new();
+
+    // Elaborate A
+    if let ast::Declaration::Theory(t) = &file.declarations[0].node {
+        let elab = elaborate_theory(&mut env, t).expect("A elaboration failed");
+        env.theories.insert(elab.theory.name.clone(), Rc::new(elab));
+    }
+
+    // Elaborate B
+    if let ast::Declaration::Theory(t) = &file.declarations[1].node {
+        let elab = elaborate_theory(&mut env, t).expect("B elaboration failed");
+        assert_eq!(elab.theory.signature.sorts.len(), 2);
+        assert!(elab.theory.signature.lookup_sort("N/X").is_some());
+        assert!(elab.theory.signature.lookup_sort("Y").is_some());
+        env.theories.insert(elab.theory.name.clone(), Rc::new(elab));
+    }
+
+    // Elaborate C
+    if let ast::Declaration::Theory(t) = &file.declarations[2].node {
+        let elab = elaborate_theory(&mut env, t).expect("C elaboration failed");
+        assert_eq!(elab.theory.name, "C");
+
+        // C should have: M/N/X, M/Y, Z
+        assert_eq!(elab.theory.signature.sorts.len(), 3);
+        assert!(
+            elab.theory.signature.lookup_sort("M/N/X").is_some(),
+            "should have M/N/X (from A via B)"
+        );
+        assert!(
+            elab.theory.signature.lookup_sort("M/Y").is_some(),
+            "should have M/Y (from B)"
+        );
+        assert!(
+            elab.theory.signature.lookup_sort("Z").is_some(),
+            "should have Z (own sort)"
+        );
+
+        // Functions: M/f (from B), g, h (own)
+        assert_eq!(elab.theory.signature.functions.len(), 3);
+        assert!(
+            elab.theory.signature.lookup_func("M/f").is_some(),
+            "should have M/f"
+        );
+        assert!(
+            elab.theory.signature.lookup_func("g").is_some(),
+            "should have g"
+        );
+        assert!(
+            elab.theory.signature.lookup_func("h").is_some(),
+            "should have h"
+        );
+
+        // Check h's domain/codomain are correct
+        let h_id = elab.theory.signature.lookup_func("h").unwrap();
+        let h_sym = &elab.theory.signature.functions[h_id];
+        let z_id = elab.theory.signature.lookup_sort("Z").unwrap();
+        let mnx_id = elab.theory.signature.lookup_sort("M/N/X").unwrap();
+        assert_eq!(h_sym.domain, DerivedSort::Base(z_id));
+        assert_eq!(h_sym.codomain, DerivedSort::Base(mnx_id));
+    } else {
+        panic!("expected theory");
+    }
+}
