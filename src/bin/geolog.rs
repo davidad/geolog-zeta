@@ -169,6 +169,9 @@ fn handle_command(state: &mut ReplState, cmd: MetaCommand) -> bool {
         MetaCommand::Query { instance, sort } => {
             handle_query(state, &instance, &sort);
         }
+        MetaCommand::Solve { theory, budget_ms } => {
+            handle_solve(state, &theory, budget_ms);
+        }
         MetaCommand::Unknown(msg) => {
             eprintln!("Error: {}", msg);
             eprintln!("Type :help for available commands");
@@ -243,6 +246,9 @@ fn print_help(topic: Option<&str>) {
             println!();
             println!("Query:");
             println!("  :query <inst> <sort>        List all elements of a sort");
+            println!();
+            println!("Solver:");
+            println!("  :solve <theory> [budget_ms] Find instance using geometric logic solver");
             println!();
             println!("Enter geolog definitions directly (theories, instances).");
             println!("Multi-line input is supported - brackets are matched automatically.");
@@ -527,6 +533,145 @@ fn handle_query(state: &ReplState, instance_name: &str, sort_name: &str) {
         }
         Err(e) => {
             eprintln!("Query error: {}", e);
+        }
+    }
+}
+
+/// Handle :solve command
+fn handle_solve(state: &ReplState, theory_name: &str, budget_ms: Option<u64>) {
+    use geolog::core::RelationStorage;
+    use geolog::solver::{AutoTactic, Budget, SearchTree, Tactic, TacticResult};
+
+    // Look up the theory
+    let theory = match state.theories.get(theory_name) {
+        Some(t) => t.clone(),
+        None => {
+            eprintln!("Theory '{}' not found", theory_name);
+            eprintln!("Use :list theories to see available theories");
+            return;
+        }
+    };
+
+    println!("Solving theory '{}'...", theory_name);
+    let sig = &theory.theory.signature;
+    println!(
+        "  {} sorts, {} functions, {} relations, {} axioms",
+        sig.sorts.len(),
+        sig.functions.len(),
+        sig.relations.len(),
+        theory.theory.axioms.len()
+    );
+
+    // Create search tree
+    let mut tree = SearchTree::new(theory.clone());
+
+    // Initialize function and relation storage at root
+    // Functions: domain sort ids
+    let domain_sort_ids: Vec<Option<usize>> = sig
+        .functions
+        .iter()
+        .map(|f| match &f.domain {
+            geolog::core::DerivedSort::Base(sid) => Some(*sid),
+            geolog::core::DerivedSort::Product(_) => None, // Product domains need special handling
+        })
+        .collect();
+    if let Err(e) = tree.init_functions(0, &domain_sort_ids) {
+        eprintln!("Failed to init functions: {}", e);
+        return;
+    }
+
+    // Relations: arities
+    let arities: Vec<usize> = sig
+        .relations
+        .iter()
+        .map(|r| match &r.domain {
+            geolog::core::DerivedSort::Base(_) => 1,
+            geolog::core::DerivedSort::Product(fields) => fields.len(),
+        })
+        .collect();
+    if let Err(e) = tree.init_relations(0, &arities) {
+        eprintln!("Failed to init relations: {}", e);
+        return;
+    }
+
+    // Run the solver
+    let budget = Budget::new(budget_ms.unwrap_or(5000), 10000);
+    let start = std::time::Instant::now();
+    let result = AutoTactic.run(&mut tree, 0, &budget);
+    let elapsed = start.elapsed();
+
+    // Report result
+    match result {
+        TacticResult::Solved => {
+            println!("✓ SOLVED in {:.2}ms", elapsed.as_secs_f64() * 1000.0);
+            // Show the resulting structure
+            let node = tree.get(0).unwrap();
+            println!("\nWitness structure:");
+            for (sort_id, sort_name) in sig.sorts.iter().enumerate() {
+                let size = node.structure.carrier_size(sort_id);
+                if size > 0 {
+                    println!("  {}: {} element(s)", sort_name, size);
+                }
+            }
+            // Show relations
+            for (rel_id, rel) in sig.relations.iter().enumerate() {
+                if rel_id < node.structure.relations.len() {
+                    let tuple_count = node.structure.relations[rel_id].len();
+                    if tuple_count > 0 {
+                        println!("  {}: {} tuple(s)", rel.name, tuple_count);
+                    }
+                }
+            }
+        }
+        TacticResult::Unsat(clause) => {
+            println!("✗ UNSAT in {:.2}ms", elapsed.as_secs_f64() * 1000.0);
+            if let Some(c) = clause {
+                if let Some(ref expl) = c.explanation {
+                    println!("  Reason: {}", expl);
+                }
+            } else {
+                println!("  The theory has no models (derives False).");
+            }
+        }
+        TacticResult::HasObligations(obs) => {
+            println!(
+                "◯ INCOMPLETE after {:.2}ms - {} unfulfilled obligations",
+                elapsed.as_secs_f64() * 1000.0,
+                obs.len()
+            );
+            for (i, ob) in obs.iter().take(5).enumerate() {
+                println!("  {}. {}", i + 1, ob.description);
+            }
+            if obs.len() > 5 {
+                println!("  ... and {} more", obs.len() - 5);
+            }
+        }
+        TacticResult::Progress { steps_taken, branches_created } => {
+            println!(
+                "◯ PROGRESS after {:.2}ms: {} steps, {} branches",
+                elapsed.as_secs_f64() * 1000.0,
+                steps_taken,
+                branches_created
+            );
+            let summary = tree.summary(5);
+            println!(
+                "  {} nodes, {} on frontier, {} solved, {} unsat",
+                summary.total_nodes,
+                summary.frontier_size,
+                summary.solved_count,
+                summary.unsat_count
+            );
+        }
+        TacticResult::Timeout { steps_taken } => {
+            println!(
+                "⏱ TIMEOUT after {:.2}ms ({} steps)",
+                elapsed.as_secs_f64() * 1000.0,
+                steps_taken
+            );
+            println!("  Try increasing the budget: :solve {} <budget_ms>", theory_name);
+        }
+        TacticResult::Error(e) => {
+            eprintln!("✗ ERROR: {}", e);
         }
     }
 }

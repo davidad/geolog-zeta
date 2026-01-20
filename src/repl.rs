@@ -818,6 +818,9 @@ pub enum MetaCommand {
     Retract { instance: String, element: String },
     /// Query instance: `:query <instance> <sort> [filter conditions]`
     Query { instance: String, sort: String },
+    /// Solve: find an instance of a theory using the geometric logic solver
+    /// `:solve <theory> [budget_ms]`
+    Solve { theory: String, budget_ms: Option<u64> },
     Unknown(String),
 }
 
@@ -915,6 +918,18 @@ impl MetaCommand {
                     }
                 } else {
                     MetaCommand::Unknown(":query requires <instance> <sort>".to_string())
+                }
+            }
+            "solve" => {
+                if let Some(theory_name) = arg {
+                    // Optional budget in ms
+                    let budget_ms = parts.next().and_then(|s| s.parse().ok());
+                    MetaCommand::Solve {
+                        theory: theory_name.to_string(),
+                        budget_ms,
+                    }
+                } else {
+                    MetaCommand::Unknown(":solve requires <theory> [budget_ms]".to_string())
                 }
             }
             other => MetaCommand::Unknown(format!("Unknown command: :{}", other)),
