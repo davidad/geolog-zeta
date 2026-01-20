@@ -618,10 +618,11 @@ fn resolve_instance_type(env: &Env, ty: &ast::TypeExpr) -> ElabResult<ResolvedIn
 /// Resolve a sort expression within an instance (using the theory's signature)
 fn resolve_instance_sort(sig: &Signature, sort_expr: &ast::TypeExpr) -> ElabResult<SortId> {
     match sort_expr {
-        ast::TypeExpr::Path(path) if path.segments.len() == 1 => {
-            let name = &path.segments[0];
-            sig.lookup_sort(name)
-                .ok_or_else(|| ElabError::UnknownSort(name.clone()))
+        ast::TypeExpr::Path(path) => {
+            // Join path segments with "/" to handle qualified names like "Base/X"
+            let name = path.segments.join("/");
+            sig.lookup_sort(&name)
+                .ok_or(ElabError::UnknownSort(name))
         }
         _ => Err(ElabError::UnsupportedFeature(format!(
             "complex sort: {:?}",
