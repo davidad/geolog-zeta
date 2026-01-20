@@ -93,32 +93,79 @@ impl Pattern {
     }
 }
 
-/// Builder for more complex queries (joins, etc.)
-///
-/// This is a stepping stone toward full theory-extension queries.
-#[derive(Debug, Clone)]
-pub struct QueryBuilder {
-    /// Patterns to match (implicit conjunction)
-    patterns: Vec<Pattern>,
-}
+// ============================================================================
+// Pattern → QueryOp Compilation
+// ============================================================================
 
-impl QueryBuilder {
-    pub fn new() -> Self {
-        Self { patterns: Vec::new() }
-    }
+use super::backend::{QueryOp, Predicate};
 
-    pub fn scan(mut self, pattern: Pattern) -> Self {
-        self.patterns.push(pattern);
-        self
-    }
+impl Pattern {
+    /// Compile a Pattern into a QueryOp for the naive backend.
+    ///
+    /// A Pattern query:
+    /// 1. Scans all elements of source_sort
+    /// 2. Filters by constraints: func(elem) = expected for each constraint
+    /// 3. Projects according to projection type
+    ///
+    /// We implement this as:
+    /// - Scan → single-column tuples (elem)
+    /// - For each constraint, use FuncEqConst predicate
+    /// - Project to requested columns
+    pub fn compile(&self) -> QueryOp {
+        // Start with a scan of the sort
+        let mut plan = QueryOp::Scan { sort_idx: self.source_sort };
 
-    pub fn patterns(&self) -> &[Pattern] {
-        &self.patterns
-    }
-}
+        // Apply constraints as filters
+        // Each constraint checks: func(elem) = expected
+        for constraint in &self.constraints {
+            plan = QueryOp::Filter {
+                input: Box::new(plan),
+                pred: Predicate::FuncEqConst {
+                    func_idx: constraint.func,
+                    arg_col: 0,  // The scanned element is always in column 0
+                    expected: constraint.expected,
+                },
+            };
+        }
 
-impl Default for QueryBuilder {
-    fn default() -> Self {
-        Self::new()
+        // Apply projection
+        match &self.projection {
+            Projection::Element => {
+                // Already have the element in col 0, no change needed
+            }
+            Projection::Func(func_idx) => {
+                // Apply function to element, return that instead
+                // This requires an Apply operation
+                plan = QueryOp::Apply {
+                    input: Box::new(plan),
+                    func_idx: *func_idx,
+                    arg_col: 0,
+                };
+                // Now we have (elem, func(elem)), project to just col 1
+                plan = QueryOp::Project {
+                    input: Box::new(plan),
+                    columns: vec![1],
+                };
+            }
+            Projection::Tuple(func_indices) => {
+                // Apply each function in sequence, then project
+                for func_idx in func_indices.iter() {
+                    plan = QueryOp::Apply {
+                        input: Box::new(plan),
+                        func_idx: *func_idx,
+                        arg_col: 0, // Always apply to original element
+                    };
+                }
+                // Now we have (elem, f1(elem), f2(elem), ...), project to func results
+                // Columns 1, 2, ... are the func results
+                let columns: Vec<usize> = (1..=func_indices.len()).collect();
+                plan = QueryOp::Project {
+                    input: Box::new(plan),
+                    columns,
+                };
+            }
+        }
+
+        plan
     }
 }

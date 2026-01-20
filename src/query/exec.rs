@@ -184,8 +184,6 @@ impl Store {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     /// Test that Pattern-based query matches bootstrap_queries.
     ///
     /// This is a sanity test to ensure the new query engine gives
