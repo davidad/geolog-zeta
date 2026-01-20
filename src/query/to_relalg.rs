@@ -61,6 +61,8 @@ struct CompileContext<'a> {
 }
 
 /// Cached sort IDs from the RelAlgIR theory.
+/// Many fields are reserved for future operator support.
+#[allow(dead_code)]
 struct RelAlgSortIds {
     // GeologMeta inherited sorts
     theory: SortId,
@@ -166,7 +168,6 @@ impl<'a> CompileContext<'a> {
         let sort_ids = RelAlgSortIds::from_theory(relalg_theory)?;
         let num_sorts = relalg_theory.theory.signature.sorts.len();
         let num_funcs = relalg_theory.theory.signature.functions.len();
-        let num_rels = relalg_theory.theory.signature.relations.len();
 
         let mut structure = Structure::new(num_sorts);
 
@@ -281,7 +282,7 @@ impl<'a> CompileContext<'a> {
         Ok(wire)
     }
 
-    /// Create a TruePred and return (TruePred elem, Pred elem)
+    /// Create a TruePred and return the Pred elem
     fn create_true_pred(&mut self) -> Result<(Slid, Slid), String> {
         let tp_name = self.fresh_name("true_pred");
         let tp = self.add_element(self.sort_ids.true_pred, &tp_name);
@@ -292,6 +293,133 @@ impl<'a> CompileContext<'a> {
         self.define_func("TruePred/pred", tp, pred)?;
 
         Ok((tp, pred))
+    }
+
+    /// Create a FalsePred and return the Pred elem
+    fn create_false_pred(&mut self) -> Result<Slid, String> {
+        let fp_name = self.fresh_name("false_pred");
+        let fp = self.add_element(self.sort_ids.false_pred, &fp_name);
+
+        let pred_name = self.fresh_name("pred");
+        let pred = self.add_element(self.sort_ids.pred, &pred_name);
+
+        self.define_func("FalsePred/pred", fp, pred)?;
+
+        Ok(pred)
+    }
+
+    /// Create an AndPred combining two predicates
+    fn create_and_pred(&mut self, left: Slid, right: Slid) -> Result<Slid, String> {
+        let and_name = self.fresh_name("and_pred");
+        let and_pred = self.add_element(self.sort_ids.and_pred, &and_name);
+
+        let pred_name = self.fresh_name("pred");
+        let pred = self.add_element(self.sort_ids.pred, &pred_name);
+
+        self.define_func("AndPred/pred", and_pred, pred)?;
+        self.define_func("AndPred/left", and_pred, left)?;
+        self.define_func("AndPred/right", and_pred, right)?;
+
+        Ok(pred)
+    }
+
+    /// Create an OrPred combining two predicates
+    fn create_or_pred(&mut self, left: Slid, right: Slid) -> Result<Slid, String> {
+        let or_name = self.fresh_name("or_pred");
+        let or_pred = self.add_element(self.sort_ids.or_pred, &or_name);
+
+        let pred_name = self.fresh_name("pred");
+        let pred = self.add_element(self.sort_ids.pred, &pred_name);
+
+        self.define_func("OrPred/pred", or_pred, pred)?;
+        self.define_func("OrPred/left", or_pred, left)?;
+        self.define_func("OrPred/right", or_pred, right)?;
+
+        Ok(pred)
+    }
+
+    /// Create a ColEqPred (left_col = right_col)
+    fn create_col_eq_pred(&mut self, wire: Slid, left_col: usize, right_col: usize) -> Result<Slid, String> {
+        // Create left ColRef
+        let left_ref = self.create_col_ref(wire, left_col)?;
+        // Create right ColRef
+        let right_ref = self.create_col_ref(wire, right_col)?;
+
+        let eq_name = self.fresh_name("col_eq_pred");
+        let col_eq = self.add_element(self.sort_ids.col_eq_pred, &eq_name);
+
+        let pred_name = self.fresh_name("pred");
+        let pred = self.add_element(self.sort_ids.pred, &pred_name);
+
+        self.define_func("ColEqPred/pred", col_eq, pred)?;
+        self.define_func("ColEqPred/left", col_eq, left_ref)?;
+        self.define_func("ColEqPred/right", col_eq, right_ref)?;
+
+        Ok(pred)
+    }
+
+    /// Create a ColRef for column index
+    fn create_col_ref(&mut self, wire: Slid, _col: usize) -> Result<Slid, String> {
+        // For now, always use HerePath (column 0)
+        // TODO: Implement proper column path navigation for nested schemas
+        let here_name = self.fresh_name("here_path");
+        let here = self.add_element(self.sort_ids.here_path, &here_name);
+
+        let path_name = self.fresh_name("col_path");
+        let col_path = self.add_element(self.sort_ids.col_path, &path_name);
+
+        self.define_func("HerePath/path", here, col_path)?;
+
+        let ref_name = self.fresh_name("col_ref");
+        let col_ref = self.add_element(self.sort_ids.col_ref, &ref_name);
+
+        self.define_func("ColRef/wire", col_ref, wire)?;
+        self.define_func("ColRef/path", col_ref, col_path)?;
+
+        Ok(col_ref)
+    }
+}
+
+/// Compile a predicate to a Pred element
+fn compile_predicate(
+    ctx: &mut CompileContext<'_>,
+    wire: Slid,
+    pred: &crate::query::backend::Predicate,
+) -> Result<Slid, String> {
+    use crate::query::backend::Predicate;
+
+    match pred {
+        Predicate::True => {
+            let (_, pred_elem) = ctx.create_true_pred()?;
+            Ok(pred_elem)
+        }
+        Predicate::False => {
+            ctx.create_false_pred()
+        }
+        Predicate::ColEqCol { left, right } => {
+            ctx.create_col_eq_pred(wire, *left, *right)
+        }
+        Predicate::ColEqConst { col: _, val: _ } => {
+            // ConstEqPred requires Elem elements which we don't have
+            // Fall back to TruePred for now
+            let (_, pred_elem) = ctx.create_true_pred()?;
+            Ok(pred_elem)
+        }
+        Predicate::FuncEq { .. } | Predicate::FuncEqConst { .. } => {
+            // FuncEqPred requires Func elements - fall back to TruePred
+            let (_, pred_elem) = ctx.create_true_pred()?;
+            Ok(pred_elem)
+        }
+        Predicate::And(left, right) => {
+            let left_pred = compile_predicate(ctx, wire, left)?;
+            let right_pred = compile_predicate(ctx, wire, right)?;
+            ctx.create_and_pred(left_pred, right_pred)
+        }
+        Predicate::Or(left, right) => {
+            let left_pred = compile_predicate(ctx, wire, left)?;
+            let right_pred = compile_predicate(ctx, wire, right)?;
+            ctx.create_or_pred(left_pred, right_pred)
+        }
     }
 }
 
@@ -404,11 +532,10 @@ fn compile_scan(ctx: &mut CompileContext<'_>, sort_idx: usize) -> Result<Slid, S
 fn compile_filter(
     ctx: &mut CompileContext<'_>,
     input_wire: Slid,
-    _predicate: &crate::query::backend::Predicate,
+    predicate: &crate::query::backend::Predicate,
 ) -> Result<Slid, String> {
-    // For now, create a TruePred (placeholder)
-    // TODO: compile the actual predicate
-    let (_, pred) = ctx.create_true_pred()?;
+    // Compile the predicate
+    let pred = compile_predicate(ctx, input_wire, predicate)?;
 
     // Get input wire's schema for output
     // In a full implementation, we'd look this up. For now, create a dummy schema.
@@ -644,6 +771,45 @@ mod tests {
 
         let result = compile_to_relalg(&plan, &relalg_theory, &mut universe);
         assert!(result.is_ok(), "Join compilation should succeed");
+    }
+
+    #[test]
+    fn test_compile_predicate() {
+        let relalg_theory = load_relalg_theory();
+        let mut universe = Universe::new();
+
+        // Test And predicate
+        let plan = QueryOp::Filter {
+            input: Box::new(QueryOp::Scan { sort_idx: 0 }),
+            pred: crate::query::backend::Predicate::And(
+                Box::new(crate::query::backend::Predicate::True),
+                Box::new(crate::query::backend::Predicate::False),
+            ),
+        };
+
+        let result = compile_to_relalg(&plan, &relalg_theory, &mut universe);
+        assert!(result.is_ok(), "And predicate compilation should succeed");
+
+        // Test Or predicate
+        let plan = QueryOp::Filter {
+            input: Box::new(QueryOp::Scan { sort_idx: 0 }),
+            pred: crate::query::backend::Predicate::Or(
+                Box::new(crate::query::backend::Predicate::True),
+                Box::new(crate::query::backend::Predicate::True),
+            ),
+        };
+
+        let result = compile_to_relalg(&plan, &relalg_theory, &mut universe);
+        assert!(result.is_ok(), "Or predicate compilation should succeed");
+
+        // Test ColEqCol predicate
+        let plan = QueryOp::Filter {
+            input: Box::new(QueryOp::Scan { sort_idx: 0 }),
+            pred: crate::query::backend::Predicate::ColEqCol { left: 0, right: 1 },
+        };
+
+        let result = compile_to_relalg(&plan, &relalg_theory, &mut universe);
+        assert!(result.is_ok(), "ColEqCol predicate compilation should succeed");
     }
 
     #[test]
