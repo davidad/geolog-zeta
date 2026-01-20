@@ -206,12 +206,12 @@ impl Store {
     /// This traverses the structure to build the corresponding DerivedSort.
     pub fn resolve_dsort(&self, dsort_slid: Slid) -> DerivedSort {
         // Check if it's a BaseDS
-        if let Some(base_ds_sort) = self.sort_ids.base_ds {
-            if let Some(srt_func) = self.func_ids.base_ds_srt {
+        if let Some(base_ds_sort) = self.sort_ids.base_ds
+            && let Some(srt_func) = self.func_ids.base_ds_srt {
                 // Check all BaseDS elements to find one whose dsort matches
                 for base_slid in self.elements_of_sort(base_ds_sort) {
-                    if let Some(dsort_func) = self.func_ids.base_ds_dsort {
-                        if self.get_func(dsort_func, base_slid) == Some(dsort_slid) {
+                    if let Some(dsort_func) = self.func_ids.base_ds_dsort
+                        && self.get_func(dsort_func, base_slid) == Some(dsort_slid) {
                             // Found the BaseDS, get its Srt
                             if let Some(srt_slid) = self.get_func(srt_func, base_slid) {
                                 // We need to map srt_slid to a sort index...
@@ -220,21 +220,18 @@ impl Store {
                                 return DerivedSort::Base(srt_slid.index());
                             }
                         }
-                    }
                 }
             }
-        }
 
         // Check if it's a ProdDS
         if let Some(prod_ds_sort) = self.sort_ids.prod_ds {
             for prod_slid in self.elements_of_sort(prod_ds_sort) {
-                if let Some(dsort_func) = self.func_ids.prod_ds_dsort {
-                    if self.get_func(dsort_func, prod_slid) == Some(dsort_slid) {
+                if let Some(dsort_func) = self.func_ids.prod_ds_dsort
+                    && self.get_func(dsort_func, prod_slid) == Some(dsort_slid) {
                         // Found the ProdDS, get its fields
                         let fields = self.query_prod_fields(prod_slid);
                         return DerivedSort::Product(fields);
                     }
-                }
             }
         }
 
@@ -530,15 +527,14 @@ impl Store {
 
         // Group elements by sort and add to structure
         for elem_info in &elem_infos {
-            if let Some(srt_slid) = elem_info.srt_slid {
-                if let Some(&sort_idx) = srt_to_idx.get(&srt_slid) {
+            if let Some(srt_slid) = elem_info.srt_slid
+                && let Some(&sort_idx) = srt_to_idx.get(&srt_slid) {
                     // Add element to structure
                     let (structure_slid, _luid) =
                         structure.add_element(&mut crate::universe::Universe::new(), sort_idx);
                     elem_to_structure_slid.insert(elem_info.slid, structure_slid);
                     element_names.insert(structure_slid, elem_info.name.clone());
                 }
-            }
         }
 
         // Build srt_slid -> sort index mapping for remapping DerivedSorts
@@ -594,16 +590,13 @@ impl Store {
         for fv in func_vals {
             if let (Some(func_slid), Some(arg_slid), Some(result_slid)) =
                 (fv.func_slid, fv.arg_slid, fv.result_slid)
-            {
-                if let Some(&func_idx) = func_to_idx.get(&func_slid) {
-                    if let (Some(&arg_struct), Some(&result_struct)) = (
+                && let Some(&func_idx) = func_to_idx.get(&func_slid)
+                    && let (Some(&arg_struct), Some(&result_struct)) = (
                         elem_to_structure_slid.get(&arg_slid),
                         elem_to_structure_slid.get(&result_slid),
                     ) {
                         let _ = structure.define_function(func_idx, arg_struct, result_struct);
                     }
-                }
-            }
         }
 
         // Populate relation tuples
@@ -611,8 +604,8 @@ impl Store {
         // Product domain relations are skipped during persistence.
         let rel_tuples = self.query_instance_rel_tuples(instance_slid);
         for rt in rel_tuples {
-            if let (Some(rel_slid), Some(arg_slid)) = (rt.rel_slid, rt.arg_slid) {
-                if let Some(&rel_idx) = rel_to_idx.get(&rel_slid) {
+            if let (Some(rel_slid), Some(arg_slid)) = (rt.rel_slid, rt.arg_slid)
+                && let Some(&rel_idx) = rel_to_idx.get(&rel_slid) {
                     // Check if this is a product-domain relation
                     let is_product = rel_infos
                         .get(rel_idx)
@@ -628,7 +621,6 @@ impl Store {
                         structure.assert_relation(rel_idx, vec![arg_struct]);
                     }
                 }
-            }
         }
 
         Some(ReconstructedInstance {

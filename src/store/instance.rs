@@ -218,9 +218,9 @@ impl Store {
                         if let Some(result_slid) = crate::id::get_slid(*opt_result) {
                             // Find the structure Slid for this local index
                             // The local index corresponds to position in the domain sort's carrier
-                            if let Some(domain_sort_idx) = self.get_func_domain_sort(func_slid) {
-                                if let Some(carrier) = structure.carriers.get(domain_sort_idx) {
-                                    if let Some(arg_u64) = carrier.iter().nth(local_idx) {
+                            if let Some(domain_sort_idx) = self.get_func_domain_sort(func_slid)
+                                && let Some(carrier) = structure.carriers.get(domain_sort_idx)
+                                    && let Some(arg_u64) = carrier.iter().nth(local_idx) {
                                         let arg_slid = Slid::from_usize(arg_u64 as usize);
                                         if let (Some(&arg_elem), Some(&result_elem)) =
                                             (elem_slid_map.get(&arg_slid), elem_slid_map.get(&result_slid))
@@ -228,8 +228,6 @@ impl Store {
                                             self.add_func_val(instance_slid, func_slid, arg_elem, result_elem)?;
                                         }
                                     }
-                                }
-                            }
                         }
                     }
                 }
@@ -266,11 +264,10 @@ impl Store {
 
             for tuple in relation.iter() {
                 // Unary relation: single element
-                if let Some(&elem) = tuple.first() {
-                    if let Some(&elem_slid) = elem_slid_map.get(&elem) {
+                if let Some(&elem) = tuple.first()
+                    && let Some(&elem_slid) = elem_slid_map.get(&elem) {
                         self.add_rel_tuple(instance_slid, rel_slid, elem_slid)?;
                     }
-                }
             }
         }
 
@@ -288,8 +285,8 @@ impl Store {
         let dsort_func = self.func_ids.base_ds_dsort?;
 
         for base_slid in self.elements_of_sort(base_ds_sort) {
-            if self.get_func(dsort_func, base_slid) == Some(dsort_slid) {
-                if let Some(srt_slid) = self.get_func(srt_func, base_slid) {
+            if self.get_func(dsort_func, base_slid) == Some(dsort_slid)
+                && let Some(srt_slid) = self.get_func(srt_func, base_slid) {
                     // Find this Srt's index in the theory
                     let srt_theory_func = self.func_ids.srt_theory?;
                     if let Some(theory_slid) = self.get_func(srt_theory_func, srt_slid) {
@@ -301,7 +298,6 @@ impl Store {
                         }
                     }
                 }
-            }
         }
         None
     }
