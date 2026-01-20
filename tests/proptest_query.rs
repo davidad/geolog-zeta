@@ -651,7 +651,7 @@ mod chase_proptest {
             };
 
             // First chase step should add elements
-            let changed = chase_step(&[rule.clone()], &mut structure, &mut universe, &theory.signature).unwrap();
+            let changed = chase_step(std::slice::from_ref(&rule), &mut structure, &mut universe, &theory.signature).unwrap();
 
             if num_elements > 0 {
                 prop_assert!(changed);
