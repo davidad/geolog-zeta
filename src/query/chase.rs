@@ -511,7 +511,23 @@ fn resolve_sort_index(sort: &DerivedSort, _sig: &Signature) -> Result<usize, Cha
     }
 }
 
-/// Execute one step of the chase
+/// Execute one step of the chase algorithm.
+///
+/// A chase step iterates over all rules, finds matches for each rule's premise,
+/// and fires the conclusion for each match. This may add new tuples to relations
+/// or define new function values.
+///
+/// # Arguments
+///
+/// * `rules` - The compiled chase rules to apply
+/// * `structure` - The structure to modify (relations and functions)
+/// * `universe` - The universe for creating new elements (if needed)
+/// * `sig` - The signature (for element creation)
+///
+/// # Returns
+///
+/// Returns `true` if any changes were made to the structure, `false` if the
+/// structure is already at a fixpoint with respect to the given rules.
 pub fn chase_step(
     rules: &[ChaseRule],
     structure: &mut Structure,
@@ -618,7 +634,38 @@ fn fire_head(
     }
 }
 
-/// Run the chase to fixpoint
+/// Run the chase algorithm until a fixpoint is reached.
+///
+/// Repeatedly applies [`chase_step`] until no more changes occur, or until
+/// `max_iterations` is reached. This is the main entry point for computing
+/// derived relations and function values from a theory's axioms.
+///
+/// # Arguments
+///
+/// * `rules` - The compiled chase rules (from [`compile_theory_axioms`])
+/// * `structure` - The structure to modify
+/// * `universe` - The universe for element creation
+/// * `sig` - The signature
+/// * `max_iterations` - Safety limit to prevent infinite loops
+///
+/// # Returns
+///
+/// The number of iterations taken to reach the fixpoint.
+///
+/// # Errors
+///
+/// Returns [`ChaseError`] if:
+/// - `max_iterations` is exceeded (possible infinite chase)
+/// - A rule fires with inconsistent results (function conflicts)
+///
+/// # Example
+///
+/// ```ignore
+/// // Compute reflexive-transitive closure of a preorder
+/// let rules = compile_theory_axioms(&preorder_theory)?;
+/// let iterations = chase_fixpoint(&rules, &mut structure, &mut universe, &sig, 100)?;
+/// println!("Chase converged in {} iterations", iterations);
+/// ```
 pub fn chase_fixpoint(
     rules: &[ChaseRule],
     structure: &mut Structure,
@@ -646,7 +693,26 @@ pub fn chase_fixpoint(
     Ok(iterations)
 }
 
-/// Compile all axioms in a theory to chase rules
+/// Compile all axioms in a theory to chase rules.
+///
+/// This is a convenience function that iterates over all axioms in the theory
+/// and compiles each one to a [`ChaseRule`]. Axioms that cannot be compiled
+/// (e.g., due to unsupported formula types) will cause an error.
+///
+/// # Arguments
+///
+/// * `theory` - The elaborated theory containing axioms to compile
+///
+/// # Returns
+///
+/// A vector of [`ChaseRule`]s, one for each axiom in the theory.
+///
+/// # Errors
+///
+/// Returns [`ChaseError`] if any axiom contains unsupported formulas:
+/// - Disjunction in premise
+/// - Existential quantification in premise
+/// - Function application in relation arguments
 pub fn compile_theory_axioms(theory: &ElaboratedTheory) -> Result<Vec<ChaseRule>, ChaseError> {
     let mut rules = Vec::new();
 
