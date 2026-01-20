@@ -202,7 +202,8 @@ pub fn check_theory_axioms(
                     // Tensor compilation panicked (e.g., unsupported term equality)
                     // Treat as satisfied for now - forward chaining will handle these
                     // axioms via a different code path (eval_term_to_slid).
-                    // TODO(geolog-dxr): Extend tensor compiler to handle function applications
+                    // NOTE: Basic function applications (f(x)=y, f(x)=g(y)) are now handled
+                    // in compile.rs; this catch_unwind is for unsupported edge cases.
                     None
                 }
             }
