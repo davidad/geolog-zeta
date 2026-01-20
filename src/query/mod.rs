@@ -31,6 +31,7 @@ mod exec;
 pub mod backend;
 pub mod optimize;
 pub mod compile;
+mod store_queries;
 
 pub use pattern::{Pattern, Constraint, Projection};
 pub use exec::{QueryResult, execute_pattern};
