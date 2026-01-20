@@ -172,6 +172,9 @@ fn handle_command(state: &mut ReplState, cmd: MetaCommand) -> bool {
         MetaCommand::Explain { instance, sort } => {
             handle_explain(state, &instance, &sort);
         }
+        MetaCommand::Compile { instance, sort } => {
+            handle_compile(state, &instance, &sort);
+        }
         MetaCommand::Solve { theory, budget_ms } => {
             handle_solve(state, &theory, budget_ms);
         }
@@ -589,6 +592,102 @@ fn handle_explain(state: &ReplState, instance_name: &str, sort_name: &str) {
     println!();
     println!("Sort: {} (index {})", sort_name, sort_idx);
     println!("Instance: {} (theory: {})", instance_name, entry.theory_name);
+}
+
+/// Handle :compile command - compile query to RelAlgIR instance
+fn handle_compile(state: &mut ReplState, instance_name: &str, sort_name: &str) {
+    use geolog::query::{to_relalg::compile_to_relalg, QueryOp};
+    use geolog::universe::Universe;
+
+    // Get the instance
+    let entry = match state.instances.get(instance_name) {
+        Some(e) => e,
+        None => {
+            eprintln!("Instance '{}' not found", instance_name);
+            return;
+        }
+    };
+
+    // Get the theory
+    let theory = match state.theories.get(&entry.theory_name) {
+        Some(t) => t,
+        None => {
+            eprintln!("Theory '{}' not found", entry.theory_name);
+            return;
+        }
+    };
+
+    // Find the sort index
+    let sort_idx = match theory.theory.signature.sorts.iter().position(|s| s == sort_name) {
+        Some(idx) => idx,
+        None => {
+            eprintln!(
+                "Sort '{}' not found in theory '{}'",
+                sort_name, entry.theory_name
+            );
+            return;
+        }
+    };
+
+    // Check if RelAlgIR theory is loaded
+    let relalg_theory = match state.theories.get("RelAlgIR") {
+        Some(t) => t.clone(),
+        None => {
+            eprintln!("RelAlgIR theory not loaded. Loading it now...");
+            // Try to load it
+            let meta_content = std::fs::read_to_string("theories/GeologMeta.geolog")
+                .unwrap_or_else(|_| {
+                    eprintln!("Could not read theories/GeologMeta.geolog");
+                    String::new()
+                });
+            let ir_content = std::fs::read_to_string("theories/RelAlgIR.geolog")
+                .unwrap_or_else(|_| {
+                    eprintln!("Could not read theories/RelAlgIR.geolog");
+                    String::new()
+                });
+
+            if meta_content.is_empty() || ir_content.is_empty() {
+                return;
+            }
+
+            if let Err(e) = state.execute_geolog(&meta_content) {
+                eprintln!("Failed to load GeologMeta: {}", e);
+                return;
+            }
+            if let Err(e) = state.execute_geolog(&ir_content) {
+                eprintln!("Failed to load RelAlgIR: {}", e);
+                return;
+            }
+
+            state.theories.get("RelAlgIR").unwrap().clone()
+        }
+    };
+
+    // Build the query plan
+    let plan = QueryOp::Scan { sort_idx };
+
+    // Compile to RelAlgIR
+    let mut universe = Universe::new();
+    match compile_to_relalg(&plan, &relalg_theory, &mut universe) {
+        Ok(instance) => {
+            println!("RelAlgIR compilation for ':query {} {}':", instance_name, sort_name);
+            println!();
+            println!("QueryOp plan:");
+            println!("{}", plan);
+            println!();
+            println!("Compiled to RelAlgIR instance:");
+            println!("  Elements: {}", instance.structure.len());
+            println!("  Output wire: {:?}", instance.output_wire);
+            println!();
+            println!("Named elements:");
+            for (slid, name) in instance.names.iter() {
+                println!("  {} -> {}", name, slid);
+            }
+        }
+        Err(e) => {
+            eprintln!("Failed to compile query to RelAlgIR: {}", e);
+        }
+    }
 }
 
 /// Handle :solve command - find a model of a theory from scratch
