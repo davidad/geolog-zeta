@@ -87,9 +87,16 @@ Geolog is a language for geometric logic with semantics in topoi. This document 
 ├─────────────────────────────────────────────────────────────────────────────┤
 │  solver/                                                                    │
 │    ├── mod.rs     Re-exports and overview                                   │
-│    ├── types.rs   SearchNode, Obligation, NodeStatus, etc.                  │
+│    ├── types.rs   SearchNode, Obligation, NodeStatus, CongruenceClosure     │
 │    ├── tree.rs    Explicit search tree for model finding                    │
-│    └── tactics.rs Automated search tactics (Check, Enumerate, Propagate)   │
+│    └── tactics.rs Automated search tactics:                                 │
+│                   - CheckTactic: axiom checking, obligation reporting       │
+│                   - ForwardChainingTactic: Datalog-style forward chaining   │
+│                   - PropagateEquationsTactic: congruence closure propagation│
+│                   - AutoTactic: composite fixpoint solver                   │
+│                                                                             │
+│  Interactive solver via `:solve <theory>` REPL command.                     │
+│  See examples/geolog/solver_demo.geolog for annotated examples.             │
 │                                                                             │
 │  tensor/                                                                    │
 │    ├── mod.rs     Re-exports                                                │
@@ -194,6 +201,11 @@ Sequent {
 See `bd ready` for current work items. Key frontiers:
 
 - **Query engine** (`geolog-7tt`, `geolog-32x`): Chase algorithm and RelAlgIR compiler
-- **Solver completion** (`geolog-xj2`): Forward chaining and derivation search
 - **Nested instance elaboration** (`geolog-1d4`): Inline instance definitions
 - **Monotonic Submodel proofs** (`geolog-rgg`): Lean4 formalization
+- **Disjunction variable alignment** (`geolog-69b`): Extend tensor builder for heterogeneous disjuncts
+
+## Recent Milestones
+
+- **Geometric logic solver complete** (`geolog-xj2`): Forward chaining, equation propagation,
+  existential body processing, derivation search for False. Interactive via `:solve`.
