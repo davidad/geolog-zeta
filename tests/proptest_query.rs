@@ -435,7 +435,7 @@ mod to_relalg_tests {
 
             if let Ok(instance) = compile_to_relalg(&plan, &relalg_theory, &mut universe) {
                 // Instance should have elements
-                prop_assert!(instance.structure.len() >= 1, "Instance should have elements");
+                prop_assert!(!instance.structure.is_empty(), "Instance should have elements");
                 // Should have named elements including output wire
                 prop_assert!(!instance.names.is_empty(), "Instance should have named elements");
             }

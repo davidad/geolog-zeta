@@ -256,23 +256,23 @@ fn arb_function_theory() -> impl Strategy<Value = Rc<ElaboratedTheory>> {
         // Add function f : S0 -> S0
         sig.add_function("f".to_string(), DerivedSort::Base(0), DerivedSort::Base(0));
 
-        let mut axioms = vec![];
-
         // Add unconditional existential: |- ∃x:S0. f(x) = x
         // This requires creating at least one fixed point
         // BUT we need the tensor compiler to handle f(x) = x correctly
-        axioms.push(Sequent {
-            context: Context::new(),
-            premise: Formula::True,
-            conclusion: Formula::Exists(
-                "x".to_string(),
-                DerivedSort::Base(0),
-                Box::new(Formula::Eq(
-                    Term::App(0, Box::new(Term::Var("x".to_string(), DerivedSort::Base(0)))),
-                    Term::Var("x".to_string(), DerivedSort::Base(0)),
-                )),
-            ),
-        });
+        let axioms = vec![
+            Sequent {
+                context: Context::new(),
+                premise: Formula::True,
+                conclusion: Formula::Exists(
+                    "x".to_string(),
+                    DerivedSort::Base(0),
+                    Box::new(Formula::Eq(
+                        Term::App(0, Box::new(Term::Var("x".to_string(), DerivedSort::Base(0)))),
+                        Term::Var("x".to_string(), DerivedSort::Base(0)),
+                    )),
+                ),
+            },
+        ];
 
         Rc::new(ElaboratedTheory {
             params: vec![],

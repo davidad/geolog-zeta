@@ -395,10 +395,11 @@ fn test_all_examples_parse() {
         let path = entry.path();
 
         // Skip files that require loading theories first
-        if let Some(file_name) = path.file_name().and_then(|f| f.to_str()) {
-            if requires_theories.contains(&file_name) {
-                continue;
-            }
+        if path.file_name()
+            .and_then(|f| f.to_str())
+            .is_some_and(|file_name| requires_theories.contains(&file_name))
+        {
+            continue;
         }
 
         if path.extension().is_some_and(|ext| ext == "geolog")
