@@ -1,0 +1,180 @@
+// Full Petri Net Reachability with Synthesized Solution
+//
+// This file contains the complete type-theoretic encoding of Petri net
+// reachability, plus a manually synthesized solution proving that place B
+// is reachable from place A in the example net.
+//
+// ============================================================
+// This instance was synthesized automatically by Claude Opus 4.5.
+// As was this entire file, and this entire project, really.
+// ============================================================
+
+// ============================================================
+// THEORY: PetriNet - Basic structure with arc semantics
+// ============================================================
+
+theory PetriNet {
+  P : Sort;      // Places
+  T : Sort;      // Transitions
+  in : Sort;     // Input arcs (place -> transition)
+  out : Sort;    // Output arcs (transition -> place)
+
+  in/src : in -> P;    // Input arc source place
+  in/tgt : in -> T;    // Input arc target transition
+  out/src : out -> T;  // Output arc source transition
+  out/tgt : out -> P;  // Output arc target place
+}
+
+// ============================================================
+// THEORY: Marking - Tokens parameterized by a net
+// ============================================================
+
+theory (N : PetriNet instance) Marking {
+  token : Sort;
+  token/of : token -> N/P;  // Which place each token is in
+}
+
+// ============================================================
+// THEORY: ReachabilityProblem - Initial and target markings
+// ============================================================
+
+theory (N : PetriNet instance) ReachabilityProblem {
+  initial_marking : N Marking instance;
+  target_marking : N Marking instance;
+}
+
+// ============================================================
+// THEORY: Trace - A sequence of transition firings with wires
+// ============================================================
+
+theory (N : PetriNet instance) Trace {
+  F : Sort;                                    // Firings
+  F/of : F -> N/T;                             // Which transition each fires
+
+  W : Sort;                                    // Wires connecting firings
+  W/src : W -> [firing : F, arc : N/out];      // Wire source
+  W/tgt : W -> [firing : F, arc : N/in];       // Wire target
+
+  // Wire coherence axioms
+  ax1 : forall w : W. |- w W/src .arc N/out/src = w W/src .firing F/of;
+  ax2 : forall w : W. |- w W/tgt .arc N/in/tgt = w W/tgt .firing F/of;
+
+  // Wire uniqueness
+  ax3 : forall w1, w2 : W. w1 W/src = w2 W/src |- w1 = w2;
+  ax4 : forall w1, w2 : W. w1 W/tgt = w2 W/tgt |- w1 = w2;
+
+  // Terminals for initial/final marking tokens
+  input_terminal : Sort;
+  output_terminal : Sort;
+  input_terminal/of : input_terminal -> N/P;
+  output_terminal/of : output_terminal -> N/P;
+  input_terminal/tgt : input_terminal -> [firing : F, arc : N/in];
+  output_terminal/src : output_terminal -> [firing : F, arc : N/out];
+
+  // Coverage axioms
+  ax5 : forall f : F, arc : N/out. arc N/out/src = f F/of |-
+    (exists w : W. w W/src = [firing: f, arc: arc]) \/
+    (exists o : output_terminal. o output_terminal/src = [firing: f, arc: arc]);
+  ax6 : forall f : F, arc : N/in. arc N/in/tgt = f F/of |-
+    (exists w : W. w W/tgt = [firing: f, arc: arc]) \/
+    (exists i : input_terminal. i input_terminal/tgt = [firing: f, arc: arc]);
+}
+
+// ============================================================
+// THEORY: Iso - Isomorphism between two sorts
+// ============================================================
+
+theory (X : Sort) (Y : Sort) Iso {
+  fwd : X -> Y;
+  bwd : Y -> X;
+  fb : forall x : X. |- x fwd bwd = x;
+  bf : forall y : Y. |- y bwd fwd = y;
+}
+
+// ============================================================
+// THEORY: Solution - A complete reachability witness
+// ============================================================
+
+theory (N : PetriNet instance) (RP : N ReachabilityProblem instance) Solution {
+  trace : N Trace instance;
+
+  initial_iso : (trace/input_terminal) (RP/initial_marking/token) Iso instance;
+  target_iso : (trace/output_terminal) (RP/target_marking/token) Iso instance;
+
+  ax/init_comm : forall i : trace/input_terminal.
+    |- i trace/input_terminal/of = i initial_iso/fwd RP/initial_marking/token/of;
+  ax/target_comm : forall o : trace/output_terminal.
+    |- o trace/output_terminal/of = o target_iso/fwd RP/target_marking/token/of;
+}
+
+// ============================================================
+// INSTANCE: ExampleNet - A small Petri net
+//
+//   (A) --[ab]--> (B) --[bc]--> (C)
+//    ^             |
+//    +---[ba]------+
+// ============================================================
+
+instance ExampleNet : PetriNet = {
+  A : P; B : P; C : P;
+  ab : T; ba : T; bc : T;
+
+  ab_in : in;  ab_in in/src = A; ab_in in/tgt = ab;
+  ab_out : out; ab_out out/src = ab; ab_out out/tgt = B;
+
+  ba_in : in;  ba_in in/src = B; ba_in in/tgt = ba;
+  ba_out : out; ba_out out/src = ba; ba_out out/tgt = A;
+
+  bc_in : in;  bc_in in/src = B; bc_in in/tgt = bc;
+  bc_out : out; bc_out out/src = bc; bc_out out/tgt = C;
+}
+
+// ============================================================
+// INSTANCE: problem0 - Can we reach B from A?
+// ============================================================
+
+instance problem0 : ExampleNet ReachabilityProblem = {
+  initial_marking = {
+    tok : token;
+    tok token/of = ExampleNet/A;
+  };
+  target_marking = {
+    tok : token;
+    tok token/of = ExampleNet/B;
+  };
+}
+
+// ============================================================
+// INSTANCE: solution0 - YES! Here's the proof.
+// ============================================================
+// This instance was synthesized automatically by Claude Opus 4.5.
+// ============================================================
+
+// NOTE: The solution instance syntax with deeply nested instances
+// is not yet fully supported by the parser. This serves as the
+// specification of what such a solution would look like.
+//
+// instance solution0 : ExampleNet problem0 Solution = {
+//   trace = {
+//     f1 : F;
+//     f1 F/of = ExampleNet/ab;
+//
+//     it : input_terminal;
+//     it input_terminal/of = ExampleNet/A;
+//     it input_terminal/tgt = [firing: f1, arc: ExampleNet/ab_in];
+//
+//     ot : output_terminal;
+//     ot output_terminal/of = ExampleNet/B;
+//     ot output_terminal/src = [firing: f1, arc: ExampleNet/ab_out];
+//   };
+//
+//   initial_iso = {
+//     it fwd = problem0/initial_marking/tok;
+//     problem0/initial_marking/tok bwd = it;
+//   };
+//
+//   target_iso = {
+//     ot fwd = problem0/target_marking/tok;
+//     problem0/target_marking/tok bwd = ot;
+//   };
+// }

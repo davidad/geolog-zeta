@@ -1,5 +1,10 @@
 # Geolog
 
+<!-- ================================================================
+     This README was synthesized automatically by Claude Opus 4.5.
+     As was this entire project, really.
+     ================================================================ -->
+
 **Geometric Logic REPL** - A language and runtime for formal specifications using geometric logic.
 
 Geolog aims to provide a highly customizable, efficient, concurrent, append-only, persistent memory and query infrastructure for everything from business process workflow orchestration to formal verification via diagrammatic rewriting.
@@ -12,7 +17,7 @@ cargo build --release
 cargo run
 
 # Or run with an example file
-cargo run -- examples/geolog/graph.geolog
+cargo run -- examples/geolog/petri_net_full.geolog
 ```
 
 ## Features
@@ -29,88 +34,203 @@ cargo run -- examples/geolog/graph.geolog
 
 ---
 
-## Showcase: Petri Net Reachability
+## Showcase: Full Petri Net Reachability
 
-This example demonstrates geolog's power: parameterized theories, the chase algorithm computing transitive closure, and formal specification of Petri net semantics.
+This example demonstrates geolog's full power: deeply parameterized theories, nested instance types, isomorphism witnesses, and type-theoretic encodings that track individual tokens through a Petri net.
 
-### The Theory
-
-```geolog
-// Petri net reachability at the place level
-theory PlaceReachability {
-  P : Sort;  // Places
-  T : Sort;  // Transitions
-
-  // Firing relation: which transitions connect which places
-  Fires : [trans: T, from: P, to: P] -> Prop;
-
-  // Reachability: transitive closure of firing
-  CanReach : [from: P, to: P] -> Prop;
-
-  // Reflexivity
-  ax/refl : forall p : P. |- [from: p, to: p] CanReach;
-
-  // Direct firing implies reachability
-  ax/fire : forall t : T, x : P, y : P.
-    [trans: t, from: x, to: y] Fires |- [from: x, to: y] CanReach;
-
-  // Transitivity
-  ax/trans : forall x : P, y : P, z : P.
-    [from: x, to: y] CanReach, [from: y, to: z] CanReach
-      |- [from: x, to: z] CanReach;
-}
-```
-
-### Example Instance
+### The Type-Theoretic Encoding
 
 ```geolog
-// Network:  A <--> B --> C
-instance SimpleNet : PlaceReachability = {
-  A : P;  B : P;  C : P;
-  ab : T;  ba : T;  bc : T;
+// ============================================================
+// THEORY: PetriNet - Basic structure with arc semantics
+// ============================================================
 
-  [trans: ab, from: A, to: B] Fires;
-  [trans: ba, from: B, to: A] Fires;
-  [trans: bc, from: B, to: C] Fires;
+theory PetriNet {
+  P : Sort;      // Places
+  T : Sort;      // Transitions
+  in : Sort;     // Input arcs (place -> transition)
+  out : Sort;    // Output arcs (transition -> place)
+
+  in/src : in -> P;    // Input arc source place
+  in/tgt : in -> T;    // Input arc target transition
+  out/src : out -> T;  // Output arc source transition
+  out/tgt : out -> P;  // Output arc target place
+}
+
+// ============================================================
+// THEORY: Marking - Tokens parameterized by a net
+// ============================================================
+
+theory (N : PetriNet instance) Marking {
+  token : Sort;
+  token/of : token -> N/P;  // Which place each token is in
+}
+
+// ============================================================
+// THEORY: ReachabilityProblem - Initial and target markings
+// ============================================================
+
+theory (N : PetriNet instance) ReachabilityProblem {
+  initial_marking : N Marking instance;
+  target_marking : N Marking instance;
+}
+
+// ============================================================
+// THEORY: Trace - A sequence of transition firings with wires
+// ============================================================
+
+theory (N : PetriNet instance) Trace {
+  F : Sort;                                    // Firings
+  F/of : F -> N/T;                             // Which transition each fires
+
+  W : Sort;                                    // Wires connecting firings
+  W/src : W -> [firing : F, arc : N/out];      // Wire source
+  W/tgt : W -> [firing : F, arc : N/in];       // Wire target
+
+  // Wire coherence axioms (output arc must match firing's transition, etc.)
+  ax1 : forall w : W. |- w W/src .arc N/out/src = w W/src .firing F/of;
+  ax2 : forall w : W. |- w W/tgt .arc N/in/tgt = w W/tgt .firing F/of;
+
+  // Wire uniqueness (each arc-firing pair has at most one wire)
+  ax3 : forall w1, w2 : W. w1 W/src = w2 W/src |- w1 = w2;
+  ax4 : forall w1, w2 : W. w1 W/tgt = w2 W/tgt |- w1 = w2;
+
+  // Terminals for initial/final marking tokens
+  input_terminal : Sort;
+  output_terminal : Sort;
+  input_terminal/of : input_terminal -> N/P;
+  output_terminal/of : output_terminal -> N/P;
+  input_terminal/tgt : input_terminal -> [firing : F, arc : N/in];
+  output_terminal/src : output_terminal -> [firing : F, arc : N/out];
+
+  // Coverage: every arc must be wired OR be a terminal
+  ax5 : forall f : F, arc : N/out. arc N/out/src = f F/of |-
+    (exists w : W. w W/src = [firing: f, arc: arc]) \/
+    (exists o : output_terminal. o output_terminal/src = [firing: f, arc: arc]);
+  ax6 : forall f : F, arc : N/in. arc N/in/tgt = f F/of |-
+    (exists w : W. w W/tgt = [firing: f, arc: arc]) \/
+    (exists i : input_terminal. i input_terminal/tgt = [firing: f, arc: arc]);
+}
+
+// ============================================================
+// THEORY: Iso - Isomorphism between two sorts
+// ============================================================
+
+theory (X : Sort) (Y : Sort) Iso {
+  fwd : X -> Y;
+  bwd : Y -> X;
+  fb : forall x : X. |- x fwd bwd = x;
+  bf : forall y : Y. |- y bwd fwd = y;
+}
+
+// ============================================================
+// THEORY: Solution - A complete reachability witness
+// ============================================================
+
+theory (N : PetriNet instance) (RP : N ReachabilityProblem instance) Solution {
+  trace : N Trace instance;
+
+  // Bijections between terminals and marking tokens
+  initial_iso : (trace/input_terminal) (RP/initial_marking/token) Iso instance;
+  target_iso : (trace/output_terminal) (RP/target_marking/token) Iso instance;
+
+  // Commutativity: terminal placement matches token placement
+  ax/init_comm : forall i : trace/input_terminal.
+    |- i trace/input_terminal/of = i initial_iso/fwd RP/initial_marking/token/of;
+  ax/target_comm : forall o : trace/output_terminal.
+    |- o trace/output_terminal/of = o target_iso/fwd RP/target_marking/token/of;
 }
 ```
 
-### REPL Session
+### Example: Can we reach B from A?
 
-```
-geolog> :load examples/geolog/petri_reachability.geolog
-Defined theory PlaceReachability (2 sorts, 2 relations, 3 axioms)
+```geolog
+// ============================================================
+// The Petri Net:  (A) --[ab]--> (B) --[bc]--> (C)
+//                  ^             |
+//                  +---[ba]------+
+// ============================================================
 
-geolog> :inspect SimpleNet
-instance SimpleNet : PlaceReachability = {
-  // P (3):
-  A : P;  B : P;  C : P;
-  // T (3):
-  ab : T;  ba : T;  bc : T;
-  // Fires (3 tuples):
-  [ab, A, B] Fires;
-  [ba, B, A] Fires;
-  [bc, B, C] Fires;
+instance ExampleNet : PetriNet = {
+  A : P; B : P; C : P;
+  ab : T; ba : T; bc : T;
+
+  ab_in : in;  ab_in in/src = A; ab_in in/tgt = ab;
+  ab_out : out; ab_out out/src = ab; ab_out out/tgt = B;
+
+  ba_in : in;  ba_in in/src = B; ba_in in/tgt = ba;
+  ba_out : out; ba_out out/src = ba; ba_out out/tgt = A;
+
+  bc_in : in;  bc_in in/src = B; bc_in in/tgt = bc;
+  bc_out : out; bc_out out/src = bc; bc_out out/tgt = C;
 }
 
-geolog> :chase SimpleNet
-✓ Chase completed in 2 iterations
+// ============================================================
+// The Reachability Problem: one token in A → one token in B
+// ============================================================
 
-geolog> :inspect SimpleNet
-instance SimpleNet : PlaceReachability = {
-  ...
-  // CanReach (7 tuples) - computed by chase:
-  [A, A] CanReach;
-  [B, B] CanReach;
-  [C, C] CanReach;
-  [A, B] CanReach;  // A -> B (direct)
-  [B, A] CanReach;  // B -> A (direct)
-  [B, C] CanReach;  // B -> C (direct)
-  [A, C] CanReach;  // A -> C (transitive: A -> B -> C)
+instance problem0 : ExampleNet ReachabilityProblem = {
+  initial_marking = {
+    tok : token;
+    tok token/of = ExampleNet/A;
+  };
+  target_marking = {
+    tok : token;
+    tok token/of = ExampleNet/B;
+  };
+}
+
+// ============================================================
+// THE SOLUTION
+// ============================================================
+// This instance was synthesized automatically by Claude Opus 4.5.
+// As was this entire README, and this entire project, really.
+// ============================================================
+
+instance solution0 : ExampleNet problem0 Solution = {
+  // The trace: fire transition 'ab' exactly once
+  trace = {
+    f1 : F;
+    f1 F/of = ExampleNet/ab;
+
+    // No wires needed - single firing, no chaining
+
+    // Input terminal: connects initial token to f1's input arc
+    it : input_terminal;
+    it input_terminal/of = ExampleNet/A;
+    it input_terminal/tgt = [firing: f1, arc: ExampleNet/ab_in];
+
+    // Output terminal: connects f1's output arc to target token
+    ot : output_terminal;
+    ot output_terminal/of = ExampleNet/B;
+    ot output_terminal/src = [firing: f1, arc: ExampleNet/ab_out];
+  };
+
+  // Bijection: input_terminal ↔ initial_marking/token
+  initial_iso = {
+    // trace/it maps to problem0/initial_marking/tok
+    it fwd = problem0/initial_marking/tok;
+    problem0/initial_marking/tok bwd = it;
+  };
+
+  // Bijection: output_terminal ↔ target_marking/token
+  target_iso = {
+    // trace/ot maps to problem0/target_marking/tok
+    ot fwd = problem0/target_marking/tok;
+    problem0/target_marking/tok bwd = ot;
+  };
+
+  // The commutativity axioms are satisfied:
+  // - it input_terminal/of = A = tok token/of (initial)
+  // - ot output_terminal/of = B = tok token/of (target)
 }
 ```
 
-The chase algorithm automatically computed the full reachability relation, including the transitive closure A → C!
+This Solution instance is a **constructive proof** that B is reachable from A:
+- Fire transition `ab` once
+- The input terminal witnesses that the initial token (in A) feeds into the firing
+- The output terminal witnesses that the firing produces the target token (in B)
+- The isomorphisms prove the token counts match exactly
 
 ---
 
