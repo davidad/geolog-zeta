@@ -31,13 +31,26 @@ pub fn elaborate_theory(env: &mut Env, theory: &ast::TheoryDecl) -> ElabResult<E
             // Record the extends relationship (including transitive parents)
             extends_chain.push(parent_name.clone());
 
-            // Helper: qualify a name - only prefix if not already qualified
+            // Helper: check if a name is already qualified from a grandparent
+            // A name like "Grandparent/X" is grandparent-qualified if "Grandparent" is NOT
+            // a sort in the parent theory (i.e., it's a theory name, not a naming convention).
+            // Names like "Func/dom" where "Func" IS a sort use '/' as naming convention.
+            let is_grandparent_qualified = |name: &str| -> bool {
+                if let Some((prefix, _)) = name.split_once('/') {
+                    // If the prefix is a sort in parent, it's naming convention, not grandparent
+                    parent_theory.theory.signature.lookup_sort(prefix).is_none()
+                } else {
+                    false
+                }
+            };
+
+            // Helper: qualify a name - only prefix if not already qualified from grandparent
             let qualify = |name: &str| -> String {
-                if name.contains('/') {
+                if is_grandparent_qualified(name) {
                     // Already qualified from grandparent - keep as-is
                     name.to_string()
                 } else {
-                    // Parent's own item - add parent prefix
+                    // Parent's own item (possibly with naming convention '/') - add parent prefix
                     format!("{}/{}", parent_name, name)
                 }
             };
@@ -51,26 +64,21 @@ pub fn elaborate_theory(env: &mut Env, theory: &ast::TheoryDecl) -> ElabResult<E
             // Copy all functions with requalified names
             for func in &parent_theory.theory.signature.functions {
                 let qualified_name = qualify(&func.name);
-                // For domain/codomain remapping, we need the prefix that was actually used
-                // for the sort in the local signature
-                let prefix = if func.name.contains('/') {
-                    // Function from grandparent - extract the grandparent prefix
-                    func.name.rsplit_once('/').map(|(p, _)| p).unwrap_or(&parent_name)
-                } else {
-                    &parent_name
-                };
+                // For domain/codomain remapping, always use parent_name because
+                // the source signature uses the parent's namespace. The
+                // preserve_existing_prefix flag handles grandparent-qualified sorts.
                 let domain = remap_derived_sort(
                     &func.domain,
                     &parent_theory.theory.signature,
                     &local_env.signature,
-                    prefix,
+                    &parent_name,
                     true, // preserve_existing_prefix for extends
                 );
                 let codomain = remap_derived_sort(
                     &func.codomain,
                     &parent_theory.theory.signature,
                     &local_env.signature,
-                    prefix,
+                    &parent_name,
                     true, // preserve_existing_prefix for extends
                 );
                 local_env
@@ -81,16 +89,12 @@ pub fn elaborate_theory(env: &mut Env, theory: &ast::TheoryDecl) -> ElabResult<E
             // Copy all relations with requalified names
             for rel in &parent_theory.theory.signature.relations {
                 let qualified_name = qualify(&rel.name);
-                let prefix = if rel.name.contains('/') {
-                    rel.name.rsplit_once('/').map(|(p, _)| p).unwrap_or(&parent_name)
-                } else {
-                    &parent_name
-                };
+                // Same as functions: always use parent_name for remapping
                 let domain = remap_derived_sort(
                     &rel.domain,
                     &parent_theory.theory.signature,
                     &local_env.signature,
-                    prefix,
+                    &parent_name,
                     true, // preserve_existing_prefix for extends
                 );
                 local_env.signature.add_relation(qualified_name, domain);
