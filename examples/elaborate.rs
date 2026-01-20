@@ -1,8 +1,10 @@
 use geolog::universe::Universe;
 use geolog::{
-    elaborate::{Env, elaborate_instance, elaborate_theory},
+    elaborate::{ElaborationContext, Env, elaborate_instance_ctx, elaborate_theory},
     parse,
+    repl::InstanceEntry,
 };
+use std::collections::HashMap;
 use std::rc::Rc;
 
 fn main() {
@@ -129,7 +131,13 @@ instance ExampleNet : PetriNet = {
                     _ => "?".to_string(),
                 };
                 print!("Elaborating instance {}... ", i.name);
-                match elaborate_instance(&env, i, &mut universe) {
+                let instances: HashMap<String, InstanceEntry> = HashMap::new();
+                let mut ctx = ElaborationContext {
+                    theories: &env.theories,
+                    instances: &instances,
+                    universe: &mut universe,
+                };
+                match elaborate_instance_ctx(&mut ctx, i) {
                     Ok(structure) => {
                         println!("OK!");
                         println!("  Theory: {}", theory_name);
