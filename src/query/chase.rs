@@ -446,10 +446,19 @@ fn compile_conclusion(
             ))
         }
 
-        Formula::Disj(_) => {
-            Err(ChaseError::UnsupportedConclusion(
-                "Disjunction in conclusion requires branching chase".to_string()
-            ))
+        Formula::Disj(disjuncts) => {
+            // Naive/parallel chase: add all disjuncts
+            // This is sound but may add more facts than strictly necessary
+            // A proper branching chase would enumerate all possibilities
+            let mut heads = Vec::new();
+            for d in disjuncts {
+                let head = compile_conclusion(d, var_indices, sig)?;
+                match head {
+                    ChaseHead::Multi(sub) => heads.extend(sub),
+                    _ => heads.push(head),
+                }
+            }
+            Ok(ChaseHead::Multi(heads))
         }
     }
 }
