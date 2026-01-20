@@ -540,6 +540,7 @@ fn handle_query(state: &ReplState, instance_name: &str, sort_name: &str) {
 /// Handle :solve command
 fn handle_solve(state: &ReplState, theory_name: &str, budget_ms: Option<u64>) {
     use geolog::core::RelationStorage;
+    use geolog::id::NumericId;
     use geolog::solver::{AutoTactic, Budget, SearchTree, Tactic, TacticResult};
 
     // Look up the theory
@@ -606,19 +607,50 @@ fn handle_solve(state: &ReplState, theory_name: &str, budget_ms: Option<u64>) {
             println!("✓ SOLVED in {:.2}ms", elapsed.as_secs_f64() * 1000.0);
             // Show the resulting structure
             let node = tree.get(0).unwrap();
-            println!("\nWitness structure:");
-            for (sort_id, sort_name) in sig.sorts.iter().enumerate() {
-                let size = node.structure.carrier_size(sort_id);
-                if size > 0 {
-                    println!("  {}: {} element(s)", sort_name, size);
+            let total_elements: usize = (0..sig.sorts.len())
+                .map(|s| node.structure.carrier_size(s))
+                .sum();
+
+            if total_elements == 0 {
+                println!("\nWitness: empty structure (trivial model)");
+            } else {
+                println!("\nWitness structure:");
+                // Show sorts with elements
+                for (sort_id, sort_name) in sig.sorts.iter().enumerate() {
+                    let size = node.structure.carrier_size(sort_id);
+                    if size > 0 {
+                        if size <= 10 {
+                            // Show element IDs for small carriers
+                            let ids: Vec<String> = (0..size)
+                                .map(|i| format!("#{}", i))
+                                .collect();
+                            println!("  {}: {{ {} }}", sort_name, ids.join(", "));
+                        } else {
+                            println!("  {}: {} element(s)", sort_name, size);
+                        }
+                    }
                 }
-            }
-            // Show relations
-            for (rel_id, rel) in sig.relations.iter().enumerate() {
-                if rel_id < node.structure.relations.len() {
-                    let tuple_count = node.structure.relations[rel_id].len();
-                    if tuple_count > 0 {
-                        println!("  {}: {} tuple(s)", rel.name, tuple_count);
+                // Show relations with tuples
+                for (rel_id, rel) in sig.relations.iter().enumerate() {
+                    if rel_id < node.structure.relations.len() {
+                        let rel_storage = &node.structure.relations[rel_id];
+                        let tuple_count = rel_storage.len();
+                        if tuple_count > 0 {
+                            if tuple_count <= 10 {
+                                // Show actual tuples for small relations
+                                let tuples: Vec<String> = rel_storage
+                                    .iter()
+                                    .map(|t| {
+                                        let coords: Vec<String> =
+                                            t.iter().map(|s| format!("#{}", s.index())).collect();
+                                        format!("({})", coords.join(", "))
+                                    })
+                                    .collect();
+                                println!("  {}: {{ {} }}", rel.name, tuples.join(", "));
+                            } else {
+                                println!("  {}: {} tuple(s)", rel.name, tuple_count);
+                            }
+                        }
                     }
                 }
             }
