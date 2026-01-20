@@ -29,7 +29,11 @@
 mod pattern;
 mod exec;
 pub mod backend;
+pub mod optimize;
+pub mod compile;
 
 pub use pattern::{Pattern, Constraint, Projection};
 pub use exec::{QueryResult, execute_pattern};
-pub use backend::{Bag, QueryOp, Predicate, JoinCond, execute};
+pub use backend::{Bag, QueryOp, Predicate, JoinCond, execute, StreamContext, execute_stream};
+pub use optimize::optimize;
+pub use compile::{Query, QueryBuilder, compile_simple_filter, compile_filter_project};

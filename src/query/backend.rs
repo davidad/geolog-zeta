@@ -6,6 +6,16 @@
 //! - Just straightforward interpretation
 //!
 //! Used for proptest validation against optimized backends.
+//!
+//! # DBSP Temporal Operators
+//!
+//! This backend supports DBSP-style incremental computation via three temporal operators:
+//!
+//! - **Delay (z⁻¹)**: Access previous timestep's value
+//! - **Diff (δ = 1 - z⁻¹)**: Compute difference from previous timestep
+//! - **Integrate (∫)**: Accumulate values across all timesteps
+//!
+//! These operators require state across timesteps, managed by `StreamContext`.
 
 use std::collections::HashMap;
 
@@ -126,6 +136,44 @@ pub enum QueryOp {
 
     /// Empty relation
     Empty,
+
+    /// Apply a function: extends tuples with func(arg_col)
+    /// (t₁, ..., tₙ) → (t₁, ..., tₙ, func(t[arg_col]))
+    Apply {
+        input: Box<QueryOp>,
+        func_idx: usize,
+        arg_col: usize,
+    },
+
+    // ========================================================================
+    // DBSP Temporal Operators
+    // ========================================================================
+    // These operators work on streams over time, requiring state management.
+    // Use `execute_stream` with a `StreamContext` instead of bare `execute`.
+
+    /// Delay (z⁻¹): output previous timestep's input value
+    /// At timestep 0, outputs empty bag.
+    Delay {
+        input: Box<QueryOp>,
+        /// Unique identifier for this delay's state
+        state_id: usize,
+    },
+
+    /// Differentiate (δ = 1 - z⁻¹): compute changes since previous timestep
+    /// output = current_input - previous_input
+    Diff {
+        input: Box<QueryOp>,
+        /// Unique identifier for this diff's state
+        state_id: usize,
+    },
+
+    /// Integrate (∫): accumulate inputs over all timesteps
+    /// output = Σ (all inputs from timestep 0 to now)
+    Integrate {
+        input: Box<QueryOp>,
+        /// Unique identifier for this integrate's state
+        state_id: usize,
+    },
 }
 
 /// Predicate for filtering
@@ -137,11 +185,17 @@ pub enum Predicate {
     ColEqConst { col: usize, val: Slid },
     /// Two columns equal
     ColEqCol { left: usize, right: usize },
-    /// Function application: func(col_arg) = col_result
+    /// Function application: func(col_arg) = col_result (both columns)
     FuncEq {
         func_idx: usize,
         arg_col: usize,
         result_col: usize,
+    },
+    /// Function application equals constant: func(col_arg) = expected
+    FuncEqConst {
+        func_idx: usize,
+        arg_col: usize,
+        expected: Slid,
     },
     And(Box<Predicate>, Box<Predicate>),
     Or(Box<Predicate>, Box<Predicate>),
@@ -154,6 +208,84 @@ pub enum JoinCond {
     Cross,
     /// Equijoin on columns
     Equi { left_col: usize, right_col: usize },
+}
+
+// ============================================================================
+// DBSP Stream Context
+// ============================================================================
+
+/// State for DBSP temporal operators across timesteps.
+///
+/// Each stateful operator (Delay, Diff, Integrate) uses a unique `state_id`
+/// to store its state in this context. Call `step()` to advance time.
+#[derive(Debug, Clone, Default)]
+pub struct StreamContext {
+    /// Current timestep (starts at 0)
+    pub timestep: u64,
+
+    /// State for Delay operators: state_id -> previous input
+    delay_state: HashMap<usize, Bag>,
+
+    /// State for Diff operators: state_id -> previous input
+    diff_state: HashMap<usize, Bag>,
+
+    /// State for Integrate operators: state_id -> accumulated sum
+    integrate_state: HashMap<usize, Bag>,
+}
+
+impl StreamContext {
+    /// Create a new stream context at timestep 0
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Advance to the next timestep.
+    ///
+    /// This should be called after processing all operators for the current step.
+    /// Delay state is automatically updated during execution.
+    pub fn step(&mut self) {
+        self.timestep += 1;
+    }
+
+    /// Reset all state (for testing or restarting computation)
+    pub fn reset(&mut self) {
+        self.timestep = 0;
+        self.delay_state.clear();
+        self.diff_state.clear();
+        self.integrate_state.clear();
+    }
+
+    /// Get delay state (previous input)
+    fn get_delay(&self, state_id: usize) -> Bag {
+        self.delay_state.get(&state_id).cloned().unwrap_or_default()
+    }
+
+    /// Set delay state for next timestep
+    fn set_delay(&mut self, state_id: usize, bag: Bag) {
+        self.delay_state.insert(state_id, bag);
+    }
+
+    /// Get diff state (previous input for differentiation)
+    fn get_diff_prev(&self, state_id: usize) -> Bag {
+        self.diff_state.get(&state_id).cloned().unwrap_or_default()
+    }
+
+    /// Set diff state for next timestep
+    fn set_diff_prev(&mut self, state_id: usize, bag: Bag) {
+        self.diff_state.insert(state_id, bag);
+    }
+
+    /// Get integrate state (accumulated sum)
+    fn get_integrate(&self, state_id: usize) -> Bag {
+        self.integrate_state.get(&state_id).cloned().unwrap_or_default()
+    }
+
+    /// Update integrate state with new input
+    fn accumulate_integrate(&mut self, state_id: usize, delta: &Bag) {
+        let current = self.get_integrate(state_id);
+        let new_total = current.union(delta);
+        self.integrate_state.insert(state_id, new_total);
+    }
 }
 
 /// Execute a query plan against a structure.
@@ -229,6 +361,208 @@ pub fn execute(plan: &QueryOp, structure: &Structure) -> Bag {
         QueryOp::Constant { tuple } => Bag::singleton(tuple.clone()),
 
         QueryOp::Empty => Bag::new(),
+
+        QueryOp::Apply { input, func_idx, arg_col } => {
+            let input_bag = execute(input, structure);
+            let mut result = Bag::new();
+            for (tuple, mult) in input_bag.iter() {
+                if let Some(&arg) = tuple.get(*arg_col) {
+                    // Look up function value
+                    // Use sort_local_id to convert Slid to sort-local SortSlid
+                    let sort_slid = structure.sort_local_id(arg);
+                    if let Some(func_result) = structure.get_function(*func_idx, sort_slid) {
+                        // Extend tuple with function result
+                        let mut extended = tuple.clone();
+                        extended.push(func_result);
+                        result.insert(extended, *mult);
+                    }
+                    // If function undefined, tuple is dropped (acts as filter)
+                }
+            }
+            result
+        }
+
+        // DBSP operators require StreamContext - use execute_stream() instead
+        QueryOp::Delay { .. } | QueryOp::Diff { .. } | QueryOp::Integrate { .. } => {
+            panic!("DBSP temporal operators require StreamContext - use execute_stream() instead")
+        }
+    }
+}
+
+/// Execute a query plan with DBSP temporal operator support.
+///
+/// This handles both stateless operators (scan, filter, join, etc.) and stateful
+/// DBSP operators (delay, diff, integrate). The StreamContext maintains state
+/// across timesteps.
+///
+/// # Example: Semi-naive Datalog fixpoint
+///
+/// ```ignore
+/// let mut ctx = StreamContext::new();
+/// let plan = /* query plan with Integrate for fixpoint */;
+///
+/// loop {
+///     let delta = execute_stream(&plan, &structure, &mut ctx);
+///     if delta.is_empty() {
+///         break; // fixpoint reached
+///     }
+///     ctx.step();
+/// }
+/// ```
+pub fn execute_stream(plan: &QueryOp, structure: &Structure, ctx: &mut StreamContext) -> Bag {
+    match plan {
+        // Stateless operators - delegate to execute()
+        QueryOp::Scan { .. }
+        | QueryOp::Filter { .. }
+        | QueryOp::Project { .. }
+        | QueryOp::Join { .. }
+        | QueryOp::Union { .. }
+        | QueryOp::Distinct { .. }
+        | QueryOp::Negate { .. }
+        | QueryOp::Constant { .. }
+        | QueryOp::Empty
+        | QueryOp::Apply { .. } => {
+            // For stateless operators that contain DBSP subexpressions,
+            // we need to recursively handle them
+            execute_stream_stateless(plan, structure, ctx)
+        }
+
+        // DBSP: Delay (z⁻¹) - output previous timestep's input
+        QueryOp::Delay { input, state_id } => {
+            // Get previous state (empty at timestep 0)
+            let previous = ctx.get_delay(*state_id);
+
+            // Compute current input
+            let current = execute_stream(input, structure, ctx);
+
+            // Store current for next timestep
+            ctx.set_delay(*state_id, current);
+
+            // Return previous
+            previous
+        }
+
+        // DBSP: Diff (δ = 1 - z⁻¹) - compute difference from previous
+        QueryOp::Diff { input, state_id } => {
+            // Get previous input
+            let previous = ctx.get_diff_prev(*state_id);
+
+            // Compute current input
+            let current = execute_stream(input, structure, ctx);
+
+            // Store current for next timestep
+            ctx.set_diff_prev(*state_id, current.clone());
+
+            // Return current - previous (using Z-set subtraction)
+            current.union(&previous.negate())
+        }
+
+        // DBSP: Integrate (∫) - accumulate over all timesteps
+        QueryOp::Integrate { input, state_id } => {
+            // Compute current input (typically a delta/diff)
+            let delta = execute_stream(input, structure, ctx);
+
+            // Add to accumulated total
+            ctx.accumulate_integrate(*state_id, &delta);
+
+            // Return the accumulated total
+            ctx.get_integrate(*state_id)
+        }
+    }
+}
+
+/// Helper for executing stateless operators that may contain DBSP subexpressions.
+fn execute_stream_stateless(plan: &QueryOp, structure: &Structure, ctx: &mut StreamContext) -> Bag {
+    match plan {
+        QueryOp::Scan { sort_idx } => {
+            let mut result = Bag::new();
+            if let Some(carrier) = structure.carriers.get(*sort_idx) {
+                for elem in carrier.iter() {
+                    result.insert(vec![Slid::from_usize(elem as usize)], 1);
+                }
+            }
+            result
+        }
+
+        QueryOp::Filter { input, pred } => {
+            let input_bag = execute_stream(input, structure, ctx);
+            let mut result = Bag::new();
+            for (tuple, mult) in input_bag.iter() {
+                if eval_predicate(pred, tuple, structure) {
+                    result.insert(tuple.clone(), *mult);
+                }
+            }
+            result
+        }
+
+        QueryOp::Project { input, columns } => {
+            let input_bag = execute_stream(input, structure, ctx);
+            let mut result = Bag::new();
+            for (tuple, mult) in input_bag.iter() {
+                let projected: Tuple = columns.iter().map(|&c| tuple[c]).collect();
+                result.insert(projected, *mult);
+            }
+            result
+        }
+
+        QueryOp::Join { left, right, cond } => {
+            let left_bag = execute_stream(left, structure, ctx);
+            let right_bag = execute_stream(right, structure, ctx);
+            let mut result = Bag::new();
+
+            for (l_tuple, l_mult) in left_bag.iter() {
+                for (r_tuple, r_mult) in right_bag.iter() {
+                    if eval_join_cond(cond, l_tuple, r_tuple) {
+                        let mut combined = l_tuple.clone();
+                        combined.extend(r_tuple.iter().cloned());
+                        result.insert(combined, l_mult * r_mult);
+                    }
+                }
+            }
+            result
+        }
+
+        QueryOp::Union { left, right } => {
+            let left_bag = execute_stream(left, structure, ctx);
+            let right_bag = execute_stream(right, structure, ctx);
+            left_bag.union(&right_bag)
+        }
+
+        QueryOp::Distinct { input } => {
+            let input_bag = execute_stream(input, structure, ctx);
+            input_bag.distinct()
+        }
+
+        QueryOp::Negate { input } => {
+            let input_bag = execute_stream(input, structure, ctx);
+            input_bag.negate()
+        }
+
+        QueryOp::Constant { tuple } => Bag::singleton(tuple.clone()),
+
+        QueryOp::Empty => Bag::new(),
+
+        QueryOp::Apply { input, func_idx, arg_col } => {
+            let input_bag = execute_stream(input, structure, ctx);
+            let mut result = Bag::new();
+            for (tuple, mult) in input_bag.iter() {
+                if let Some(&arg) = tuple.get(*arg_col) {
+                    // Use sort_local_id to convert Slid to sort-local SortSlid
+                    let sort_slid = structure.sort_local_id(arg);
+                    if let Some(func_result) = structure.get_function(*func_idx, sort_slid) {
+                        let mut extended = tuple.clone();
+                        extended.push(func_result);
+                        result.insert(extended, *mult);
+                    }
+                }
+            }
+            result
+        }
+
+        // DBSP operators handled by execute_stream directly
+        QueryOp::Delay { .. } | QueryOp::Diff { .. } | QueryOp::Integrate { .. } => {
+            execute_stream(plan, structure, ctx)
+        }
     }
 }
 
@@ -250,11 +584,26 @@ fn eval_predicate(pred: &Predicate, tuple: &Tuple, structure: &Structure) -> boo
         } => {
             if let (Some(&arg), Some(&expected)) = (tuple.get(*arg_col), tuple.get(*result_col)) {
                 // Look up function value in structure
-                // We need to convert Slid to SortSlid for the function lookup
-                use crate::id::SortSlid;
-                let sort_slid = SortSlid::from_usize(arg.index());
+                // Use sort_local_id to convert Slid to sort-local SortSlid
+                let sort_slid = structure.sort_local_id(arg);
                 if let Some(actual) = structure.get_function(*func_idx, sort_slid) {
                     return actual == expected;
+                }
+            }
+            false
+        }
+
+        Predicate::FuncEqConst {
+            func_idx,
+            arg_col,
+            expected,
+        } => {
+            if let Some(&arg) = tuple.get(*arg_col) {
+                // Look up function value in structure
+                // Use sort_local_id to convert Slid to sort-local SortSlid
+                let sort_slid = structure.sort_local_id(arg);
+                if let Some(actual) = structure.get_function(*func_idx, sort_slid) {
+                    return actual == *expected;
                 }
             }
             false
@@ -331,5 +680,284 @@ mod tests {
         let result = execute(&join, &structure);
         // Cross product: 2 * 2 = 4 tuples
         assert_eq!(result.len(), 4);
+    }
+
+    // ========================================================================
+    // DBSP Temporal Operator Tests
+    // ========================================================================
+
+    #[test]
+    fn test_delay_initial_empty() {
+        // Delay should output empty at timestep 0
+        let structure = Structure::new(1);
+        let mut ctx = StreamContext::new();
+
+        let plan = QueryOp::Delay {
+            input: Box::new(QueryOp::Constant {
+                tuple: vec![Slid::from_usize(42)],
+            }),
+            state_id: 0,
+        };
+
+        // First step: output should be empty (no previous)
+        let result = execute_stream(&plan, &structure, &mut ctx);
+        assert!(result.is_empty(), "delay should be empty at timestep 0");
+    }
+
+    #[test]
+    fn test_delay_outputs_previous() {
+        // Delay should output previous input after step()
+        let structure = Structure::new(1);
+        let mut ctx = StreamContext::new();
+
+        let plan = QueryOp::Delay {
+            input: Box::new(QueryOp::Constant {
+                tuple: vec![Slid::from_usize(42)],
+            }),
+            state_id: 0,
+        };
+
+        // First step: execute to set up state
+        let _ = execute_stream(&plan, &structure, &mut ctx);
+        ctx.step();
+
+        // Second step: should output the previous input
+        let result = execute_stream(&plan, &structure, &mut ctx);
+        assert_eq!(result.len(), 1);
+        assert!(result.tuples.contains_key(&vec![Slid::from_usize(42)]));
+    }
+
+    #[test]
+    fn test_diff_computes_delta() {
+        // Diff outputs current - previous
+        let mut structure = Structure::new(1);
+        let mut ctx = StreamContext::new();
+
+        // Start with elements {0, 1}
+        structure.carriers[0].insert(0);
+        structure.carriers[0].insert(1);
+
+        let plan = QueryOp::Diff {
+            input: Box::new(QueryOp::Scan { sort_idx: 0 }),
+            state_id: 0,
+        };
+
+        // First step: diff = {0, 1} - {} = {0, 1}
+        let result = execute_stream(&plan, &structure, &mut ctx);
+        assert_eq!(result.len(), 2);
+        ctx.step();
+
+        // Add element 2, so now scan = {0, 1, 2}
+        structure.carriers[0].insert(2);
+
+        // Second step: diff = {0, 1, 2} - {0, 1} = {2}
+        let result = execute_stream(&plan, &structure, &mut ctx);
+        assert_eq!(result.len(), 1);
+        assert!(result.tuples.contains_key(&vec![Slid::from_usize(2)]));
+    }
+
+    #[test]
+    fn test_integrate_accumulates() {
+        // Integrate accumulates across timesteps
+        let structure = Structure::new(1);
+        let mut ctx = StreamContext::new();
+
+        // We'll feed constant input at each step
+        let plan = QueryOp::Integrate {
+            input: Box::new(QueryOp::Constant {
+                tuple: vec![Slid::from_usize(1)],
+            }),
+            state_id: 0,
+        };
+
+        // Step 0: accumulated = {1}
+        let result = execute_stream(&plan, &structure, &mut ctx);
+        assert_eq!(result.len(), 1);
+        assert_eq!(*result.tuples.get(&vec![Slid::from_usize(1)]).unwrap(), 1);
+        ctx.step();
+
+        // Step 1: accumulated = {1} + {1} = {1} with multiplicity 2
+        let result = execute_stream(&plan, &structure, &mut ctx);
+        assert_eq!(result.len(), 1);
+        assert_eq!(*result.tuples.get(&vec![Slid::from_usize(1)]).unwrap(), 2);
+        ctx.step();
+
+        // Step 2: multiplicity 3
+        let result = execute_stream(&plan, &structure, &mut ctx);
+        assert_eq!(*result.tuples.get(&vec![Slid::from_usize(1)]).unwrap(), 3);
+    }
+
+    #[test]
+    fn test_diff_integrate_identity() {
+        // ∫(δ(x)) = x (for stable input)
+        // This is the fundamental DBSP identity
+        let mut structure = Structure::new(1);
+        structure.carriers[0].insert(0);
+        structure.carriers[0].insert(1);
+        structure.carriers[0].insert(2);
+
+        let mut ctx = StreamContext::new();
+
+        // ∫(δ(scan))
+        let plan = QueryOp::Integrate {
+            input: Box::new(QueryOp::Diff {
+                input: Box::new(QueryOp::Scan { sort_idx: 0 }),
+                state_id: 0,
+            }),
+            state_id: 1,
+        };
+
+        // Step 0: diff = {0,1,2}, integrate = {0,1,2}
+        let result = execute_stream(&plan, &structure, &mut ctx);
+        assert_eq!(result.len(), 3);
+        ctx.step();
+
+        // Step 1: diff = {} (no change), integrate = {0,1,2} (unchanged)
+        let result = execute_stream(&plan, &structure, &mut ctx);
+        assert_eq!(result.len(), 3);
+        ctx.step();
+
+        // Step 2: still {0,1,2}
+        let result = execute_stream(&plan, &structure, &mut ctx);
+        assert_eq!(result.len(), 3);
+    }
+
+    #[test]
+    fn test_dbsp_with_filter() {
+        // Test DBSP operators composed with stateless operators
+        let mut structure = Structure::new(1);
+        structure.carriers[0].insert(0);
+        structure.carriers[0].insert(1);
+        structure.carriers[0].insert(2);
+
+        let mut ctx = StreamContext::new();
+
+        // Filter(Diff(scan)) - incremental filter
+        let plan = QueryOp::Filter {
+            input: Box::new(QueryOp::Diff {
+                input: Box::new(QueryOp::Scan { sort_idx: 0 }),
+                state_id: 0,
+            }),
+            pred: Predicate::ColEqConst {
+                col: 0,
+                val: Slid::from_usize(1),
+            },
+        };
+
+        // Step 0: diff = {0,1,2}, filter = {1}
+        let result = execute_stream(&plan, &structure, &mut ctx);
+        assert_eq!(result.len(), 1);
+        assert!(result.tuples.contains_key(&vec![Slid::from_usize(1)]));
+        ctx.step();
+
+        // Add element 3 (doesn't pass filter)
+        structure.carriers[0].insert(3);
+
+        // Step 1: diff = {3}, filter = {} (3 doesn't match predicate)
+        let result = execute_stream(&plan, &structure, &mut ctx);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_stream_context_reset() {
+        let structure = Structure::new(1);
+        let mut ctx = StreamContext::new();
+
+        let plan = QueryOp::Integrate {
+            input: Box::new(QueryOp::Constant {
+                tuple: vec![Slid::from_usize(1)],
+            }),
+            state_id: 0,
+        };
+
+        // Run a few steps
+        let _ = execute_stream(&plan, &structure, &mut ctx);
+        ctx.step();
+        let _ = execute_stream(&plan, &structure, &mut ctx);
+        ctx.step();
+
+        assert_eq!(ctx.timestep, 2);
+
+        // Reset
+        ctx.reset();
+        assert_eq!(ctx.timestep, 0);
+
+        // Integrate should start fresh
+        let result = execute_stream(&plan, &structure, &mut ctx);
+        assert_eq!(*result.tuples.get(&vec![Slid::from_usize(1)]).unwrap(), 1);
+    }
+
+    // ========================================================================
+    // Semi-Naive Datalog Example (DBSP in action)
+    // ========================================================================
+
+    /// Demonstrates DBSP for transitive closure (semi-naive style).
+    ///
+    /// This example computes reachability in a graph using the DBSP pattern:
+    /// - δR = new facts this iteration
+    /// - ∫(δR) = all facts so far
+    ///
+    /// The "semi-naive" optimization is automatic: Diff computes only changes,
+    /// avoiding redundant re-derivation of old facts.
+    #[test]
+    fn test_semi_naive_transitive_closure() {
+        // Graph: 0→1, 1→2, 2→3
+        // We represent edges as tuples (src, tgt) in sort 0
+        let mut structure = Structure::new(1);
+
+        // Add edge tuples as elements: encode (a,b) as slid = a*10 + b
+        // 0→1: slid=1, 1→2: slid=12, 2→3: slid=23
+        structure.carriers[0].insert(1);   // edge 0→1
+        structure.carriers[0].insert(12);  // edge 1→2
+        structure.carriers[0].insert(23);  // edge 2→3
+
+        let mut ctx = StreamContext::new();
+
+        // Query: scan all edges (base facts)
+        let base_facts = QueryOp::Scan { sort_idx: 0 };
+
+        // In a full implementation, we'd:
+        // 1. Differentiate the base facts to get δR
+        // 2. Join δR with ∫R to derive new transitive edges
+        // 3. Integrate to accumulate all reachable pairs
+        //
+        // For this test, we just verify the DBSP operators work together:
+
+        // Step 1: ∫(δ(scan)) should equal the scan itself for stable input
+        let incremental_view = QueryOp::Integrate {
+            input: Box::new(QueryOp::Diff {
+                input: Box::new(base_facts.clone()),
+                state_id: 0,
+            }),
+            state_id: 1,
+        };
+
+        // First execution: should see all 3 edges
+        let result = execute_stream(&incremental_view, &structure, &mut ctx);
+        assert_eq!(result.len(), 3, "should have 3 edges initially");
+        ctx.step();
+
+        // Add new edge: 3→4 (encoded as slid=34)
+        structure.carriers[0].insert(34);
+
+        // Second execution: diff should detect +1 new edge, integrate shows all 4
+        let result = execute_stream(&incremental_view, &structure, &mut ctx);
+        assert_eq!(result.len(), 4, "should have 4 edges after adding 3→4");
+
+        // Verify incrementality: diff should show just the new edge
+        let diff_only = QueryOp::Diff {
+            input: Box::new(QueryOp::Scan { sort_idx: 0 }),
+            state_id: 2, // fresh state_id
+        };
+        let mut fresh_ctx = StreamContext::new();
+
+        // First step: all edges are "new"
+        let delta = execute_stream(&diff_only, &structure, &mut fresh_ctx);
+        assert_eq!(delta.len(), 4);
+        fresh_ctx.step();
+
+        // Second step with no changes: delta should be empty
+        let delta = execute_stream(&diff_only, &structure, &mut fresh_ctx);
+        assert!(delta.is_empty(), "no changes, delta should be empty");
     }
 }

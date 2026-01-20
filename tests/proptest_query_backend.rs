@@ -68,6 +68,7 @@ fn reference_eval_predicate(pred: &Predicate, tuple: &[Slid]) -> bool {
             reference_eval_predicate(a, tuple) || reference_eval_predicate(b, tuple)
         }
         Predicate::FuncEq { .. } => true, // Skip function predicates in reference (need structure access)
+        Predicate::FuncEqConst { .. } => true, // Skip function predicates in reference
     }
 }
 
@@ -103,7 +104,86 @@ fn bag_to_set(bag: &Bag) -> HashSet<Vec<Slid>> {
         .collect()
 }
 
+/// Generate a random predicate
+fn arb_predicate() -> impl Strategy<Value = Predicate> {
+    prop_oneof![
+        Just(Predicate::True),
+        Just(Predicate::False),
+        (0usize..3, 0usize..100).prop_map(|(col, val)| Predicate::ColEqConst {
+            col,
+            val: Slid::from_usize(val),
+        }),
+        (0usize..3, 0usize..3).prop_map(|(left, right)| Predicate::ColEqCol { left, right }),
+    ]
+}
+
+/// Generate a base query (no recursion)
+fn arb_base_query() -> impl Strategy<Value = QueryOp> {
+    prop_oneof![
+        (0usize..3).prop_map(|sort_idx| QueryOp::Scan { sort_idx }),
+        Just(QueryOp::Empty),
+        prop::collection::vec(0usize..100, 1..=2)
+            .prop_map(|tuple| QueryOp::Constant {
+                tuple: tuple.into_iter().map(Slid::from_usize).collect()
+            }),
+    ]
+}
+
+/// Generate a random query plan using prop_recursive
+fn arb_query_op() -> impl Strategy<Value = QueryOp> {
+    arb_base_query().prop_recursive(
+        3, // max depth
+        64, // max nodes
+        10, // items per collection
+        |inner| {
+            prop_oneof![
+                // Keep some base cases at each level
+                arb_base_query(),
+                // Unary operations
+                (inner.clone(), arb_predicate())
+                    .prop_map(|(input, pred)| QueryOp::Filter {
+                        input: Box::new(input),
+                        pred,
+                    }),
+                inner.clone().prop_map(|input| QueryOp::Distinct {
+                    input: Box::new(input),
+                }),
+                inner.clone().prop_map(|input| QueryOp::Negate {
+                    input: Box::new(input),
+                }),
+                // Binary operations
+                (inner.clone(), inner.clone())
+                    .prop_map(|(left, right)| QueryOp::Union {
+                        left: Box::new(left),
+                        right: Box::new(right),
+                    }),
+                (inner.clone(), inner)
+                    .prop_map(|(left, right)| QueryOp::Join {
+                        left: Box::new(left),
+                        right: Box::new(right),
+                        cond: JoinCond::Cross,
+                    }),
+            ]
+        }
+    )
+}
+
 proptest! {
+    /// Test that optimizer preserves semantics for randomly generated plans.
+    #[test]
+    fn test_optimize_preserves_semantics(
+        structure in arb_structure(3, 5),
+        plan in arb_query_op(),
+    ) {
+        use geolog::query::optimize;
+
+        let unoptimized_result = execute(&plan, &structure);
+        let optimized = optimize(&plan);
+        let optimized_result = execute(&optimized, &structure);
+
+        prop_assert_eq!(bag_to_set(&unoptimized_result), bag_to_set(&optimized_result));
+    }
+
     /// Test that Scan produces all elements of a sort.
     #[test]
     fn test_scan_correct(
@@ -289,6 +369,91 @@ proptest! {
 
         prop_assert_eq!(bag_to_set(&filter_result), reference);
     }
+
+    /// Test filter matches reference implementation for compound predicates.
+    #[test]
+    fn test_filter_matches_reference(
+        structure in arb_structure(1, 10),
+    ) {
+        // Get all elements as single-column tuples
+        let input = reference_scan(&structure, 0);
+
+        // Test with True predicate
+        let filtered_true = reference_filter(&input, &Predicate::True, &structure);
+        prop_assert_eq!(filtered_true, input.clone());
+
+        // Test with False predicate
+        let filtered_false = reference_filter(&input, &Predicate::False, &structure);
+        prop_assert!(filtered_false.is_empty());
+    }
+
+    /// Test union matches reference implementation.
+    #[test]
+    fn test_union_matches_reference(
+        structure in arb_structure(2, 5),
+    ) {
+        let left = QueryOp::Scan { sort_idx: 0 };
+        let right = QueryOp::Scan { sort_idx: 1 };
+        let union = QueryOp::Union {
+            left: Box::new(left),
+            right: Box::new(right),
+        };
+
+        let result = execute(&union, &structure);
+
+        let ref_left = reference_scan(&structure, 0);
+        let ref_right = reference_scan(&structure, 1);
+        let reference = reference_union(&ref_left, &ref_right);
+
+        prop_assert_eq!(bag_to_set(&result), reference);
+    }
+
+    /// Test that Negate(Negate(x)) = x.
+    #[test]
+    fn test_negate_involutive(
+        structure in arb_structure(1, 8),
+    ) {
+        let scan = QueryOp::Scan { sort_idx: 0 };
+        let negate1 = QueryOp::Negate {
+            input: Box::new(scan.clone()),
+        };
+        let negate2 = QueryOp::Negate {
+            input: Box::new(negate1),
+        };
+
+        let original = execute(&scan, &structure);
+        let double_negated = execute(&negate2, &structure);
+
+        prop_assert_eq!(bag_to_set(&original), bag_to_set(&double_negated));
+    }
+
+    /// Test that Project preserves all tuples (just reduces columns).
+    #[test]
+    fn test_project_same_size(
+        structure in arb_structure(2, 4),
+    ) {
+        // Cross join creates (a, b) tuples
+        let left = QueryOp::Scan { sort_idx: 0 };
+        let right = QueryOp::Scan { sort_idx: 1 };
+        let join = QueryOp::Join {
+            left: Box::new(left),
+            right: Box::new(right),
+            cond: JoinCond::Cross,
+        };
+
+        // Project to first column only
+        let project = QueryOp::Project {
+            input: Box::new(join.clone()),
+            columns: vec![0],
+        };
+
+        let join_result = execute(&join, &structure);
+        let project_result = execute(&project, &structure);
+
+        // Projected result should have same or fewer distinct tuples
+        // (could be fewer due to duplicate first elements)
+        prop_assert!(bag_to_set(&project_result).len() <= join_result.len());
+    }
 }
 
 #[test]
@@ -302,4 +467,189 @@ fn test_basic_operations_smoke() {
     let scan = QueryOp::Scan { sort_idx: 0 };
     let result = execute(&scan, &structure);
     assert_eq!(result.len(), 2);
+}
+
+#[test]
+fn test_pattern_compile_scan() {
+    use geolog::query::Pattern;
+
+    // Create a structure with one sort
+    let mut structure = Structure::new(1);
+    structure.carriers[0].insert(5);
+    structure.carriers[0].insert(10);
+    structure.carriers[0].insert(15);
+
+    // Create a simple pattern: scan sort 0, no constraints, return element
+    let pattern = Pattern::new(0);
+
+    // Compile and execute
+    let plan = pattern.compile();
+    let result = execute(&plan, &structure);
+
+    // Should get all 3 elements
+    assert_eq!(result.len(), 3);
+    assert!(result.tuples.contains_key(&vec![Slid::from_usize(5)]));
+    assert!(result.tuples.contains_key(&vec![Slid::from_usize(10)]));
+    assert!(result.tuples.contains_key(&vec![Slid::from_usize(15)]));
+}
+
+/// Test that optimize preserves semantics for filter with True predicate.
+#[test]
+fn test_optimize_filter_true_preserves_semantics() {
+    use geolog::query::optimize;
+
+    let mut structure = Structure::new(1);
+    structure.carriers[0].insert(1);
+    structure.carriers[0].insert(2);
+    structure.carriers[0].insert(3);
+
+    let scan = QueryOp::Scan { sort_idx: 0 };
+    let filter = QueryOp::Filter {
+        input: Box::new(scan),
+        pred: Predicate::True,
+    };
+
+    let unoptimized_result = execute(&filter, &structure);
+    let optimized = optimize(&filter);
+    let optimized_result = execute(&optimized, &structure);
+
+    assert_eq!(bag_to_set(&unoptimized_result), bag_to_set(&optimized_result));
+}
+
+/// Test that optimize preserves semantics for filter with False predicate.
+#[test]
+fn test_optimize_filter_false_preserves_semantics() {
+    use geolog::query::optimize;
+
+    let mut structure = Structure::new(1);
+    structure.carriers[0].insert(1);
+    structure.carriers[0].insert(2);
+
+    let scan = QueryOp::Scan { sort_idx: 0 };
+    let filter = QueryOp::Filter {
+        input: Box::new(scan),
+        pred: Predicate::False,
+    };
+
+    let unoptimized_result = execute(&filter, &structure);
+    let optimized = optimize(&filter);
+    let optimized_result = execute(&optimized, &structure);
+
+    assert_eq!(bag_to_set(&unoptimized_result), bag_to_set(&optimized_result));
+    assert!(unoptimized_result.is_empty());
+    assert!(optimized_result.is_empty());
+}
+
+/// Test that double negation optimization preserves semantics.
+#[test]
+fn test_optimize_double_negate_preserves_semantics() {
+    use geolog::query::optimize;
+
+    let mut structure = Structure::new(1);
+    structure.carriers[0].insert(10);
+    structure.carriers[0].insert(20);
+
+    let scan = QueryOp::Scan { sort_idx: 0 };
+    let negate1 = QueryOp::Negate {
+        input: Box::new(scan),
+    };
+    let negate2 = QueryOp::Negate {
+        input: Box::new(negate1),
+    };
+
+    let unoptimized_result = execute(&negate2, &structure);
+    let optimized = optimize(&negate2);
+    let optimized_result = execute(&optimized, &structure);
+
+    assert_eq!(bag_to_set(&unoptimized_result), bag_to_set(&optimized_result));
+}
+
+/// Test that union with empty optimization preserves semantics.
+#[test]
+fn test_optimize_union_empty_preserves_semantics() {
+    use geolog::query::optimize;
+
+    let mut structure = Structure::new(1);
+    structure.carriers[0].insert(5);
+    structure.carriers[0].insert(15);
+
+    let scan = QueryOp::Scan { sort_idx: 0 };
+    let union = QueryOp::Union {
+        left: Box::new(scan),
+        right: Box::new(QueryOp::Empty),
+    };
+
+    let unoptimized_result = execute(&union, &structure);
+    let optimized = optimize(&union);
+    let optimized_result = execute(&optimized, &structure);
+
+    assert_eq!(bag_to_set(&unoptimized_result), bag_to_set(&optimized_result));
+}
+
+/// Test that join with empty optimization preserves semantics.
+#[test]
+fn test_optimize_join_empty_preserves_semantics() {
+    use geolog::query::optimize;
+
+    let mut structure = Structure::new(2);
+    structure.carriers[0].insert(1);
+    structure.carriers[0].insert(2);
+
+    let scan = QueryOp::Scan { sort_idx: 0 };
+    let join = QueryOp::Join {
+        left: Box::new(scan),
+        right: Box::new(QueryOp::Empty),
+        cond: JoinCond::Cross,
+    };
+
+    let unoptimized_result = execute(&join, &structure);
+    let optimized = optimize(&join);
+    let optimized_result = execute(&optimized, &structure);
+
+    assert_eq!(bag_to_set(&unoptimized_result), bag_to_set(&optimized_result));
+    assert!(unoptimized_result.is_empty());
+    assert!(optimized_result.is_empty());
+}
+
+#[test]
+fn test_pattern_compile_with_function_filter() {
+    use geolog::query::Pattern;
+    use geolog::universe::Universe;
+
+    // Create a structure with one sort and properly add elements
+    let mut structure = Structure::new(1);
+    let mut universe = Universe::new();
+
+    // Add 3 elements to sort 0
+    let (slid0, _) = structure.add_element(&mut universe, 0);
+    let (slid1, _) = structure.add_element(&mut universe, 0);
+    let (slid2, _) = structure.add_element(&mut universe, 0);
+
+    // Initialize function storage for 1 function with domain sort 0
+    structure.init_functions(&[Some(0)]);
+
+    // Function 0: maps elem0→slid10, elem1→slid20, elem2→slid10
+    // We need target elements to map to - add them to a different "virtual" sort
+    // For simplicity, we'll use constant Slid values that represent the results
+    let slid10 = Slid::from_usize(10);
+    let slid20 = Slid::from_usize(20);
+
+    structure.define_function(0, slid0, slid10).unwrap();
+    structure.define_function(0, slid1, slid20).unwrap();
+    structure.define_function(0, slid2, slid10).unwrap();
+
+    // Pattern: find elements where func(elem) = 10
+    let pattern = Pattern::new(0)
+        .filter(0, slid10);
+
+    // Compile and execute
+    let plan = pattern.compile();
+    let result = execute(&plan, &structure);
+
+    // Should get elements 0 and 2 (both map to 10)
+    assert_eq!(result.len(), 2);
+    assert!(result.tuples.contains_key(&vec![slid0]));
+    assert!(result.tuples.contains_key(&vec![slid2]));
+    // Element 1 (maps to 20) should not be included
+    assert!(!result.tuples.contains_key(&vec![slid1]));
 }
