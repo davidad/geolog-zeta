@@ -391,6 +391,69 @@ theorem bot_underlying_isEmpty {X : Type u} : IsEmpty ((⊥ : Subobject X) : Typ
   have h2 : ⊥_ (Type u) ≅ PEmpty := Types.initialIso
   exact ⟨fun y => PEmpty.elim ((h1 ≪≫ h2).hom y)⟩
 
+/-- The set corresponding to a subobject under Types.subobjectEquivSet is the range of its arrow.
+    This is essentially by definition since both go through the representative. -/
+theorem subobject_equiv_eq_range {X : Type u} (f : Subobject X) :
+    (Types.subobjectEquivSet X) f = Set.range f.arrow := by
+  simp only [Types.subobjectEquivSet]
+  rfl
+
+/-- Types.equalizerIso.inv sends ⟨x, heq⟩ to the element of equalizer that ι maps to x. -/
+lemma types_equalizerIso_inv_ι {X Y : Type u} (f g : X ⟶ Y) (x_sub : { x : X // f x = g x }) :
+    equalizer.ι f g ((Types.equalizerIso f g).inv x_sub) = x_sub.val := by
+  have h := limit.isoLimitCone_inv_π (F := parallelPair f g) Types.equalizerLimit WalkingParallelPair.zero
+  simp only [Types.equalizerIso, parallelPair_obj_zero, limit.π] at h ⊢
+  exact congrFun h x_sub
+
+/-- In Type u, x ∈ range (equalizerSubobject f g).arrow iff f x = g x. -/
+theorem equalizer_range_iff {X Y : Type u} (f g : X ⟶ Y) (x : X) :
+    x ∈ Set.range (equalizerSubobject f g).arrow ↔ f x = g x := by
+  simp only [equalizerSubobject]
+  constructor
+  · intro ⟨z, hz⟩
+    let z' := (Subobject.underlyingIso (equalizer.ι f g)).hom z
+    have hz' : equalizer.ι f g z' = x := by
+      have h := Subobject.underlyingIso_hom_comp_eq_mk (equalizer.ι f g)
+      simp only [← h, types_comp_apply] at hz
+      exact hz
+    have hcond := equalizer.condition f g
+    have h1 : (equalizer.ι f g ≫ f) z' = (equalizer.ι f g ≫ g) z' := by rw [hcond]
+    simp only [types_comp_apply, hz'] at h1
+    exact h1
+  · intro heq
+    let x_sub : { y : X // f y = g y } := ⟨x, heq⟩
+    let z_eq : equalizer f g := (Types.equalizerIso f g).inv x_sub
+    let z := (Subobject.underlyingIso (equalizer.ι f g)).inv z_eq
+    use z
+    have h := Subobject.underlyingIso_hom_comp_eq_mk (equalizer.ι f g)
+    calc (Subobject.mk (equalizer.ι f g)).arrow z
+      = ((Subobject.underlyingIso (equalizer.ι f g)).hom ≫ equalizer.ι f g)
+          ((Subobject.underlyingIso (equalizer.ι f g)).inv z_eq) := by rw [h]
+      _ = equalizer.ι f g ((Subobject.underlyingIso (equalizer.ι f g)).hom
+          ((Subobject.underlyingIso (equalizer.ι f g)).inv z_eq)) := rfl
+      _ = equalizer.ι f g z_eq := by simp
+      _ = x_sub.val := types_equalizerIso_inv_ι f g x_sub
+      _ = x := rfl
+
+/-- In Type u, x ∈ range (f ⊓ g).arrow iff x is in range of both f.arrow and g.arrow.
+    This uses that Types.subobjectEquivSet is an order isomorphism, so it preserves inf.
+    In Set, inf is intersection, so x ∈ (f ⊓ g) ↔ x ∈ f ∧ x ∈ g. -/
+theorem inf_range_iff {X : Type u} (f g : Subobject X) (x : X) :
+    x ∈ Set.range (f ⊓ g).arrow ↔ x ∈ Set.range f.arrow ∧ x ∈ Set.range g.arrow := by
+  -- Use the order isomorphism Types.subobjectEquivSet : Subobject X ≃o Set X
+  let iso := Types.subobjectEquivSet X
+  -- Translate membership using subobject_equiv_eq_range
+  rw [← subobject_equiv_eq_range (f ⊓ g)]
+  rw [← subobject_equiv_eq_range f]
+  rw [← subobject_equiv_eq_range g]
+  -- Now use that the order iso preserves inf
+  have h : iso (f ⊓ g) = iso f ⊓ iso g := iso.map_inf f g
+  -- Goal: x ∈ iso (f ⊓ g) ↔ x ∈ iso f ∧ x ∈ iso g
+  show x ∈ iso (f ⊓ g) ↔ x ∈ iso f ∧ x ∈ iso g
+  rw [h]
+  -- In Set X, ⊓ = ∩, so membership is conjunction
+  rfl
+
 theorem formula_satisfaction_monotone {M M' : Structure S (Type u)}
     [κ : SmallUniverse S] [G : Geometric κ (Type u)]
     (emb : RelPreservingEmbedding M M')
@@ -435,19 +498,40 @@ theorem formula_satisfaction_monotone {M M' : Structure S (Type u)}
     exact False.elim (bot_underlying_isEmpty.false y)
   | conj φ ψ ihφ ihψ =>
     -- Conjunction: both components must hold
-    -- Use: prod_eq_inf says f₁ ⨯ f₂ = f₁ ⊓ f₂
-    -- Need to decompose membership in infimum
+    -- Strategy: use inf_range_iff to decompose and recompose
     unfold formulaSatisfied subobjectMem at hsat ⊢
     simp only [Formula.interpret] at hsat ⊢
-    -- The infimum's range is the intersection, so we need:
-    -- if t ∈ range (φ ⊓ ψ).arrow, then t ∈ range φ.arrow ∧ t ∈ range ψ.arrow
-    -- and use IH, then recombine
-    sorry
+    -- hsat: t ∈ range (φ.interpret ⨯ ψ.interpret).arrow (in M)
+    -- Goal: liftEmbedContext ... t ∈ range (φ.interpret ⨯ ψ.interpret).arrow (in M')
+
+    -- Use prod_eq_inf: ⨯ = ⊓ in Subobject
+    have prod_inf_M := Subobject.prod_eq_inf (f₁ := Formula.interpret M φ) (f₂ := Formula.interpret M ψ)
+    have prod_inf_M' := Subobject.prod_eq_inf (f₁ := Formula.interpret M' φ) (f₂ := Formula.interpret M' ψ)
+
+    -- Decompose: if t ∈ (φ ⊓ ψ), then t ∈ φ and t ∈ ψ
+    rw [prod_inf_M] at hsat
+    rw [inf_range_iff] at hsat
+    obtain ⟨hφ, hψ⟩ := hsat
+
+    -- Apply induction hypotheses
+    have ihφ' := ihφ t hφ
+    have ihψ' := ihψ t hψ
+
+    -- Recompose: if liftEmbedContext t ∈ φ' and ∈ ψ', then ∈ (φ' ⊓ ψ')
+    rw [prod_inf_M']
+    rw [inf_range_iff]
+    exact ⟨ihφ', ihψ'⟩
   | eq t1 t2 =>
-    -- Equality: embedding preserves it (injectivity)
-    -- Use: equalizer in Type u = {x | f x = g x}
+    -- Equality: t1 = t2 interprets as equalizerSubobject ⟦t1⟧ᵗ ⟦t2⟧ᵗ
+    -- Using equalizer_range_iff: t ∈ equalizerSubobject ↔ t1.interpret t = t2.interpret t
     unfold formulaSatisfied subobjectMem at hsat ⊢
     simp only [Formula.interpret] at hsat ⊢
+    -- hsat : t ∈ equalizerSubobject (t1.interpret M) (t2.interpret M)
+    -- Goal : liftEmbedContext t ∈ equalizerSubobject (t1.interpret M') (t2.interpret M')
+    rw [equalizer_range_iff] at hsat ⊢
+    -- hsat : t1.interpret M t = t2.interpret M t
+    -- Goal : t1.interpret M' (liftEmbedContext t) = t2.interpret M' (liftEmbedContext t)
+    -- This follows from term_interpret_commutes (axiom) once its sorry is filled
     sorry
   | «exists» φ ih =>
     -- Existential: witness a ↦ emb(a)
