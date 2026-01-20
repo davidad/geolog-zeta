@@ -225,6 +225,82 @@ fn test_preorder_example_parses() {
 }
 
 // ============================================================================
+// Transitive closure example (demonstrates chase algorithm)
+// ============================================================================
+
+#[test]
+fn test_transitive_closure_example_parses() {
+    let path = Path::new("examples/geolog/transitive_closure.geolog");
+    let state = load_geolog_file(path).expect("transitive_closure.geolog should parse and elaborate");
+
+    // Check theory
+    let graph = state.theories.get("Graph").expect("Graph theory should exist");
+    assert_eq!(graph.theory.signature.sorts.len(), 1, "Graph should have 1 sort (V)");
+    assert_eq!(graph.theory.signature.relations.len(), 2, "Graph should have 2 relations (Edge, Path)");
+    assert_eq!(graph.theory.axioms.len(), 2, "Graph should have 2 axioms (base, trans)");
+
+    // Check instances
+    assert!(state.instances.contains_key("Chain"), "Chain instance should exist");
+    assert!(state.instances.contains_key("Diamond"), "Diamond instance should exist");
+    assert!(state.instances.contains_key("Cycle"), "Cycle instance should exist");
+}
+
+#[test]
+fn test_transitive_closure_chain_structure() {
+    let path = Path::new("examples/geolog/transitive_closure.geolog");
+    let state = load_geolog_file(path).unwrap();
+
+    let chain = state.instances.get("Chain").unwrap();
+
+    // Chain has 4 vertices
+    assert_eq!(chain.structure.carrier_size(0), 4, "Chain should have 4 vertices");
+
+    // Before chase: Edge has 3 tuples, Path has 0
+    use geolog::core::RelationStorage;
+    assert_eq!(chain.structure.relations[0].len(), 3, "Chain should have 3 Edge tuples");
+    assert_eq!(chain.structure.relations[1].len(), 0, "Chain should have 0 Path tuples before chase");
+}
+
+#[test]
+fn test_transitive_closure_chase() {
+    use geolog::core::{ElaboratedTheory, RelationStorage};
+    use geolog::query::chase::{compile_theory_axioms, chase_fixpoint};
+    use geolog::universe::Universe;
+
+    let path = Path::new("examples/geolog/transitive_closure.geolog");
+    let mut state = load_geolog_file(path).unwrap();
+
+    let chain = state.instances.get_mut("Chain").unwrap();
+    let theory = state.theories.get("Graph").unwrap();
+
+    // Compile and run chase
+    let elaborated = ElaboratedTheory {
+        theory: theory.theory.clone(),
+        params: vec![],
+    };
+    let rules = compile_theory_axioms(&elaborated).unwrap();
+    let mut universe = Universe::new();
+
+    let iterations = chase_fixpoint(
+        &rules,
+        &mut chain.structure,
+        &mut universe,
+        &theory.theory.signature,
+        100,
+    ).unwrap();
+
+    // After chase: Path should have 6 tuples (transitive closure)
+    // - (a,b), (b,c), (c,d) from base axiom
+    // - (a,c), (b,d) from one transitivity step
+    // - (a,d) from two transitivity steps
+    assert_eq!(chain.structure.relations[1].len(), 6,
+        "Chain should have 6 Path tuples after chase: 3 base + 2 one-step + 1 two-step");
+
+    // Should converge in few iterations
+    assert!(iterations <= 5, "Chase should converge in at most 5 iterations");
+}
+
+// ============================================================================
 // Theories: GeologMeta and RelAlgIR
 // ============================================================================
 
