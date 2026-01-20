@@ -1186,6 +1186,25 @@ impl Structure {
     }
 }
 
+impl std::fmt::Display for DerivedSort {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            DerivedSort::Base(id) => write!(f, "Sort#{}", id),
+            DerivedSort::Product(fields) if fields.is_empty() => write!(f, "()"),
+            DerivedSort::Product(fields) => {
+                write!(f, "[")?;
+                for (i, (name, sort)) in fields.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{}: {}", name, sort)?;
+                }
+                write!(f, "]")
+            }
+        }
+    }
+}
+
 // ============ Display implementations for debugging ============
 
 // Main unit tests moved to tests/proptest_structure.rs
@@ -1253,24 +1272,5 @@ mod tests {
             ("x".to_string(), DerivedSort::Base(0)),
         ]);
         assert_eq!(product.cardinality(&structure), 0);
-    }
-}
-
-impl std::fmt::Display for DerivedSort {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            DerivedSort::Base(id) => write!(f, "Sort#{}", id),
-            DerivedSort::Product(fields) if fields.is_empty() => write!(f, "()"),
-            DerivedSort::Product(fields) => {
-                write!(f, "[")?;
-                for (i, (name, sort)) in fields.iter().enumerate() {
-                    if i > 0 {
-                        write!(f, ", ")?;
-                    }
-                    write!(f, "{}: {}", name, sort)?;
-                }
-                write!(f, "]")
-            }
-        }
     }
 }

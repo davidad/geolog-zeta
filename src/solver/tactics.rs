@@ -1032,7 +1032,7 @@ mod tests {
 
         // Check that pending equations were added to congruence closure
         let node = tree.get(0).unwrap();
-        assert!(node.cc.pending.len() > 0, "Should have pending equations");
+        assert!(!node.cc.pending.is_empty(), "Should have pending equations");
     }
 
     #[test]
@@ -1075,7 +1075,7 @@ mod tests {
         ForwardChainingTactic.run(&mut tree, 0, &Budget::quick());
 
         // Verify equations are pending
-        assert!(tree.get(0).unwrap().cc.pending.len() > 0);
+        assert!(!tree.get(0).unwrap().cc.pending.is_empty());
 
         // Run equation propagation
         let result = PropagateEquationsTactic.run(&mut tree, 0, &Budget::quick());

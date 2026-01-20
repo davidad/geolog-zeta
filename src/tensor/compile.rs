@@ -110,11 +110,10 @@ pub fn function_to_tensor(
         let domain_slid = Slid::from_usize(domain_slid_u64 as usize);
         let sort_slid = structure.sort_local_id(domain_slid);
 
-        if let Some(codomain_slid) = structure.get_function(func_id, sort_slid) {
-            if let Some(&codomain_idx) = codomain_index.get(&codomain_slid) {
+        if let Some(codomain_slid) = structure.get_function(func_id, sort_slid)
+            && let Some(&codomain_idx) = codomain_index.get(&codomain_slid) {
                 extent.insert(vec![domain_idx, codomain_idx]);
             }
-        }
     }
 
     SparseTensor {
@@ -970,6 +969,6 @@ mod tests {
         // - R(x) extended with all y: {(0,0), (0,1), (0,2)}
         // - S(y) extended with all x: {(0,1), (1,1), (2,1)}
         // Note: the tuple order depends on variable order
-        assert!(result.len() > 0);
+        assert!(!result.is_empty());
     }
 }
