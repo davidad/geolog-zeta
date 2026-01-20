@@ -234,3 +234,122 @@ fn test_compile_theory_axioms() {
     assert_eq!(rules.len(), 1);
     assert_eq!(rules[0].name, "axiom_0");
 }
+
+/// Create a preorder-like theory with binary leq relation and transitivity axiom
+fn preorder_theory() -> Theory {
+    let mut sig = Signature::default();
+    sig.add_sort("X".to_string());
+
+    // Binary relation with product domain: leq : [x: X, y: X] -> Prop
+    let domain = DerivedSort::Product(vec![
+        ("x".to_string(), DerivedSort::Base(0)),
+        ("y".to_string(), DerivedSort::Base(0)),
+    ]);
+    sig.add_relation("leq".to_string(), domain.clone());
+
+    // Reflexivity axiom: forall x : X. |- [x: x, y: x] leq
+    let refl_axiom = Sequent {
+        context: Context {
+            vars: vec![("x".to_string(), DerivedSort::Base(0))],
+        },
+        premise: Formula::True,
+        conclusion: Formula::Rel(
+            0,
+            Term::Record(vec![
+                ("x".to_string(), Term::Var("x".to_string(), DerivedSort::Base(0))),
+                ("y".to_string(), Term::Var("x".to_string(), DerivedSort::Base(0))),
+            ]),
+        ),
+    };
+
+    // Transitivity axiom: forall x, y, z : X. [x: x, y: y] leq, [x: y, y: z] leq |- [x: x, y: z] leq
+    let trans_axiom = Sequent {
+        context: Context {
+            vars: vec![
+                ("x".to_string(), DerivedSort::Base(0)),
+                ("y".to_string(), DerivedSort::Base(0)),
+                ("z".to_string(), DerivedSort::Base(0)),
+            ],
+        },
+        premise: Formula::Conj(vec![
+            Formula::Rel(
+                0,
+                Term::Record(vec![
+                    ("x".to_string(), Term::Var("x".to_string(), DerivedSort::Base(0))),
+                    ("y".to_string(), Term::Var("y".to_string(), DerivedSort::Base(0))),
+                ]),
+            ),
+            Formula::Rel(
+                0,
+                Term::Record(vec![
+                    ("x".to_string(), Term::Var("y".to_string(), DerivedSort::Base(0))),
+                    ("y".to_string(), Term::Var("z".to_string(), DerivedSort::Base(0))),
+                ]),
+            ),
+        ]),
+        conclusion: Formula::Rel(
+            0,
+            Term::Record(vec![
+                ("x".to_string(), Term::Var("x".to_string(), DerivedSort::Base(0))),
+                ("y".to_string(), Term::Var("z".to_string(), DerivedSort::Base(0))),
+            ]),
+        ),
+    };
+
+    Theory {
+        name: "Preorder".to_string(),
+        signature: sig,
+        axioms: vec![refl_axiom, trans_axiom],
+    }
+}
+
+#[test]
+fn test_chase_preorder_reflexivity() {
+    // Test that chase correctly computes reflexive closure without generating
+    // spurious tuples from cross-join (the bug that was fixed)
+    let theory = preorder_theory();
+    let mut universe = Universe::new();
+    let mut structure = Structure::new(1);
+
+    // Add 3 elements
+    let (a, _) = structure.add_element(&mut universe, 0);
+    let (b, _) = structure.add_element(&mut universe, 0);
+    let (c, _) = structure.add_element(&mut universe, 0);
+
+    // Initialize relation with arity 2 (binary relation)
+    structure.init_relations(&[2]);
+
+    // Compile axioms
+    let rules = compile_theory_axioms(&ElaboratedTheory {
+        theory: theory.clone(),
+        params: vec![],
+    })
+    .unwrap();
+
+    assert_eq!(rules.len(), 2, "Should compile both reflexivity and transitivity axioms");
+
+    // Run chase
+    let iterations = chase_fixpoint(&rules, &mut structure, &mut universe, &theory.signature, 100).unwrap();
+
+    // With only reflexivity and transitivity (no additional ordering),
+    // we should get exactly 3 reflexive pairs: (a,a), (b,b), (c,c)
+    let relation = structure.get_relation(0);
+    assert_eq!(
+        relation.len(),
+        3,
+        "Should have exactly 3 reflexive tuples (was 9 before equi-join fix)"
+    );
+
+    // Check that each reflexive pair exists
+    assert!(structure.query_relation(0, &[a, a]), "Should have (a,a)");
+    assert!(structure.query_relation(0, &[b, b]), "Should have (b,b)");
+    assert!(structure.query_relation(0, &[c, c]), "Should have (c,c)");
+
+    // Check that non-reflexive pairs do NOT exist (they would if cross-join bug existed)
+    assert!(!structure.query_relation(0, &[a, b]), "Should NOT have (a,b)");
+    assert!(!structure.query_relation(0, &[a, c]), "Should NOT have (a,c)");
+    assert!(!structure.query_relation(0, &[b, a]), "Should NOT have (b,a)");
+
+    // Should complete in 2 iterations (one to add reflexive pairs, one to verify fixpoint)
+    assert_eq!(iterations, 2, "Should reach fixpoint in 2 iterations");
+}
