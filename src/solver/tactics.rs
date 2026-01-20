@@ -628,4 +628,39 @@ mod tests {
             other => panic!("Expected Progress, got {:?}", other),
         }
     }
+
+    #[test]
+    fn test_forward_chaining_detects_false() {
+        use crate::core::{Context, Formula, Sequent};
+
+        // Create a theory with an axiom: True |- False
+        // This means any model is immediately unsat
+        let mut sig = Signature::new();
+        sig.add_sort("Node".to_string());
+
+        let axiom = Sequent {
+            context: Context::new(),
+            premise: Formula::True,
+            conclusion: Formula::False,
+        };
+
+        let theory = Rc::new(ElaboratedTheory {
+            params: vec![],
+            theory: Theory {
+                name: "Inconsistent".to_string(),
+                signature: sig,
+                axioms: vec![axiom],
+            },
+        });
+
+        let mut tree = SearchTree::new(theory);
+
+        // Forward chaining should detect the derivation of False
+        let result = ForwardChainingTactic.run(&mut tree, 0, &Budget::quick());
+
+        match result {
+            TacticResult::Unsat(_) => {} // Expected - True |- False is violated
+            other => panic!("Expected Unsat, got {:?}", other),
+        }
+    }
 }
