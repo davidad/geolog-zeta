@@ -224,5 +224,12 @@ See `bd ready` for current work items. Key frontiers:
 - **Proptest coverage** (`2026-01-20`): Added 6 solver proptests covering trivial theories,
   inconsistent theories, existential theories, and Horn clause propagation.
 
+- **Theory extends fix** (`2026-01-20`): Fixed bug where function names like `Func/dom` (using `/`
+  as naming convention) were incorrectly treated as grandparent-qualified names. RelAlgIR.geolog
+  now loads correctly, unblocking homoiconic query plan work (`geolog-32x`).
+
+- **:explain REPL command** (`2026-01-20`): Added `:explain <instance> <sort>` to show query
+  execution plans, with Display impl for QueryOp using math notation (∫, δ, z⁻¹, ×, ∧, ∨).
+
 - **Geometric logic solver complete** (`geolog-xj2`): Forward chaining, equation propagation,
   existential body processing, derivation search for False. Interactive via `:solve`.
