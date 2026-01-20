@@ -134,11 +134,20 @@ pub enum ChaseHead {
         arg_col: usize,
         result_col: usize,
     },
-    /// Create a new element (existential)
+    /// Create a new element (existential) - old style, always creates
     CreateElement {
         sort_idx: usize,
-        /// Bindings for functions on the new element
+        /// Bindings for functions on the new element: f(new_elem) = col
         function_bindings: Vec<(usize, usize)>, // (func_idx, result_col)
+    },
+    /// Ensure a function value exists via skolemization.
+    /// For axioms like "forall a. exists b. f(a) = b":
+    /// - Check if f(arg) is already defined
+    /// - If not, create a new element of the given sort and define f(arg) = new_elem
+    EnsureFunction {
+        func_idx: usize,
+        arg_col: usize,
+        new_sort_idx: usize,
     },
     /// Multiple heads (conjunction in conclusion)
     Multi(Vec<ChaseHead>),
@@ -402,10 +411,25 @@ fn compile_conclusion(
         }
 
         Formula::Exists(var_name, sort, body) => {
-            // Create new element
+            // Handle existential quantification in conclusion
             let sort_idx = resolve_sort_index(sort, sig)?;
 
-            // Parse body for function bindings
+            // Check for common patterns:
+            // 1. "exists b. f(a) = b" - ensure f(a) is defined (skolem)
+            // 2. "exists b. f(b) = y" - create element with function binding
+
+            // Try to detect "f(arg) = new_var" pattern for EnsureFunction
+            if let Some((func_idx, arg_col)) = extract_ensure_function_pattern(body, var_name, var_indices)? {
+                // Pattern: exists b. f(a) = b
+                // Use EnsureFunction - only create if f(a) is undefined
+                return Ok(ChaseHead::EnsureFunction {
+                    func_idx,
+                    arg_col,
+                    new_sort_idx: sort_idx,
+                });
+            }
+
+            // Fall back to the old CreateElement behavior for other patterns
             // e.g., ∃x:S. f(x) = y becomes CreateElement with f bound to y's column
             let mut function_bindings = Vec::new();
             extract_function_bindings(body, var_name, var_indices, &mut function_bindings)?;
@@ -427,6 +451,42 @@ fn compile_conclusion(
                 "Disjunction in conclusion requires branching chase".to_string()
             ))
         }
+    }
+}
+
+/// Try to extract the "f(arg) = new_var" pattern from an existential body.
+/// Returns Some((func_idx, arg_col)) if the body is exactly "f(arg) = new_var"
+/// where arg is a bound variable and new_var is the existential variable.
+fn extract_ensure_function_pattern(
+    formula: &Formula,
+    new_var: &str,
+    var_indices: &HashMap<String, usize>,
+) -> Result<Option<(usize, usize)>, ChaseError> {
+    match formula {
+        Formula::Eq(left, right) => {
+            // Check for f(arg) = new_var
+            if let (Term::App(func_idx, arg), Term::Var(var_name, _)) = (left, right) {
+                if var_name == new_var {
+                    // Found: f(arg) = new_var
+                    let arg_col = term_to_column(arg, var_indices)?;
+                    return Ok(Some((*func_idx, arg_col)));
+                }
+            }
+            // Check for new_var = f(arg)
+            if let (Term::Var(var_name, _), Term::App(func_idx, arg)) = (left, right) {
+                if var_name == new_var {
+                    // Found: new_var = f(arg)
+                    let arg_col = term_to_column(arg, var_indices)?;
+                    return Ok(Some((*func_idx, arg_col)));
+                }
+            }
+            Ok(None)
+        }
+        // Handle conjunction - look for the pattern in any conjunct
+        Formula::Conj(conjuncts) if conjuncts.len() == 1 => {
+            extract_ensure_function_pattern(&conjuncts[0], new_var, var_indices)
+        }
+        _ => Ok(None),
     }
 }
 
@@ -620,6 +680,30 @@ fn fire_head(
                 structure.define_function(func_idx, elem, result)
                     .map_err(ChaseError::QueryFailed)?;
             }
+
+            Ok(true)
+        }
+
+        ChaseHead::EnsureFunction { func_idx, arg_col, new_sort_idx } => {
+            // Skolem chase for existentials:
+            // "forall a. exists b. f(a) = b" means we need f to be defined for all a
+            let arg = binding.get(*arg_col).copied()
+                .ok_or_else(|| ChaseError::UnboundVariable("arg column out of bounds".to_string()))?;
+
+            // Check if f(arg) is already defined
+            let func = structure.functions.get(*func_idx)
+                .ok_or_else(|| ChaseError::QueryFailed(format!("Function {} not found", func_idx)))?;
+
+            let local_idx = structure.sort_local_id(arg).index();
+            if crate::id::get_slid(func.get_local(local_idx)).is_some() {
+                // Already defined - no change needed
+                return Ok(false);
+            }
+
+            // Not defined - create new element and define f(arg) = new_elem
+            let (new_elem, _luid) = structure.add_element(universe, *new_sort_idx);
+            structure.define_function(*func_idx, arg, new_elem)
+                .map_err(ChaseError::QueryFailed)?;
 
             Ok(true)
         }

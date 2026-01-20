@@ -239,8 +239,19 @@ impl ReplState {
                     }
 
                     // Use the elaboration that works with our transitional state
-                    let elab_result = self.elaborate_instance_internal(inst)
-                        .map_err(|e| format!("Elaboration error: {}", e))?;
+                    // If totality check fails, try again with partial elaboration
+                    let (elab_result, is_partial) = match self.elaborate_instance_internal(inst) {
+                        Ok(result) => (result, false),
+                        Err(e) if e.contains("partial function") => {
+                            // Retry with partial elaboration
+                            eprintln!("Note: Instance has partial functions, allowing for chase to complete them");
+                            let result = self.elaborate_instance_partial(inst)
+                                .map_err(|e| format!("Elaboration error: {}", e))?;
+                            (result, true)
+                        }
+                        Err(e) => return Err(format!("Elaboration error: {}", e)),
+                    };
+                    let _ = is_partial; // Used for logging/warnings
 
                     let instance_name = inst.name.clone();
                     let theory_name = type_expr_to_theory_name(&inst.theory);
@@ -319,6 +330,22 @@ impl ReplState {
         };
 
         elaborate_instance_ctx(&mut ctx, inst)
+            .map_err(|e| e.to_string())
+    }
+
+    /// Internal instance elaboration that skips totality validation.
+    /// Use this for instances that will be completed by the chase algorithm.
+    pub fn elaborate_instance_partial(&mut self, inst: &ast::InstanceDecl) -> Result<InstanceElaborationResult, String> {
+        use crate::elaborate::elaborate_instance_ctx_partial;
+
+        // Build elaboration context from our state
+        let mut ctx = ElaborationContext {
+            theories: &self.theories,
+            instances: &self.instances,
+            universe: &mut self.store.universe,
+        };
+
+        elaborate_instance_ctx_partial(&mut ctx, inst)
             .map_err(|e| e.to_string())
     }
 

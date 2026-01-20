@@ -90,6 +90,23 @@ pub fn elaborate_instance_ctx(
     ctx: &mut ElaborationContext<'_>,
     instance: &ast::InstanceDecl,
 ) -> ElabResult<InstanceElaborationResult> {
+    elaborate_instance_ctx_inner(ctx, instance, false)
+}
+
+/// Elaborate an instance without validating totality.
+/// Use this when the chase algorithm will fill in missing function values.
+pub fn elaborate_instance_ctx_partial(
+    ctx: &mut ElaborationContext<'_>,
+    instance: &ast::InstanceDecl,
+) -> ElabResult<InstanceElaborationResult> {
+    elaborate_instance_ctx_inner(ctx, instance, true)
+}
+
+fn elaborate_instance_ctx_inner(
+    ctx: &mut ElaborationContext<'_>,
+    instance: &ast::InstanceDecl,
+    skip_totality: bool,
+) -> ElabResult<InstanceElaborationResult> {
     // Build Env from context theories for theory lookups
     let env = Env {
         theories: ctx.theories.clone(),
@@ -550,7 +567,10 @@ pub fn elaborate_instance_ctx(
     }
 
     // 6. Validate totality: all functions must be defined on all elements of their domain
-    validate_totality(&structure, &theory.theory.signature, &slid_to_name)?;
+    // Skip this check when creating instances for chase (which will fill in missing values)
+    if !skip_totality {
+        validate_totality(&structure, &theory.theory.signature, &slid_to_name)?;
+    }
 
     Ok(InstanceElaborationResult {
         structure,
