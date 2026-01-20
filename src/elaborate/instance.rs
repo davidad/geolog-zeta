@@ -26,6 +26,9 @@ pub struct ElaborationContext<'a> {
     pub instances: &'a HashMap<String, InstanceEntry>,
     /// Universe for allocating new Luids
     pub universe: &'a mut Universe,
+    /// Sibling nested instances (for cross-references within a parent instance)
+    /// When elaborating nested instances, this contains already-elaborated siblings
+    pub siblings: HashMap<String, InstanceEntry>,
 }
 
 /// Result of elaborating an instance.
@@ -39,6 +42,19 @@ pub struct InstanceElaborationResult {
     pub slid_to_name: HashMap<Slid, String>,
     /// Mapping from element name to Slid (for lookups)
     pub name_to_slid: HashMap<String, Slid>,
+    /// Metadata for nested instances (theory name and element names)
+    pub nested_meta: HashMap<String, NestedInstanceMeta>,
+}
+
+/// Nested instance metadata for name resolution
+#[derive(Clone, Debug, Default)]
+pub struct NestedInstanceMeta {
+    /// Theory name of the nested instance
+    pub theory_name: String,
+    /// Map from element names to Slids (within the nested structure)
+    pub name_to_slid: HashMap<String, Slid>,
+    /// Reverse map from Slids to names
+    pub slid_to_name: HashMap<Slid, String>,
 }
 
 /// An instance entry for elaboration context.
@@ -56,6 +72,8 @@ pub struct InstanceEntry {
     pub element_names: HashMap<String, Slid>,
     /// Reverse map from Slids to names
     pub slid_to_name: HashMap<Slid, String>,
+    /// Metadata for nested instances (for cross-instance references)
+    pub nested_meta: HashMap<String, NestedInstanceMeta>,
 }
 
 impl InstanceEntry {
@@ -67,6 +85,7 @@ impl InstanceEntry {
             theory_type,
             element_names: HashMap::new(),
             slid_to_name: HashMap::new(),
+            nested_meta: HashMap::new(),
         }
     }
 
@@ -148,6 +167,9 @@ fn elaborate_instance_ctx_inner(
     let mut name_to_slid: HashMap<String, Slid> = HashMap::new();
     let mut slid_to_name: HashMap<Slid, String> = HashMap::new();
 
+    // Track nested instance metadata for cross-instance references
+    let mut nested_meta: HashMap<String, NestedInstanceMeta> = HashMap::new();
+
     // 2b. Import elements from param instances
     // For each param binding (N, ExampleNet), import all elements from ExampleNet
     // with their sorts mapped to the local signature (N/P, N/T, etc.)
@@ -215,43 +237,160 @@ fn elaborate_instance_ctx_inner(
                 }
             }
         }
-        // Case 2: argument is a sort path like "As/a" (for Sort params)
-        // Parse as InstanceName/SortName and import elements of that sort
-        else if let Some((source_instance_name, source_sort_name)) = arg_value.split_once('/') {
-            if let Some(source_entry) = ctx.instances.get(source_instance_name) {
-                let source_theory_name = &source_entry.theory_name;
-                if let Some(source_theory) = ctx.theories.get(source_theory_name) {
-                    // Find the sort ID in the source theory
-                    if let Some(source_sort_id) = source_theory.theory.signature.lookup_sort(source_sort_name) {
-                        // Import elements of this sort
-                        for (&slid, elem_name) in &source_entry.slid_to_name {
-                            let elem_sort_id = source_entry.structure.sorts[slid.index()];
-                            if elem_sort_id == source_sort_id {
-                                // Map to local sort (param_name is the local sort name, e.g., "X")
-                                let local_sort_id = theory
-                                    .theory
-                                    .signature
-                                    .lookup_sort(param_name)
-                                    .ok_or_else(|| ElabError::UnknownSort(param_name.clone()))?;
+        // Case 2: argument is a sort path (for Sort params)
+        // Supports paths like:
+        //   - "As/a" -> Instance/Sort
+        //   - "trace/input_terminal" -> SiblingNestedInstance/Sort
+        //   - "problem0/initial_marking/token" -> Instance/NestedInstance/Sort
+        else if arg_value.contains('/') {
+            let segments: Vec<&str> = arg_value.split('/').collect();
 
-                                // Get the Luid for this element
-                                let luid = source_entry.structure.get_luid(slid);
+            // Helper closure to import elements from a structure/theory pair
+            let import_elements_from_structure = |
+                source_structure: &Structure,
+                source_slid_to_name: &HashMap<Slid, String>,
+                source_theory: &ElaboratedTheory,
+                source_sort_name: &str,
+                qualified_prefix: &str,
+                structure: &mut Structure,
+                name_to_slid: &mut HashMap<String, Slid>,
+                slid_to_name: &mut HashMap<Slid, String>,
+                param_slid_to_local: &mut HashMap<(String, Slid), Slid>,
+                param_name: &str,
+                theory: &ElaboratedTheory,
+            | -> ElabResult<()> {
+                if let Some(source_sort_id) = source_theory.theory.signature.lookup_sort(source_sort_name) {
+                    for (&slid, elem_name) in source_slid_to_name {
+                        let elem_sort_id = source_structure.sorts[slid.index()];
+                        if elem_sort_id == source_sort_id {
+                            let local_sort_id = theory
+                                .theory
+                                .signature
+                                .lookup_sort(param_name)
+                                .ok_or_else(|| ElabError::UnknownSort(param_name.to_string()))?;
 
-                                // Add to local structure with the SAME Luid
-                                let local_slid = structure.add_element_with_luid(luid, local_sort_id);
+                            let luid = source_structure.get_luid(slid);
+                            let local_slid = structure.add_element_with_luid(luid, local_sort_id);
 
-                                // Register names
-                                let qualified_source = format!("{}/{}", source_instance_name, elem_name);
+                            let qualified_source = format!("{}/{}", qualified_prefix, elem_name);
 
-                                name_to_slid.insert(elem_name.clone(), local_slid);
-                                name_to_slid.insert(qualified_source.clone(), local_slid);
-                                slid_to_name.insert(local_slid, qualified_source.clone());
+                            name_to_slid.insert(elem_name.clone(), local_slid);
+                            name_to_slid.insert(qualified_source.clone(), local_slid);
+                            slid_to_name.insert(local_slid, qualified_source.clone());
 
-                                // Record mapping for function value import
-                                param_slid_to_local.insert((source_instance_name.to_string(), slid), local_slid);
+                            param_slid_to_local.insert((qualified_prefix.to_string(), slid), local_slid);
+                        }
+                    }
+                }
+                Ok(())
+            };
+
+            match segments.len() {
+                // Case 2a: "Instance/Sort" or "Sibling/Sort"
+                2 => {
+                    let source_instance_name = segments[0];
+                    let source_sort_name = segments[1];
+
+                    if let Some(source_entry) = ctx.instances.get(source_instance_name)
+                        .or_else(|| ctx.siblings.get(source_instance_name)) {
+                        let source_theory_name = &source_entry.theory_name;
+                        if let Some(source_theory) = ctx.theories.get(source_theory_name) {
+                            import_elements_from_structure(
+                                &source_entry.structure,
+                                &source_entry.slid_to_name,
+                                source_theory,
+                                source_sort_name,
+                                source_instance_name,
+                                &mut structure,
+                                &mut name_to_slid,
+                                &mut slid_to_name,
+                                &mut param_slid_to_local,
+                                param_name,
+                                theory,
+                            )?;
+                        }
+                    }
+                }
+                // Case 2b: "Instance/NestedInstance/Sort" (e.g., "problem0/initial_marking/token")
+                3 => {
+                    let top_instance_name = segments[0];
+                    let nested_instance_name = segments[1];
+                    let source_sort_name = segments[2];
+
+                    if let Some(top_entry) = ctx.instances.get(top_instance_name)
+                        .or_else(|| ctx.siblings.get(top_instance_name)) {
+                        // Find the nested structure
+                        if let Some(nested_structure) = top_entry.structure.nested.get(nested_instance_name) {
+                            // Use nested_meta if available for accurate name resolution
+                            if let Some(nested_meta) = top_entry.nested_meta.get(nested_instance_name) {
+                                if let Some(nested_theory) = ctx.theories.get(&nested_meta.theory_name) {
+                                    let qualified_prefix = format!("{}/{}", top_instance_name, nested_instance_name);
+                                    import_elements_from_structure(
+                                        nested_structure,
+                                        &nested_meta.slid_to_name,
+                                        nested_theory,
+                                        source_sort_name,
+                                        &qualified_prefix,
+                                        &mut structure,
+                                        &mut name_to_slid,
+                                        &mut slid_to_name,
+                                        &mut param_slid_to_local,
+                                        param_name,
+                                        theory,
+                                    )?;
+                                }
+                            } else {
+                                // Fallback: Try to infer from parent theory's instance fields
+                                if let Some(parent_theory) = ctx.theories.get(&top_entry.theory_name)
+                                    && let Some(field_idx) = parent_theory.theory.signature.lookup_instance_field(nested_instance_name) {
+                                        let field = &parent_theory.theory.signature.instance_fields[field_idx];
+                                        // Get the nested theory name (last word of the type)
+                                        let nested_theory_name = field.theory_type
+                                            .split_whitespace()
+                                            .last()
+                                            .unwrap_or(&field.theory_type);
+
+                                        if let Some(nested_theory) = ctx.theories.get(nested_theory_name) {
+                                            // Build slid_to_name for the nested structure by scanning parent's element_names
+                                            let mut nested_slid_to_name: HashMap<Slid, String> = HashMap::new();
+
+                                            // Check the parent's element_names for nested paths like "initial_marking/tok"
+                                            for name in top_entry.element_names.keys() {
+                                                if let Some(stripped) = name.strip_prefix(&format!("{}/", nested_instance_name)) {
+                                                    // Find the corresponding slid in the nested structure
+                                                    // by matching sort-local indices
+                                                    for slid_idx in 0..nested_structure.len() {
+                                                        let slid = Slid::from_usize(slid_idx);
+                                                        if let std::collections::hash_map::Entry::Vacant(e) = nested_slid_to_name.entry(slid) {
+                                                            e.insert(stripped.to_string());
+                                                            break;
+                                                        }
+                                                    }
+                                                }
+                                            }
+
+                                            let qualified_prefix = format!("{}/{}", top_instance_name, nested_instance_name);
+                                            import_elements_from_structure(
+                                                nested_structure,
+                                                &nested_slid_to_name,
+                                                nested_theory,
+                                                source_sort_name,
+                                                &qualified_prefix,
+                                                &mut structure,
+                                                &mut name_to_slid,
+                                                &mut slid_to_name,
+                                                &mut param_slid_to_local,
+                                                param_name,
+                                                theory,
+                                            )?;
+                                        }
+                                    }
                             }
                         }
                     }
+                }
+                _ => {
+                    // Unsupported path depth - silently skip
                 }
             }
         }
@@ -677,23 +816,40 @@ fn elaborate_instance_ctx_inner(
             let instance_field = &theory.theory.signature.instance_fields[field_idx];
 
             // 2. Resolve the theory type with parameter substitution
-            // The theory_type string is like "N Marking"
-            // We need to substitute parameter names with actual instance names
-            // Use word-boundary aware replacement to avoid replacing "T" in "Token"
+            // The theory_type string can be like:
+            //   - "N Marking" -> simple param at start
+            //   - "(trace/input_terminal) (RP/initial_marking/token) Iso" -> params in paths
+            // We need to substitute parameter names in paths, handling:
+            //   - Exact matches: "N" -> "ExampleNet"
+            //   - Path prefixes: "RP/initial_marking/token" -> "problem0/initial_marking/token"
             let resolved_theory_type = {
-                let mut parts: Vec<String> = instance_field
-                    .theory_type
-                    .split_whitespace()
-                    .map(|s| s.to_string())
-                    .collect();
+                let mut result = instance_field.theory_type.clone();
                 for (param_name, actual_instance_name) in &resolved.arguments {
-                    for part in &mut parts {
-                        if part == param_name {
-                            *part = actual_instance_name.clone();
-                        }
-                    }
+                    // Replace param at path start: "RP/..." -> "problem0/..."
+                    let path_pattern = format!("{}/", param_name);
+                    let path_replacement = format!("{}/", actual_instance_name);
+                    result = result.replace(&path_pattern, &path_replacement);
+
+                    // Replace exact param (word boundary): only if surrounded by non-alphanumeric
+                    // Split by whitespace and handle each token
+                    let parts: Vec<String> = result
+                        .split_whitespace()
+                        .map(|p| {
+                            // Strip parens for comparison
+                            let stripped = p.trim_start_matches('(').trim_end_matches(')');
+                            if stripped == param_name {
+                                // Replace the param name, keeping any parens
+                                let prefix = if p.starts_with('(') { "(" } else { "" };
+                                let suffix = if p.ends_with(')') { ")" } else { "" };
+                                format!("{}{}{}", prefix, actual_instance_name, suffix)
+                            } else {
+                                p.to_string()
+                            }
+                        })
+                        .collect();
+                    result = parts.join(" ");
                 }
-                parts.join(" ")
+                result
             };
 
             // 3. Find the resolved theory
@@ -725,7 +881,26 @@ fn elaborate_instance_ctx_inner(
             let nested_result = elaborate_instance_ctx(ctx, &nested_instance_decl)?;
 
             // 6. Store the nested structure using the field name as the key
-            structure.nested.insert(field_name.clone(), nested_result.structure);
+            structure.nested.insert(field_name.clone(), nested_result.structure.clone());
+
+            // 7. Add this nested instance to siblings for cross-referencing by subsequent nested instances
+            // e.g., after elaborating `trace = {...}`, make it available so `initial_iso` can reference `trace/it`
+            let sibling_entry = InstanceEntry {
+                structure: nested_result.structure.clone(),
+                theory_name: nested_theory_name.clone(),
+                theory_type: resolved_theory_type.clone(),
+                element_names: nested_result.name_to_slid.clone(),
+                slid_to_name: nested_result.slid_to_name.clone(),
+                nested_meta: nested_result.nested_meta.clone(),
+            };
+            ctx.siblings.insert(field_name.clone(), sibling_entry);
+
+            // 8. Record nested metadata for inclusion in elaboration result
+            nested_meta.insert(field_name.clone(), NestedInstanceMeta {
+                theory_name: nested_theory_name.clone(),
+                name_to_slid: nested_result.name_to_slid,
+                slid_to_name: nested_result.slid_to_name,
+            });
 
             // Suppress unused variable warning
             let _ = nested_theory; // Used for type checking (could add validation later)
@@ -769,6 +944,7 @@ fn elaborate_instance_ctx_inner(
         structure,
         slid_to_name,
         name_to_slid,
+        nested_meta,
     })
 }
 

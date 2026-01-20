@@ -267,6 +267,9 @@ impl ReplState {
                     // This includes BOTH imported elements AND locally declared elements
                     let mut entry = InstanceEntry::new(elab_result.structure, theory_name.clone(), theory_type);
 
+                    // Copy nested instance metadata for cross-instance references
+                    entry.nested_meta = elab_result.nested_meta;
+
                     // Register ALL element names from elaboration result
                     for (slid, elem_name) in elab_result.slid_to_name {
                         entry.register_element(elem_name.clone(), slid);
@@ -335,6 +338,7 @@ impl ReplState {
             theories: &self.theories,
             instances: &self.instances,
             universe: &mut self.store.universe,
+            siblings: HashMap::new(),
         };
 
         elaborate_instance_ctx(&mut ctx, inst)
@@ -351,6 +355,7 @@ impl ReplState {
             theories: &self.theories,
             instances: &self.instances,
             universe: &mut self.store.universe,
+            siblings: HashMap::new(),
         };
 
         elaborate_instance_ctx_partial(&mut ctx, inst)

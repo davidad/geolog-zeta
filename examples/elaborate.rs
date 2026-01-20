@@ -131,6 +131,7 @@ instance ExampleNet : PetriNet = {
                     theories: &env.theories,
                     instances: &instances,
                     universe: &mut universe,
+                    siblings: HashMap::new(),
                 };
                 match elaborate_instance_ctx(&mut ctx, i) {
                     Ok(result) => {

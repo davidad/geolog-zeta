@@ -213,6 +213,7 @@ instance ExampleNet : PetriNet = {
             theories: &env.theories,
             instances: &instances,
             universe: &mut universe,
+            siblings: HashMap::new(),
         };
         let result =
             elaborate_instance_ctx(&mut ctx, inst).expect("instance elaboration failed");
@@ -283,6 +284,7 @@ instance PartialNet : PetriNet = {
             theories: &env.theories,
             instances: &instances,
             universe: &mut universe,
+            siblings: HashMap::new(),
         };
         let result = elaborate_instance_ctx(&mut ctx, i);
         assert!(result.is_err(), "expected error for partial function");
@@ -335,6 +337,7 @@ instance BadNet : PetriNet = {
             theories: &env.theories,
             instances: &instances,
             universe: &mut universe,
+            siblings: HashMap::new(),
         };
         let result = elaborate_instance_ctx(&mut ctx, i);
         assert!(result.is_err(), "expected domain type error");
@@ -392,6 +395,7 @@ instance BadNet : PetriNet = {
             theories: &env.theories,
             instances: &instances,
             universe: &mut universe,
+            siblings: HashMap::new(),
         };
         let result = elaborate_instance_ctx(&mut ctx, i);
         assert!(result.is_err(), "expected codomain type error");
@@ -601,6 +605,7 @@ instance C : Child = {
             theories: &env.theories,
             instances: &instances,
             universe: &mut universe,
+            siblings: HashMap::new(),
         };
         let result =
             elaborate_instance_ctx(&mut ctx, inst).expect("instance elaboration failed");
