@@ -45,6 +45,27 @@ impl DerivedSort {
             DerivedSort::Product(fields) => fields.len(),
         }
     }
+
+    /// Returns the cardinality of this derived sort in a given structure.
+    ///
+    /// For Base(s), returns the carrier size of sort s.
+    /// For Product([x: A, y: B, ...]), returns the product of cardinalities.
+    /// An empty product (unit type) has cardinality 1.
+    pub fn cardinality(&self, structure: &Structure) -> usize {
+        match self {
+            DerivedSort::Base(sort_id) => structure.carrier_size(*sort_id),
+            DerivedSort::Product(fields) => {
+                if fields.is_empty() {
+                    1 // Unit type has one inhabitant
+                } else {
+                    fields
+                        .iter()
+                        .map(|(_, field_sort)| field_sort.cardinality(structure))
+                        .product()
+                }
+            }
+        }
+    }
 }
 
 /// A function symbol with its domain and codomain
@@ -1167,7 +1188,73 @@ impl Structure {
 
 // ============ Display implementations for debugging ============
 
-// Unit tests moved to tests/proptest_structure.rs
+// Main unit tests moved to tests/proptest_structure.rs
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_derived_sort_cardinality_base() {
+        let mut structure = Structure::new(2);
+        // Add elements to sort 0: 3 elements
+        structure.carriers[0].insert(0);
+        structure.carriers[0].insert(1);
+        structure.carriers[0].insert(2);
+        // Add elements to sort 1: 2 elements
+        structure.carriers[1].insert(0);
+        structure.carriers[1].insert(1);
+
+        let base0 = DerivedSort::Base(0);
+        let base1 = DerivedSort::Base(1);
+
+        assert_eq!(base0.cardinality(&structure), 3);
+        assert_eq!(base1.cardinality(&structure), 2);
+    }
+
+    #[test]
+    fn test_derived_sort_cardinality_product() {
+        let mut structure = Structure::new(2);
+        // Sort 0: 3 elements
+        structure.carriers[0].insert(0);
+        structure.carriers[0].insert(1);
+        structure.carriers[0].insert(2);
+        // Sort 1: 2 elements
+        structure.carriers[1].insert(0);
+        structure.carriers[1].insert(1);
+
+        // Product [x: A, y: B] where |A| = 3, |B| = 2 should have cardinality 6
+        let product = DerivedSort::Product(vec![
+            ("x".to_string(), DerivedSort::Base(0)),
+            ("y".to_string(), DerivedSort::Base(1)),
+        ]);
+        assert_eq!(product.cardinality(&structure), 6);
+    }
+
+    #[test]
+    fn test_derived_sort_cardinality_unit() {
+        let structure = Structure::new(1);
+
+        // Unit type (empty product) has cardinality 1
+        let unit = DerivedSort::unit();
+        assert_eq!(unit.cardinality(&structure), 1);
+    }
+
+    #[test]
+    fn test_derived_sort_cardinality_empty_carrier() {
+        let structure = Structure::new(1);
+
+        // Empty carrier has cardinality 0
+        let base = DerivedSort::Base(0);
+        assert_eq!(base.cardinality(&structure), 0);
+
+        // Product with empty carrier has cardinality 0
+        let product = DerivedSort::Product(vec![
+            ("x".to_string(), DerivedSort::Base(0)),
+        ]);
+        assert_eq!(product.cardinality(&structure), 0);
+    }
+}
 
 impl std::fmt::Display for DerivedSort {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

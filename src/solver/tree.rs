@@ -354,15 +354,8 @@ impl SearchTree {
                 return Ok(false); // Function storage not initialized
             }
 
-            // Get domain size
-            let domain_size = match &func_sym.domain {
-                crate::core::DerivedSort::Base(sort_id) => node.structure.carrier_size(*sort_id),
-                crate::core::DerivedSort::Product(_) => {
-                    // Product domains: need to compute cardinality
-                    // For now, skip (TODO: handle product domains properly)
-                    continue;
-                }
-            };
+            // Get domain cardinality (works for base and product sorts)
+            let domain_size = func_sym.domain.cardinality(&node.structure);
 
             // Check all domain elements have values (local functions only for now)
             let func_col = &node.structure.functions[func_id];
