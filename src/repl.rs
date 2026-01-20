@@ -841,8 +841,8 @@ impl MetaCommand {
             "quit" | "q" | "exit" => MetaCommand::Quit,
             "list" | "ls" | "l" => {
                 let target = match arg {
-                    Some("theories") | Some("theory") | Some("t") => ListTarget::Theories,
-                    Some("instances") | Some("instance") | Some("i") => ListTarget::Instances,
+                    Some("theories" | "theory" | "t") => ListTarget::Theories,
+                    Some("instances" | "instance" | "i") => ListTarget::Instances,
                     _ => ListTarget::All,
                 };
                 MetaCommand::List(target)
