@@ -550,11 +550,28 @@ theorem term_interpret_commutes {M M' : Structure S (Type u)}
     exact hfc.symm
   | @pair n Aᵢ tᵢ ih =>
     -- Pair builds a product from component interpretations.
-    -- Term.interpret M (pair tᵢ) = Pi.lift (fun i => (tᵢ i).interpret M)
-    -- The proof strategy: show both sides equal productIso.inv of the same function,
-    -- using IH for each component.
-    -- This requires detailed handling of Type u categorical limits; deferred.
-    sorry
+    -- Both sides are elements of the product type. Show equal componentwise.
+    simp only [Term.interpret]
+    -- Use that Types.productIso is an isomorphism to transfer to component equality
+    let f_M := fun j : Fin n => (Aᵢ j).interpret M.sorts
+    let f_M' := fun j : Fin n => (Aᵢ j).interpret M'.sorts
+    let lhs := Pi.lift (fun i => (tᵢ i).interpret M') (liftEmbedContext emb xs ctx)
+    let rhs := liftSort emb (.prod Aᵢ) (Pi.lift (fun i => (tᵢ i).interpret M) ctx)
+    -- Show lhs and rhs are equal by applying Types.productIso.hom and using funext
+    suffices h : (Types.productIso f_M').hom lhs = (Types.productIso f_M').hom rhs by
+      have hinj := (Types.productIso f_M').toEquiv.injective
+      exact hinj h
+    funext j
+    simp only [Types_productIso_hom_apply, Types.pi_lift_π_apply, lhs]
+    -- Goal: (tᵢ j).interpret M' (liftEmbedContext emb xs ctx) = (Types.productIso f_M').hom rhs j
+    rw [ih j]
+    -- RHS
+    simp only [rhs]
+    let x := Pi.lift (fun i => (tᵢ i).interpret M) ctx
+    let g : (j : Fin n) → f_M' j := fun j => liftSort emb (Aᵢ j) ((Types.productIso f_M).hom x j)
+    have h1 : liftSort emb (.prod Aᵢ) x = (Types.productIso f_M').inv g := rfl
+    rw [h1, Types_productIso_inv_apply f_M' g j]
+    simp only [g, Types_productIso_hom_apply, x, Types.pi_lift_π_apply]
   | @proj n Aᵢ t' i ih =>
     -- Projection extracts the i-th component from a product.
     -- Term.interpret M (proj t' i) = t'.interpret M ≫ Pi.π _ i
