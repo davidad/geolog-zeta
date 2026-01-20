@@ -70,6 +70,7 @@ impl std::fmt::Display for RelAlgError {
 impl std::error::Error for RelAlgError {}
 
 /// Cached sort/function IDs from RelAlgIR theory
+#[allow(dead_code)] // Some IDs are for future use
 struct RelAlgIds {
     // Core sorts
     wire: usize,
@@ -166,6 +167,7 @@ impl RelAlgIds {
 }
 
 /// Function IDs for navigating RelAlgIR structure
+#[allow(dead_code)] // Some IDs are for future use
 struct RelAlgFuncs {
     // ScanOp accessors
     scan_op_srt: usize,
@@ -694,11 +696,21 @@ impl<'a> InterpretContext<'a> {
                     let col_ref = self
                         .get_func_value(self.funcs.const_eq_pred_col, elem)
                         .ok_or_else(|| RelAlgError::InvalidOp("ConstEqPred missing col".into()))?;
-                    let val = self
+                    let elem_ref = self
                         .get_func_value(self.funcs.const_eq_pred_val, elem)
                         .ok_or_else(|| RelAlgError::InvalidOp("ConstEqPred missing val".into()))?;
 
                     let col = self.parse_col_ref(col_ref)?;
+
+                    // Look up the original target value from the Elem element
+                    let val = self.instance
+                        .elem_value_mapping
+                        .get(&elem_ref)
+                        .copied()
+                        .ok_or_else(|| RelAlgError::InvalidOp(format!(
+                            "ConstEqPred val {:?} not in elem_value_mapping",
+                            elem_ref
+                        )))?;
 
                     return Ok(ParsedPred::ConstEq { col, val });
                 }

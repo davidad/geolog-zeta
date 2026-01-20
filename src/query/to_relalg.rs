@@ -87,6 +87,8 @@ pub struct RelAlgInstance {
     pub names: HashMap<Slid, String>,
     /// Mapping from Srt elements to source sort indices (for interpreter)
     pub sort_mapping: HashMap<Slid, usize>,
+    /// Mapping from Elem elements to original target Slid values (for interpreter)
+    pub elem_value_mapping: HashMap<Slid, Slid>,
 }
 
 /// Context for the compilation process.
@@ -693,11 +695,19 @@ pub fn compile_to_relalg(
         .map(|(&sort_idx, &slid)| (slid, sort_idx))
         .collect();
 
+    // Invert elem_elements to get Elem Slid -> original value mapping
+    let elem_value_mapping: HashMap<Slid, Slid> = ctx
+        .elem_elements
+        .iter()
+        .map(|(&target_slid, &elem_slid)| (elem_slid, target_slid))
+        .collect();
+
     Ok(RelAlgInstance {
         structure: ctx.structure,
         output_wire,
         names: ctx.names,
         sort_mapping,
+        elem_value_mapping,
     })
 }
 

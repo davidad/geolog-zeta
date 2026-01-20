@@ -373,17 +373,8 @@ fn test_relalg_simple_examples() {
 // RelAlgIR compile → execute roundtrip
 // ============================================================================
 
-/// Tests that we can compile a query to RelAlgIR and then execute it,
-/// getting the same results as direct execution.
-#[test]
-fn test_relalg_compile_execute_roundtrip() {
-    use geolog::core::Structure;
-    use geolog::query::backend::{execute, QueryOp};
-    use geolog::query::from_relalg::execute_relalg;
-    use geolog::query::to_relalg::compile_to_relalg;
-    use geolog::universe::Universe;
-
-    // Load RelAlgIR theory
+/// Helper to load RelAlgIR theory for tests
+fn load_relalg_for_test() -> (ReplState, std::rc::Rc<geolog::core::ElaboratedTheory>) {
     let meta_content = fs::read_to_string("theories/GeologMeta.geolog")
         .expect("Failed to read GeologMeta.geolog");
     let ir_content = fs::read_to_string("theories/RelAlgIR.geolog")
@@ -403,47 +394,183 @@ fn test_relalg_compile_execute_roundtrip() {
         .expect("RelAlgIR should exist")
         .clone();
 
-    // Create a simple test structure with 3 elements in sort 0
-    let mut target = Structure::new(1);
-    target.carriers[0].insert(0);
-    target.carriers[0].insert(1);
-    target.carriers[0].insert(2);
+    (state, relalg_theory)
+}
 
-    // Create a simple scan query
-    let scan_plan = QueryOp::Scan { sort_idx: 0 };
+/// Helper to verify roundtrip: direct execution == RelAlgIR execution
+fn verify_roundtrip(
+    plan: &geolog::query::backend::QueryOp,
+    target: &geolog::core::Structure,
+    relalg_theory: &geolog::core::ElaboratedTheory,
+    description: &str,
+) {
+    use geolog::query::backend::execute;
+    use geolog::query::from_relalg::execute_relalg;
+    use geolog::query::to_relalg::compile_to_relalg;
+    use geolog::universe::Universe;
 
     // Execute directly
-    let direct_result = execute(&scan_plan, &target);
+    let direct_result = execute(plan, target);
 
     // Compile to RelAlgIR
     let mut universe = Universe::new();
-    let relalg_instance = compile_to_relalg(&scan_plan, &relalg_theory, &mut universe)
-        .expect("Compilation should succeed");
+    let relalg_instance = compile_to_relalg(plan, &std::rc::Rc::new(relalg_theory.clone()), &mut universe)
+        .unwrap_or_else(|e| panic!("{}: Compilation failed: {}", description, e));
 
     // Execute via RelAlgIR interpreter
-    let relalg_result = execute_relalg(
-        &relalg_instance,
-        &relalg_theory,
-        &target,
-        None,  // Use the output_wire from the instance
-    )
-    .expect("RelAlgIR execution should succeed");
+    let relalg_result = execute_relalg(&relalg_instance, relalg_theory, target, None)
+        .unwrap_or_else(|e| panic!("{}: RelAlgIR execution failed: {}", description, e));
 
     // Compare results
     assert_eq!(
         direct_result.len(),
         relalg_result.len(),
-        "Direct and RelAlgIR results should have same length"
+        "{}: Length mismatch ({} vs {})",
+        description,
+        direct_result.len(),
+        relalg_result.len()
     );
 
     for (tuple, mult) in direct_result.iter() {
         assert_eq!(
             relalg_result.tuples.get(tuple),
             Some(mult),
-            "Tuple {:?} should have same multiplicity",
+            "{}: Tuple {:?} has wrong multiplicity",
+            description,
             tuple
         );
     }
+}
+
+/// Tests that we can compile a query to RelAlgIR and then execute it,
+/// getting the same results as direct execution.
+#[test]
+fn test_relalg_compile_execute_roundtrip() {
+    use geolog::core::Structure;
+    use geolog::query::backend::QueryOp;
+
+    let (_, relalg_theory) = load_relalg_for_test();
+
+    // Create a simple test structure with 3 elements in sort 0
+    let mut target = Structure::new(1);
+    target.carriers[0].insert(0);
+    target.carriers[0].insert(1);
+    target.carriers[0].insert(2);
+
+    // Test Scan
+    let scan_plan = QueryOp::Scan { sort_idx: 0 };
+    verify_roundtrip(&scan_plan, &target, &relalg_theory, "Scan");
+}
+
+#[test]
+fn test_relalg_roundtrip_filter() {
+    use geolog::core::Structure;
+    use geolog::id::{NumericId, Slid};
+    use geolog::query::backend::{Predicate, QueryOp};
+
+    let (_, relalg_theory) = load_relalg_for_test();
+
+    // Create structure with 5 elements
+    let mut target = Structure::new(1);
+    for i in 0..5 {
+        target.carriers[0].insert(i);
+    }
+
+    // Filter with True predicate (should keep all)
+    let filter_true = QueryOp::Filter {
+        input: Box::new(QueryOp::Scan { sort_idx: 0 }),
+        pred: Predicate::True,
+    };
+    verify_roundtrip(&filter_true, &target, &relalg_theory, "Filter(True)");
+
+    // Filter with False predicate (should keep none)
+    let filter_false = QueryOp::Filter {
+        input: Box::new(QueryOp::Scan { sort_idx: 0 }),
+        pred: Predicate::False,
+    };
+    verify_roundtrip(&filter_false, &target, &relalg_theory, "Filter(False)");
+
+    // Filter with ColEqConst
+    let filter_const = QueryOp::Filter {
+        input: Box::new(QueryOp::Scan { sort_idx: 0 }),
+        pred: Predicate::ColEqConst {
+            col: 0,
+            val: Slid::from_usize(2),
+        },
+    };
+    verify_roundtrip(&filter_const, &target, &relalg_theory, "Filter(ColEqConst)");
+}
+
+#[test]
+fn test_relalg_roundtrip_join() {
+    use geolog::core::Structure;
+    use geolog::query::backend::{JoinCond, QueryOp};
+
+    let (_, relalg_theory) = load_relalg_for_test();
+
+    // Create structure with 2 sorts
+    let mut target = Structure::new(2);
+    target.carriers[0].insert(0);
+    target.carriers[0].insert(1);
+    target.carriers[1].insert(10);
+    target.carriers[1].insert(11);
+    target.carriers[1].insert(12);
+
+    // Cross join
+    let cross_join = QueryOp::Join {
+        left: Box::new(QueryOp::Scan { sort_idx: 0 }),
+        right: Box::new(QueryOp::Scan { sort_idx: 1 }),
+        cond: JoinCond::Cross,
+    };
+    verify_roundtrip(&cross_join, &target, &relalg_theory, "Join(Cross)");
+}
+
+#[test]
+fn test_relalg_roundtrip_union() {
+    use geolog::core::Structure;
+    use geolog::query::backend::QueryOp;
+
+    let (_, relalg_theory) = load_relalg_for_test();
+
+    // Create structure
+    let mut target = Structure::new(2);
+    target.carriers[0].insert(0);
+    target.carriers[0].insert(1);
+    target.carriers[1].insert(2);
+    target.carriers[1].insert(3);
+
+    // Union of two scans
+    let union_plan = QueryOp::Union {
+        left: Box::new(QueryOp::Scan { sort_idx: 0 }),
+        right: Box::new(QueryOp::Scan { sort_idx: 1 }),
+    };
+    verify_roundtrip(&union_plan, &target, &relalg_theory, "Union");
+}
+
+#[test]
+fn test_relalg_roundtrip_distinct_negate() {
+    use geolog::core::Structure;
+    use geolog::query::backend::QueryOp;
+
+    let (_, relalg_theory) = load_relalg_for_test();
+
+    // Create structure
+    let mut target = Structure::new(1);
+    target.carriers[0].insert(0);
+    target.carriers[0].insert(1);
+    target.carriers[0].insert(2);
+
+    // Distinct
+    let distinct_plan = QueryOp::Distinct {
+        input: Box::new(QueryOp::Scan { sort_idx: 0 }),
+    };
+    verify_roundtrip(&distinct_plan, &target, &relalg_theory, "Distinct");
+
+    // Negate
+    let negate_plan = QueryOp::Negate {
+        input: Box::new(QueryOp::Scan { sort_idx: 0 }),
+    };
+    verify_roundtrip(&negate_plan, &target, &relalg_theory, "Negate");
 }
 
 // ============================================================================
