@@ -538,7 +538,7 @@ fn handle_assert(state: &mut ReplState, instance_name: &str, relation_name: &str
 
     entry.structure.relations[rel_id].insert(arg_slids.clone());
 
-    let arg_names: Vec<_> = args.iter().cloned().collect();
+    let arg_names: Vec<_> = args.to_vec();
     println!(
         "Asserted {}({}) in instance '{}'",
         relation_name, arg_names.join(", "), instance_name
