@@ -30,7 +30,7 @@ use crate::core::DerivedSort;
 use crate::id::Slid;
 use crate::store::Store;
 use crate::store::append::AppendOps;
-use crate::store::bootstrap_queries::{SortInfo, FuncInfo, RelInfo};
+use crate::store::bootstrap_queries::{SortInfo, FuncInfo, RelInfo, ElemInfo, FuncValInfo, RelTupleInfo};
 use super::backend::execute;
 use super::compile::compile_simple_filter;
 
@@ -152,6 +152,123 @@ impl Store {
                     name: short_name,
                     slid: rel_slid,
                     domain,
+                });
+            }
+        }
+        infos
+    }
+
+    // ========================================================================
+    // Instance queries (compiled versions)
+    // ========================================================================
+
+    /// Query all elements belonging to an instance (using compiled query engine).
+    ///
+    /// This is equivalent to `query_instance_elems` in bootstrap_queries.rs,
+    /// but uses the Query compiler for the initial scan+filter.
+    pub fn query_instance_elems_compiled(&self, instance_slid: Slid) -> Vec<ElemInfo> {
+        let Some(elem_sort) = self.sort_ids.elem else {
+            return vec![];
+        };
+        let Some(instance_func) = self.func_ids.elem_instance else {
+            return vec![];
+        };
+        let Some(sort_func) = self.func_ids.elem_sort else {
+            return vec![];
+        };
+
+        // Compile and execute the query to find matching elements
+        let plan = compile_simple_filter(elem_sort, instance_func, instance_slid);
+        let result = execute(&plan, &self.meta);
+
+        // Convert query results to ElemInfo
+        let mut infos = Vec::new();
+        for tuple in result.tuples.keys() {
+            if let Some(&elem_slid) = tuple.first() {
+                let name = self.get_element_name(elem_slid);
+                let short_name = name.rsplit('/').next().unwrap_or(&name).to_string();
+                let srt_slid = self.get_func(sort_func, elem_slid);
+
+                infos.push(ElemInfo {
+                    name: short_name,
+                    slid: elem_slid,
+                    srt_slid,
+                });
+            }
+        }
+        infos
+    }
+
+    /// Query all function values in an instance (using compiled query engine).
+    ///
+    /// This is equivalent to `query_instance_func_vals` in bootstrap_queries.rs,
+    /// but uses the Query compiler for the initial scan+filter.
+    pub fn query_instance_func_vals_compiled(&self, instance_slid: Slid) -> Vec<FuncValInfo> {
+        let Some(fv_sort) = self.sort_ids.func_val else {
+            return vec![];
+        };
+        let Some(instance_func) = self.func_ids.func_val_instance else {
+            return vec![];
+        };
+        let Some(func_func) = self.func_ids.func_val_func else {
+            return vec![];
+        };
+        let Some(arg_func) = self.func_ids.func_val_arg else {
+            return vec![];
+        };
+        let Some(result_func) = self.func_ids.func_val_result else {
+            return vec![];
+        };
+
+        // Compile and execute the query
+        let plan = compile_simple_filter(fv_sort, instance_func, instance_slid);
+        let result = execute(&plan, &self.meta);
+
+        // Convert query results to FuncValInfo
+        let mut infos = Vec::new();
+        for tuple in result.tuples.keys() {
+            if let Some(&fv_slid) = tuple.first() {
+                infos.push(FuncValInfo {
+                    slid: fv_slid,
+                    func_slid: self.get_func(func_func, fv_slid),
+                    arg_slid: self.get_func(arg_func, fv_slid),
+                    result_slid: self.get_func(result_func, fv_slid),
+                });
+            }
+        }
+        infos
+    }
+
+    /// Query all relation tuples in an instance (using compiled query engine).
+    ///
+    /// This is equivalent to `query_instance_rel_tuples` in bootstrap_queries.rs,
+    /// but uses the Query compiler for the initial scan+filter.
+    pub fn query_instance_rel_tuples_compiled(&self, instance_slid: Slid) -> Vec<RelTupleInfo> {
+        let Some(rt_sort) = self.sort_ids.rel_tuple else {
+            return vec![];
+        };
+        let Some(instance_func) = self.func_ids.rel_tuple_instance else {
+            return vec![];
+        };
+        let Some(rel_func) = self.func_ids.rel_tuple_rel else {
+            return vec![];
+        };
+        let Some(arg_func) = self.func_ids.rel_tuple_arg else {
+            return vec![];
+        };
+
+        // Compile and execute the query
+        let plan = compile_simple_filter(rt_sort, instance_func, instance_slid);
+        let result = execute(&plan, &self.meta);
+
+        // Convert query results to RelTupleInfo
+        let mut infos = Vec::new();
+        for tuple in result.tuples.keys() {
+            if let Some(&rt_slid) = tuple.first() {
+                infos.push(RelTupleInfo {
+                    slid: rt_slid,
+                    rel_slid: self.get_func(rel_func, rt_slid),
+                    arg_slid: self.get_func(arg_func, rt_slid),
                 });
             }
         }
@@ -358,5 +475,180 @@ mod tests {
         assert!(compiled_names.contains(&&"Source".to_string()));
         assert!(compiled_names.contains(&&"Sink".to_string()));
         assert!(compiled_names.contains(&&"Connected".to_string()));
+    }
+
+    // ========================================================================
+    // Instance query tests
+    // ========================================================================
+
+    /// Test that compiled query matches bootstrap for instance elements.
+    #[test]
+    fn test_compiled_matches_bootstrap_instance_elems() {
+        let source = r#"
+            theory Graph {
+                V : Sort;
+                E : Sort;
+                src : E -> V;
+                tgt : E -> V;
+            }
+
+            instance SimpleGraph : Graph = {
+                a : V;
+                b : V;
+                c : V;
+                e1 : E;
+                e2 : E;
+                e1 src = a;
+                e1 tgt = b;
+                e2 src = b;
+                e2 tgt = c;
+            }
+        "#;
+
+        let mut repl = ReplState::new();
+        let _ = repl.execute_geolog(source);
+
+        let instance_slid = repl.store.resolve_name("SimpleGraph")
+            .expect("Instance should exist").0;
+
+        // Compare bootstrap vs compiled
+        let bootstrap = repl.store.query_instance_elems(instance_slid);
+        let compiled = repl.store.query_instance_elems_compiled(instance_slid);
+
+        // Same number of results
+        assert_eq!(
+            bootstrap.len(), compiled.len(),
+            "Bootstrap returned {} elems, compiled returned {}",
+            bootstrap.len(), compiled.len()
+        );
+
+        // Should have 5 elements: a, b, c, e1, e2
+        assert_eq!(compiled.len(), 5, "Expected 5 elements");
+
+        // Same names (order may differ)
+        let mut bootstrap_names: Vec<_> = bootstrap.iter().map(|e| &e.name).collect();
+        let mut compiled_names: Vec<_> = compiled.iter().map(|e| &e.name).collect();
+        bootstrap_names.sort();
+        compiled_names.sort();
+
+        assert_eq!(bootstrap_names, compiled_names, "Element names should match");
+    }
+
+    /// Test that compiled query matches bootstrap for function values.
+    #[test]
+    fn test_compiled_matches_bootstrap_func_vals() {
+        let source = r#"
+            theory Graph {
+                V : Sort;
+                E : Sort;
+                src : E -> V;
+                tgt : E -> V;
+            }
+
+            instance TwoEdges : Graph = {
+                v1 : V;
+                v2 : V;
+                v3 : V;
+                edge1 : E;
+                edge2 : E;
+                edge1 src = v1;
+                edge1 tgt = v2;
+                edge2 src = v2;
+                edge2 tgt = v3;
+            }
+        "#;
+
+        let mut repl = ReplState::new();
+        let _ = repl.execute_geolog(source);
+
+        let instance_slid = repl.store.resolve_name("TwoEdges")
+            .expect("Instance should exist").0;
+
+        // Compare bootstrap vs compiled
+        let bootstrap = repl.store.query_instance_func_vals(instance_slid);
+        let compiled = repl.store.query_instance_func_vals_compiled(instance_slid);
+
+        // Same number of results
+        assert_eq!(
+            bootstrap.len(), compiled.len(),
+            "Bootstrap returned {} func_vals, compiled returned {}",
+            bootstrap.len(), compiled.len()
+        );
+
+        // Should have 4 function values: edge1.src, edge1.tgt, edge2.src, edge2.tgt
+        assert_eq!(compiled.len(), 4, "Expected 4 function values");
+    }
+
+    /// Test that compiled query matches bootstrap for relation tuples.
+    #[test]
+    fn test_compiled_matches_bootstrap_rel_tuples() {
+        let source = r#"
+            theory NodeMarking {
+                Node : Sort;
+                Marked : [n: Node] -> Prop;
+            }
+
+            instance ThreeNodes : NodeMarking = {
+                n1 : Node;
+                n2 : Node;
+                n3 : Node;
+                [n: n1] Marked;
+                [n: n3] Marked;
+            }
+        "#;
+
+        let mut repl = ReplState::new();
+        let _ = repl.execute_geolog(source);
+
+        let instance_slid = repl.store.resolve_name("ThreeNodes")
+            .expect("Instance should exist").0;
+
+        // Compare bootstrap vs compiled
+        let bootstrap = repl.store.query_instance_rel_tuples(instance_slid);
+        let compiled = repl.store.query_instance_rel_tuples_compiled(instance_slid);
+
+        // Same number of results
+        assert_eq!(
+            bootstrap.len(), compiled.len(),
+            "Bootstrap returned {} rel_tuples, compiled returned {}",
+            bootstrap.len(), compiled.len()
+        );
+
+        // Should have 2 relation tuples: n1 Marked, n3 Marked
+        assert_eq!(compiled.len(), 2, "Expected 2 relation tuples");
+    }
+
+    /// Test compiled query with empty instance.
+    #[test]
+    fn test_compiled_empty_instance() {
+        let source = r#"
+            theory Simple {
+                T : Sort;
+            }
+
+            instance EmptyInst : Simple = {
+            }
+        "#;
+
+        let mut repl = ReplState::new();
+        let _ = repl.execute_geolog(source);
+
+        let instance_slid = repl.store.resolve_name("EmptyInst")
+            .expect("Instance should exist").0;
+
+        let bootstrap_elems = repl.store.query_instance_elems(instance_slid);
+        let compiled_elems = repl.store.query_instance_elems_compiled(instance_slid);
+        assert_eq!(bootstrap_elems.len(), 0);
+        assert_eq!(compiled_elems.len(), 0);
+
+        let bootstrap_fvs = repl.store.query_instance_func_vals(instance_slid);
+        let compiled_fvs = repl.store.query_instance_func_vals_compiled(instance_slid);
+        assert_eq!(bootstrap_fvs.len(), 0);
+        assert_eq!(compiled_fvs.len(), 0);
+
+        let bootstrap_rts = repl.store.query_instance_rel_tuples(instance_slid);
+        let compiled_rts = repl.store.query_instance_rel_tuples_compiled(instance_slid);
+        assert_eq!(bootstrap_rts.len(), 0);
+        assert_eq!(compiled_rts.len(), 0);
     }
 }
