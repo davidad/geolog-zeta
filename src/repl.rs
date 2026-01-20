@@ -307,8 +307,9 @@ impl ReplState {
                         num_elements,
                     });
                 }
-                ast::Declaration::Query(_q) => {
-                    return Err("Queries not yet implemented".to_string());
+                ast::Declaration::Query(q) => {
+                    let result = self.execute_query(&q)?;
+                    results.push(ExecuteResult::Query(result));
                 }
             }
         }
@@ -347,6 +348,249 @@ impl ReplState {
 
         elaborate_instance_ctx_partial(&mut ctx, inst)
             .map_err(|e| e.to_string())
+    }
+
+    /// Execute a query: find an instance satisfying the goal type.
+    ///
+    /// For a query like `query q { ? : ExampleNet problem0 Solution instance; }`:
+    /// 1. Parse the goal type to get theory name and type arguments
+    /// 2. Look up the theory and param instances
+    /// 3. Build a base structure with imported elements from param instances
+    /// 4. Run the solver to find a satisfying extension
+    fn execute_query(&mut self, q: &ast::QueryDecl) -> Result<QueryResult, String> {
+        use crate::solver::{query, Budget, EnumerationResult};
+
+        let start = std::time::Instant::now();
+
+        // The goal should be an Instance type: `Instance(App(..., TheoryName))`
+        let inner_type = match &q.goal {
+            ast::TypeExpr::Instance(inner) => inner.as_ref(),
+            _ => return Err("Query goal must be an instance type (e.g., `T instance`)".to_string()),
+        };
+
+        // Resolve the instance type to get theory name and arguments
+        let resolved = self.resolve_query_type(inner_type)?;
+        let theory = self.theories.get(&resolved.theory_name)
+            .ok_or_else(|| format!("Unknown theory: {}", resolved.theory_name))?
+            .clone();
+
+        // Build base structure from param instances
+        let (base_structure, universe) = self.build_query_base(&resolved, &theory)?;
+
+        // Run the solver
+        let budget = Budget::new(5000, 10000); // 5 second timeout, 10k step limit
+        let result = query(base_structure, universe, theory.clone(), budget);
+
+        let time_ms = start.elapsed().as_secs_f64() * 1000.0;
+
+        match result {
+            EnumerationResult::Found { model, .. } => Ok(QueryResult::Found {
+                query_name: q.name.clone(),
+                theory_name: resolved.theory_name,
+                model,
+                time_ms,
+            }),
+            EnumerationResult::Unsat { .. } => Ok(QueryResult::Unsat {
+                query_name: q.name.clone(),
+                theory_name: resolved.theory_name,
+                time_ms,
+            }),
+            EnumerationResult::Incomplete { reason, .. } => Ok(QueryResult::Incomplete {
+                query_name: q.name.clone(),
+                theory_name: resolved.theory_name,
+                reason,
+                time_ms,
+            }),
+        }
+    }
+
+    /// Resolve a query goal type expression to get theory name and param bindings.
+    fn resolve_query_type(&self, ty: &ast::TypeExpr) -> Result<ResolvedQueryType, String> {
+        match ty {
+            ast::TypeExpr::Path(path) => {
+                // Simple theory name, no parameters
+                Ok(ResolvedQueryType {
+                    theory_name: path.to_string(),
+                    arguments: vec![],
+                })
+            }
+            ast::TypeExpr::App(_base, _arg) => {
+                // Theory application: `arg1 arg2 ... theory`
+                let mut all_paths = vec![];
+                let mut current = ty;
+
+                // Walk down the App chain collecting paths
+                while let ast::TypeExpr::App(inner_base, inner_arg) = current {
+                    if let ast::TypeExpr::Path(arg_path) = inner_arg.as_ref() {
+                        all_paths.push(arg_path.to_string());
+                    } else {
+                        return Err("Complex query type arguments not supported".to_string());
+                    }
+                    current = inner_base;
+                }
+
+                // Leftmost should be a path
+                if let ast::TypeExpr::Path(first_path) = current {
+                    all_paths.push(first_path.to_string());
+                } else {
+                    return Err("Complex query type base not supported".to_string());
+                }
+
+                // Reverse to get [leftmost, ..., rightmost]
+                all_paths.reverse();
+                let theory_name = all_paths.pop().expect("at least one path");
+                let args = all_paths;
+
+                // Look up theory to match params
+                let theory = self.theories.get(&theory_name)
+                    .ok_or_else(|| format!("Unknown theory: {}", theory_name))?;
+
+                if args.len() != theory.params.len() {
+                    return Err(format!(
+                        "Theory {} expects {} parameters, got {}",
+                        theory_name, theory.params.len(), args.len()
+                    ));
+                }
+
+                let arguments: Vec<(String, String)> = theory.params
+                    .iter()
+                    .zip(args.iter())
+                    .map(|(param, arg)| (param.name.clone(), arg.clone()))
+                    .collect();
+
+                Ok(ResolvedQueryType {
+                    theory_name,
+                    arguments,
+                })
+            }
+            _ => Err(format!("Unsupported query type: {:?}", ty)),
+        }
+    }
+
+    /// Build a base structure for a query by importing elements from param instances.
+    fn build_query_base(
+        &self,
+        resolved: &ResolvedQueryType,
+        theory: &Rc<ElaboratedTheory>,
+    ) -> Result<(Structure, crate::universe::Universe), String> {
+        use crate::core::FunctionDomainInfo;
+
+        let sig = &theory.theory.signature;
+        let mut structure = Structure::new(sig.sorts.len());
+        let mut universe = crate::universe::Universe::new();
+
+        // Initialize relation storage
+        let relation_arities: Vec<usize> = sig.relations
+            .iter()
+            .map(|rel| rel.domain.arity())
+            .collect();
+        structure.init_relations(&relation_arities);
+
+        // Track imported UUIDs to avoid duplicates across params
+        let mut imported_uuids = std::collections::HashSet::new();
+
+        // Import elements from each param instance
+        for (param_name, instance_name) in &resolved.arguments {
+            let param_entry = self.instances.get(instance_name)
+                .ok_or_else(|| format!("Unknown instance: {}", instance_name))?;
+
+            let param_theory = self.theories.get(&param_entry.theory_name)
+                .ok_or_else(|| format!("Unknown theory: {}", param_entry.theory_name))?;
+
+            // Import each element from the param instance
+            for (&slid, _elem_name) in &param_entry.slid_to_name {
+                let param_sort_id = param_entry.structure.sorts[slid.index()];
+                let param_sort_name = &param_theory.theory.signature.sorts[param_sort_id];
+
+                // Try different mappings for the local sort name.
+                // The sort might be:
+                // 1. param_name/param_sort_name (e.g., "N/P" for a PetriNet param)
+                // 2. Just param_sort_name if it already has a prefix (for nested params)
+                let local_sort_id = if let Some(id) = sig.lookup_sort(&format!("{}/{}", param_name, param_sort_name)) {
+                    id
+                } else if let Some(id) = sig.lookup_sort(param_sort_name) {
+                    // The sort might already be prefixed from an earlier param in the chain
+                    // (e.g., "N/P" in problem0 should map to "N/P" in Solution, not "RP/N/P")
+                    id
+                } else {
+                    // Sort not found - skip this element (might be from a nested instance
+                    // that will be imported separately or doesn't map to this theory)
+                    continue;
+                };
+
+                // Get the existing Luid and its Uuid
+                let luid = param_entry.structure.get_luid(slid);
+                let uuid = self.store.universe.get(luid)
+                    .ok_or_else(|| format!("No Uuid for Luid {:?}", luid))?;
+
+                // Skip if already imported from an earlier param
+                if imported_uuids.contains(&uuid) {
+                    continue;
+                }
+                imported_uuids.insert(uuid);
+
+                // Register in our new universe and add element
+                let new_luid = universe.intern(uuid);
+                let _local_slid = structure.add_element_with_luid(new_luid, local_sort_id);
+            }
+
+            // Import elements from nested structures (e.g., initial_marking, target_marking in ReachabilityProblem)
+            for (nested_name, nested_struct) in &param_entry.structure.nested {
+                // Nested structure elements have sorts like "initial_marking/token" in the param theory
+                // They map to sorts like "RP/initial_marking/token" in the target theory
+                for slid_idx in 0..nested_struct.sorts.len() {
+                    let slid = crate::id::Slid::from_usize(slid_idx);
+                    let _nested_sort_id = nested_struct.sorts[slid_idx];
+
+                    // Get sort name from the nested theory (we don't have it directly, so reconstruct)
+                    // The nested structure sorts are indexed locally starting from 0
+                    // We need to find the corresponding sort name in the target theory
+                    let nested_sort_prefix = format!("{}/{}", param_name, nested_name);
+
+                    // Try to find a sort in the target theory that matches this nested element
+                    let local_sort_id = sig.sorts.iter().position(|s| {
+                        s.starts_with(&nested_sort_prefix)
+                    });
+
+                    if let Some(local_sort_id) = local_sort_id {
+                        // Get the Luid and Uuid
+                        let luid = nested_struct.get_luid(slid);
+                        if let Some(uuid) = self.store.universe.get(luid) {
+                            if !imported_uuids.contains(&uuid) {
+                                imported_uuids.insert(uuid);
+                                let new_luid = universe.intern(uuid);
+                                let _local_slid = structure.add_element_with_luid(new_luid, local_sort_id);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Initialize function storage
+        let domains: Vec<FunctionDomainInfo> = sig.functions
+            .iter()
+            .map(|func| match &func.domain {
+                DerivedSort::Base(id) => FunctionDomainInfo::Base(*id),
+                DerivedSort::Product(fields) => {
+                    let field_sorts: Vec<usize> = fields
+                        .iter()
+                        .filter_map(|(_, ds)| match ds {
+                            DerivedSort::Base(id) => Some(*id),
+                            DerivedSort::Product(_) => None,
+                        })
+                        .collect();
+                    FunctionDomainInfo::Product(field_sorts)
+                }
+            })
+            .collect();
+        structure.init_functions_full(&domains);
+
+        // Note: Function values from param instances will be handled by the solver
+        // through constraint propagation. The solver will need to find consistent
+        // function assignments.
+
+        Ok((structure, universe))
     }
 
     /// List all theories (runtime + persisted)
@@ -833,6 +1077,15 @@ fn format_core_formula(formula: &crate::core::Formula, sig: &crate::core::Signat
     }
 }
 
+/// Resolved query type with theory name and argument bindings.
+struct ResolvedQueryType {
+    /// The base theory name (e.g., "Solution")
+    theory_name: String,
+    /// Param bindings: (param_name, instance_name) pairs
+    /// e.g., [("N", "ExampleNet"), ("RP", "problem0")]
+    arguments: Vec<(String, String)>,
+}
+
 /// Result of processing a line of input
 #[derive(Debug)]
 pub enum InputResult {
@@ -1059,6 +1312,32 @@ pub enum ExecuteResult {
         name: String,
         theory_name: String,
         num_elements: usize,
+    },
+    Query(QueryResult),
+}
+
+/// Result of executing a query
+#[derive(Debug)]
+pub enum QueryResult {
+    /// Found a satisfying instance
+    Found {
+        query_name: String,
+        theory_name: String,
+        model: crate::core::Structure,
+        time_ms: f64,
+    },
+    /// No solution exists
+    Unsat {
+        query_name: String,
+        theory_name: String,
+        time_ms: f64,
+    },
+    /// Search incomplete (timeout or other reason)
+    Incomplete {
+        query_name: String,
+        theory_name: String,
+        reason: String,
+        time_ms: f64,
     },
 }
 

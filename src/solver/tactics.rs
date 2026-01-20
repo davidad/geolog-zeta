@@ -111,10 +111,15 @@ impl Tactic for CheckTactic {
                         tree.mark_solved(node);
                         TacticResult::Solved
                     }
-                    Ok(false) => TacticResult::Progress {
-                        steps_taken: 1,
-                        branches_created: 0,
-                    },
+                    Ok(false) => {
+                        // Model is incomplete (e.g., undefined functions) but no axiom violations.
+                        // Don't report progress - we need external help (function enumeration)
+                        // or the model can be considered valid with partial functions.
+                        TacticResult::Progress {
+                            steps_taken: 0,
+                            branches_created: 0,
+                        }
+                    }
                     Err(e) => TacticResult::Error(e),
                 }
             }

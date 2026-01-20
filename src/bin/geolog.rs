@@ -19,7 +19,7 @@ use rustyline::{Config, Editor};
 
 use geolog::id::NumericId;
 use geolog::repl::{
-    ExecuteResult, InputResult, InspectResult, ListTarget, MetaCommand, ReplState,
+    ExecuteResult, InputResult, InspectResult, ListTarget, MetaCommand, QueryResult, ReplState,
     format_instance_detail, format_theory_detail,
 };
 
@@ -224,6 +224,9 @@ fn handle_geolog(state: &mut ReplState, source: &str) {
                     "Defined instance {} : {} ({} elements)",
                     name, theory_name, num_elements
                 );
+            }
+            ExecuteResult::Query(result) => {
+                handle_query_result(state, result);
             }
         },
         Err(e) => {
@@ -982,6 +985,42 @@ fn handle_chase(state: &mut ReplState, instance_name: &str, max_iterations: Opti
         }
         Err(e) => {
             eprintln!("✗ Chase error: {:?}", e);
+        }
+    }
+}
+
+/// Handle query result from `query { ? : Type; }` syntax
+fn handle_query_result(_state: &ReplState, result: QueryResult) {
+    match result {
+        QueryResult::Found { query_name, theory_name, model, time_ms } => {
+            println!("✓ Query '{}' SOLVED in {:.2}ms", query_name, time_ms);
+            println!("  Found model of theory '{}'", theory_name);
+
+            // For now, print a basic summary. We don't have access to the signature here,
+            // so just show raw structure info.
+            let total_elements: usize = model.sorts.len();
+            if total_elements == 0 {
+                println!("\n  Witness: empty structure (trivial model)");
+            } else {
+                println!("\n  Witness structure: {} elements", total_elements);
+                // Count elements by sort
+                let mut sort_counts: std::collections::HashMap<usize, usize> = std::collections::HashMap::new();
+                for &sort_id in &model.sorts {
+                    *sort_counts.entry(sort_id).or_insert(0) += 1;
+                }
+                for (sort_id, count) in sort_counts {
+                    println!("    Sort {}: {} element(s)", sort_id, count);
+                }
+            }
+        }
+        QueryResult::Unsat { query_name, theory_name, time_ms } => {
+            println!("✗ Query '{}' UNSAT in {:.2}ms", query_name, time_ms);
+            println!("  No model of '{}' exists extending the base.", theory_name);
+        }
+        QueryResult::Incomplete { query_name, theory_name, reason, time_ms } => {
+            println!("◯ Query '{}' INCOMPLETE after {:.2}ms", query_name, time_ms);
+            println!("  Theory: {}", theory_name);
+            println!("  Reason: {}", reason);
         }
     }
 }
