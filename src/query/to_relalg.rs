@@ -1,0 +1,684 @@
+//! Compiler from QueryOp plans to RelAlgIR instances.
+//!
+//! This module creates geolog Structure instances (of the RelAlgIR theory)
+//! from QueryOp query plans. The resulting structures can be:
+//! - Inspected as first-class data
+//! - Optimized using the RelAlgIR optimization axioms
+//! - Executed via a RelAlgIR backend
+//!
+//! # Design
+//!
+//! The compiler traverses a QueryOp tree and for each node:
+//! 1. Creates the corresponding Op element (ScanOp, FilterOp, etc.)
+//! 2. Creates Wire elements for inputs/outputs
+//! 3. Creates Schema elements describing wire types
+//! 4. Sets up function values connecting the elements
+//!
+//! The resulting Structure includes:
+//! - GeologMeta elements representing the source signature (Srt, Func)
+//! - RelAlgIR elements representing the query plan (Wire, Op, Schema)
+
+use std::collections::HashMap;
+use std::rc::Rc;
+
+use crate::core::{ElaboratedTheory, SortId, Structure};
+use crate::id::Slid;
+use crate::query::backend::QueryOp;
+use crate::universe::Universe;
+
+/// Result of compiling a QueryOp to a RelAlgIR instance.
+pub struct RelAlgInstance {
+    /// The RelAlgIR structure
+    pub structure: Structure,
+    /// The output wire of the compiled plan
+    pub output_wire: Slid,
+    /// Mapping from Slid to element names (for debugging)
+    pub names: HashMap<Slid, String>,
+}
+
+/// Context for the compilation process.
+struct CompileContext<'a> {
+    /// The RelAlgIR theory
+    relalg_theory: &'a ElaboratedTheory,
+    /// Universe for generating Luids
+    universe: &'a mut Universe,
+    /// The structure being built
+    structure: Structure,
+    /// Element names for debugging
+    names: HashMap<Slid, String>,
+    /// Counter for generating unique names
+    counter: usize,
+
+    // Sort IDs in RelAlgIR (cached for efficiency)
+    sort_ids: RelAlgSortIds,
+
+    // GeologMeta sort elements already created
+    // Maps source signature SortId -> RelAlgIR Slid for GeologMeta/Srt element
+    srt_elements: HashMap<usize, Slid>,
+
+    // The "self-referencing" Theory element (for standalone queries)
+    theory_elem: Option<Slid>,
+}
+
+/// Cached sort IDs from the RelAlgIR theory.
+struct RelAlgSortIds {
+    // GeologMeta inherited sorts
+    theory: SortId,
+    srt: SortId,
+    dsort: SortId,
+    base_ds: SortId,
+    func: SortId,
+
+    // RelAlgIR sorts
+    schema: SortId,
+    unit_schema: SortId,
+    base_schema: SortId,
+    prod_schema: SortId,
+    wire: SortId,
+    op: SortId,
+    scan_op: SortId,
+    filter_op: SortId,
+    distinct_op: SortId,
+    negate_op: SortId,
+    join_op: SortId,
+    union_op: SortId,
+    delay_op: SortId,
+    diff_op: SortId,
+    integrate_op: SortId,
+
+    // Predicates
+    pred: SortId,
+    true_pred: SortId,
+    false_pred: SortId,
+    col_eq_pred: SortId,
+    const_eq_pred: SortId,
+    and_pred: SortId,
+    or_pred: SortId,
+
+    // Join conditions
+    join_cond: SortId,
+    equi_join_cond: SortId,
+    cross_join_cond: SortId,
+
+    // Column references
+    col_ref: SortId,
+    col_path: SortId,
+    here_path: SortId,
+}
+
+impl RelAlgSortIds {
+    fn from_theory(theory: &ElaboratedTheory) -> Result<Self, String> {
+        let sig = &theory.theory.signature;
+        let lookup = |name: &str| -> Result<SortId, String> {
+            sig.lookup_sort(name)
+                .ok_or_else(|| format!("RelAlgIR theory missing sort: {}", name))
+        };
+
+        Ok(Self {
+            // GeologMeta sorts are prefixed
+            theory: lookup("GeologMeta/Theory")?,
+            srt: lookup("GeologMeta/Srt")?,
+            dsort: lookup("GeologMeta/DSort")?,
+            base_ds: lookup("GeologMeta/BaseDS")?,
+            func: lookup("GeologMeta/Func")?,
+
+            // RelAlgIR sorts
+            schema: lookup("Schema")?,
+            unit_schema: lookup("UnitSchema")?,
+            base_schema: lookup("BaseSchema")?,
+            prod_schema: lookup("ProdSchema")?,
+            wire: lookup("Wire")?,
+            op: lookup("Op")?,
+            scan_op: lookup("ScanOp")?,
+            filter_op: lookup("FilterOp")?,
+            distinct_op: lookup("DistinctOp")?,
+            negate_op: lookup("NegateOp")?,
+            join_op: lookup("JoinOp")?,
+            union_op: lookup("UnionOp")?,
+            delay_op: lookup("DelayOp")?,
+            diff_op: lookup("DiffOp")?,
+            integrate_op: lookup("IntegrateOp")?,
+
+            pred: lookup("Pred")?,
+            true_pred: lookup("TruePred")?,
+            false_pred: lookup("FalsePred")?,
+            col_eq_pred: lookup("ColEqPred")?,
+            const_eq_pred: lookup("ConstEqPred")?,
+            and_pred: lookup("AndPred")?,
+            or_pred: lookup("OrPred")?,
+
+            join_cond: lookup("JoinCond")?,
+            equi_join_cond: lookup("EquiJoinCond")?,
+            cross_join_cond: lookup("CrossJoinCond")?,
+
+            col_ref: lookup("ColRef")?,
+            col_path: lookup("ColPath")?,
+            here_path: lookup("HerePath")?,
+        })
+    }
+}
+
+impl<'a> CompileContext<'a> {
+    fn new(
+        relalg_theory: &'a ElaboratedTheory,
+        universe: &'a mut Universe,
+    ) -> Result<Self, String> {
+        let sort_ids = RelAlgSortIds::from_theory(relalg_theory)?;
+        let num_sorts = relalg_theory.theory.signature.sorts.len();
+        let num_funcs = relalg_theory.theory.signature.functions.len();
+        let num_rels = relalg_theory.theory.signature.relations.len();
+
+        let mut structure = Structure::new(num_sorts);
+
+        // Initialize function storage with empty columns for each function
+        // We use Local columns that will grow as elements are added
+        structure.functions = (0..num_funcs)
+            .map(|_| crate::core::FunctionColumn::Local(Vec::new()))
+            .collect();
+
+        // Initialize relation storage
+        let rel_arities: Vec<usize> = relalg_theory
+            .theory
+            .signature
+            .relations
+            .iter()
+            .map(|r| r.domain.arity())
+            .collect();
+        structure.init_relations(&rel_arities);
+
+        Ok(Self {
+            relalg_theory,
+            universe,
+            structure,
+            names: HashMap::new(),
+            counter: 0,
+            sort_ids,
+            srt_elements: HashMap::new(),
+            theory_elem: None,
+        })
+    }
+
+    fn fresh_name(&mut self, prefix: &str) -> String {
+        self.counter += 1;
+        format!("{}_{}", prefix, self.counter)
+    }
+
+    fn add_element(&mut self, sort_id: SortId, name: &str) -> Slid {
+        let (slid, _) = self.structure.add_element(self.universe, sort_id);
+        self.names.insert(slid, name.to_string());
+        slid
+    }
+
+    fn define_func(&mut self, func_name: &str, domain: Slid, codomain: Slid) -> Result<(), String> {
+        let func_id = self
+            .relalg_theory
+            .theory
+            .signature
+            .lookup_func(func_name)
+            .ok_or_else(|| format!("RelAlgIR missing function: {}", func_name))?;
+
+        self.structure
+            .define_function(func_id, domain, codomain)
+            .map_err(|existing| {
+                format!(
+                    "Conflicting definition for {} on {:?}: already defined as {:?}",
+                    func_name, domain, existing
+                )
+            })
+    }
+
+    /// Get or create the Theory element (self-referencing for standalone queries)
+    fn get_theory_elem(&mut self) -> Slid {
+        if let Some(elem) = self.theory_elem {
+            return elem;
+        }
+
+        let elem = self.add_element(self.sort_ids.theory, "query_theory");
+
+        // Self-reference: Theory/parent = self
+        let _ = self.define_func("GeologMeta/Theory/parent", elem, elem);
+
+        self.theory_elem = Some(elem);
+        elem
+    }
+
+    /// Get or create a GeologMeta/Srt element for a source sort
+    fn get_srt_elem(&mut self, source_sort: usize) -> Result<Slid, String> {
+        if let Some(&elem) = self.srt_elements.get(&source_sort) {
+            return Ok(elem);
+        }
+
+        let theory = self.get_theory_elem();
+        let name = self.fresh_name("srt");
+        let elem = self.add_element(self.sort_ids.srt, &name);
+
+        // Srt/theory = our theory element
+        self.define_func("GeologMeta/Srt/theory", elem, theory)?;
+
+        self.srt_elements.insert(source_sort, elem);
+        Ok(elem)
+    }
+
+    /// Create a BaseSchema for a sort
+    fn create_base_schema(&mut self, srt_elem: Slid) -> Result<(Slid, Slid), String> {
+        let bs_name = self.fresh_name("base_schema");
+        let bs = self.add_element(self.sort_ids.base_schema, &bs_name);
+
+        let schema_name = self.fresh_name("schema");
+        let schema = self.add_element(self.sort_ids.schema, &schema_name);
+
+        self.define_func("BaseSchema/schema", bs, schema)?;
+        self.define_func("BaseSchema/srt", bs, srt_elem)?;
+
+        Ok((bs, schema))
+    }
+
+    /// Create a Wire with a given schema
+    fn create_wire(&mut self, schema: Slid) -> Result<Slid, String> {
+        let name = self.fresh_name("wire");
+        let wire = self.add_element(self.sort_ids.wire, &name);
+        self.define_func("Wire/schema", wire, schema)?;
+        Ok(wire)
+    }
+
+    /// Create a TruePred and return (TruePred elem, Pred elem)
+    fn create_true_pred(&mut self) -> Result<(Slid, Slid), String> {
+        let tp_name = self.fresh_name("true_pred");
+        let tp = self.add_element(self.sort_ids.true_pred, &tp_name);
+
+        let pred_name = self.fresh_name("pred");
+        let pred = self.add_element(self.sort_ids.pred, &pred_name);
+
+        self.define_func("TruePred/pred", tp, pred)?;
+
+        Ok((tp, pred))
+    }
+}
+
+/// Compile a QueryOp into a RelAlgIR instance.
+///
+/// # Arguments
+/// * `plan` - The query plan to compile
+/// * `relalg_theory` - The RelAlgIR theory
+/// * `universe` - Universe for Luid generation
+///
+/// # Returns
+/// The compiled RelAlgIR instance, or an error message
+pub fn compile_to_relalg(
+    plan: &QueryOp,
+    relalg_theory: &Rc<ElaboratedTheory>,
+    universe: &mut Universe,
+) -> Result<RelAlgInstance, String> {
+    let mut ctx = CompileContext::new(relalg_theory, universe)?;
+
+    // Initialize function storage (will be lazy-initialized on first use)
+    // For now, we don't pre-init since we use define_function which auto-grows
+
+    let output_wire = compile_op(&mut ctx, plan)?;
+
+    Ok(RelAlgInstance {
+        structure: ctx.structure,
+        output_wire,
+        names: ctx.names,
+    })
+}
+
+/// Compile a single QueryOp, returning the output wire Slid.
+fn compile_op(ctx: &mut CompileContext<'_>, op: &QueryOp) -> Result<Slid, String> {
+    match op {
+        QueryOp::Scan { sort_idx } => compile_scan(ctx, *sort_idx),
+
+        QueryOp::Filter { input, pred } => {
+            let input_wire = compile_op(ctx, input)?;
+            compile_filter(ctx, input_wire, pred)
+        }
+
+        QueryOp::Distinct { input } => {
+            let input_wire = compile_op(ctx, input)?;
+            compile_distinct(ctx, input_wire)
+        }
+
+        QueryOp::Join { left, right, cond } => {
+            let left_wire = compile_op(ctx, left)?;
+            let right_wire = compile_op(ctx, right)?;
+            compile_join(ctx, left_wire, right_wire, cond)
+        }
+
+        QueryOp::Union { left, right } => {
+            let left_wire = compile_op(ctx, left)?;
+            let right_wire = compile_op(ctx, right)?;
+            compile_union(ctx, left_wire, right_wire)
+        }
+
+        // DBSP operators
+        QueryOp::Delay { input, state_id: _ } => {
+            let input_wire = compile_op(ctx, input)?;
+            compile_delay(ctx, input_wire)
+        }
+
+        QueryOp::Diff { input, state_id: _ } => {
+            let input_wire = compile_op(ctx, input)?;
+            compile_diff(ctx, input_wire)
+        }
+
+        QueryOp::Integrate { input, state_id: _ } => {
+            let input_wire = compile_op(ctx, input)?;
+            compile_integrate(ctx, input_wire)
+        }
+
+        // Not yet implemented
+        QueryOp::Project { .. } => Err("ProjectOp compilation not yet implemented".to_string()),
+        QueryOp::Negate { .. } => Err("NegateOp compilation not yet implemented".to_string()),
+        QueryOp::Constant { .. } => Err("ConstantOp compilation not yet implemented".to_string()),
+        QueryOp::Empty => Err("EmptyOp compilation not yet implemented".to_string()),
+        QueryOp::Apply { .. } => Err("ApplyOp compilation not yet implemented".to_string()),
+    }
+}
+
+fn compile_scan(ctx: &mut CompileContext<'_>, sort_idx: usize) -> Result<Slid, String> {
+    // Get or create Srt element
+    let srt_elem = ctx.get_srt_elem(sort_idx)?;
+
+    // Create schema for output
+    let (_, schema) = ctx.create_base_schema(srt_elem)?;
+
+    // Create output wire
+    let out_wire = ctx.create_wire(schema)?;
+
+    // Create ScanOp
+    let scan_name = ctx.fresh_name("scan");
+    let scan = ctx.add_element(ctx.sort_ids.scan_op, &scan_name);
+
+    // Create Op (sum type injection)
+    let op_name = ctx.fresh_name("op");
+    let op = ctx.add_element(ctx.sort_ids.op, &op_name);
+
+    // Set function values
+    ctx.define_func("ScanOp/op", scan, op)?;
+    ctx.define_func("ScanOp/srt", scan, srt_elem)?;
+    ctx.define_func("ScanOp/out", scan, out_wire)?;
+
+    Ok(out_wire)
+}
+
+fn compile_filter(
+    ctx: &mut CompileContext<'_>,
+    input_wire: Slid,
+    _predicate: &crate::query::backend::Predicate,
+) -> Result<Slid, String> {
+    // For now, create a TruePred (placeholder)
+    // TODO: compile the actual predicate
+    let (_, pred) = ctx.create_true_pred()?;
+
+    // Get input wire's schema for output
+    // In a full implementation, we'd look this up. For now, create a dummy schema.
+    let schema_name = ctx.fresh_name("schema");
+    let out_schema = ctx.add_element(ctx.sort_ids.schema, &schema_name);
+
+    // Create output wire
+    let out_wire = ctx.create_wire(out_schema)?;
+
+    // Create FilterOp
+    let filter_name = ctx.fresh_name("filter");
+    let filter = ctx.add_element(ctx.sort_ids.filter_op, &filter_name);
+
+    let op_name = ctx.fresh_name("op");
+    let op = ctx.add_element(ctx.sort_ids.op, &op_name);
+
+    ctx.define_func("FilterOp/op", filter, op)?;
+    ctx.define_func("FilterOp/in", filter, input_wire)?;
+    ctx.define_func("FilterOp/out", filter, out_wire)?;
+    ctx.define_func("FilterOp/pred", filter, pred)?;
+
+    Ok(out_wire)
+}
+
+fn compile_distinct(ctx: &mut CompileContext<'_>, input_wire: Slid) -> Result<Slid, String> {
+    // Create output schema (same as input)
+    let schema_name = ctx.fresh_name("schema");
+    let out_schema = ctx.add_element(ctx.sort_ids.schema, &schema_name);
+    let out_wire = ctx.create_wire(out_schema)?;
+
+    // Create DistinctOp
+    let distinct_name = ctx.fresh_name("distinct");
+    let distinct = ctx.add_element(ctx.sort_ids.distinct_op, &distinct_name);
+
+    let op_name = ctx.fresh_name("op");
+    let op = ctx.add_element(ctx.sort_ids.op, &op_name);
+
+    ctx.define_func("DistinctOp/op", distinct, op)?;
+    ctx.define_func("DistinctOp/in", distinct, input_wire)?;
+    ctx.define_func("DistinctOp/out", distinct, out_wire)?;
+
+    Ok(out_wire)
+}
+
+fn compile_join(
+    ctx: &mut CompileContext<'_>,
+    left_wire: Slid,
+    right_wire: Slid,
+    _condition: &crate::query::backend::JoinCond,
+) -> Result<Slid, String> {
+    // Create output schema (product of inputs) - simplified for now
+    let schema_name = ctx.fresh_name("schema");
+    let out_schema = ctx.add_element(ctx.sort_ids.schema, &schema_name);
+    let out_wire = ctx.create_wire(out_schema)?;
+
+    // Create join condition (CrossJoin for now)
+    let cond_name = ctx.fresh_name("cross_join");
+    let cross_join = ctx.add_element(ctx.sort_ids.cross_join_cond, &cond_name);
+    let join_cond_name = ctx.fresh_name("join_cond");
+    let join_cond = ctx.add_element(ctx.sort_ids.join_cond, &join_cond_name);
+    ctx.define_func("CrossJoinCond/cond", cross_join, join_cond)?;
+
+    // Create JoinOp
+    let join_name = ctx.fresh_name("join");
+    let join = ctx.add_element(ctx.sort_ids.join_op, &join_name);
+
+    let op_name = ctx.fresh_name("op");
+    let op = ctx.add_element(ctx.sort_ids.op, &op_name);
+
+    ctx.define_func("JoinOp/op", join, op)?;
+    ctx.define_func("JoinOp/left_in", join, left_wire)?;
+    ctx.define_func("JoinOp/right_in", join, right_wire)?;
+    ctx.define_func("JoinOp/out", join, out_wire)?;
+    ctx.define_func("JoinOp/cond", join, join_cond)?;
+
+    Ok(out_wire)
+}
+
+fn compile_union(
+    ctx: &mut CompileContext<'_>,
+    left_wire: Slid,
+    right_wire: Slid,
+) -> Result<Slid, String> {
+    // Create output schema (same as inputs)
+    let schema_name = ctx.fresh_name("schema");
+    let out_schema = ctx.add_element(ctx.sort_ids.schema, &schema_name);
+    let out_wire = ctx.create_wire(out_schema)?;
+
+    // Create UnionOp
+    let union_name = ctx.fresh_name("union");
+    let union_op = ctx.add_element(ctx.sort_ids.union_op, &union_name);
+
+    let op_name = ctx.fresh_name("op");
+    let op = ctx.add_element(ctx.sort_ids.op, &op_name);
+
+    ctx.define_func("UnionOp/op", union_op, op)?;
+    ctx.define_func("UnionOp/left_in", union_op, left_wire)?;
+    ctx.define_func("UnionOp/right_in", union_op, right_wire)?;
+    ctx.define_func("UnionOp/out", union_op, out_wire)?;
+
+    Ok(out_wire)
+}
+
+fn compile_delay(ctx: &mut CompileContext<'_>, input_wire: Slid) -> Result<Slid, String> {
+    let schema_name = ctx.fresh_name("schema");
+    let out_schema = ctx.add_element(ctx.sort_ids.schema, &schema_name);
+    let out_wire = ctx.create_wire(out_schema)?;
+
+    let delay_name = ctx.fresh_name("delay");
+    let delay = ctx.add_element(ctx.sort_ids.delay_op, &delay_name);
+
+    let op_name = ctx.fresh_name("op");
+    let op = ctx.add_element(ctx.sort_ids.op, &op_name);
+
+    ctx.define_func("DelayOp/op", delay, op)?;
+    ctx.define_func("DelayOp/in", delay, input_wire)?;
+    ctx.define_func("DelayOp/out", delay, out_wire)?;
+
+    Ok(out_wire)
+}
+
+fn compile_diff(ctx: &mut CompileContext<'_>, input_wire: Slid) -> Result<Slid, String> {
+    let schema_name = ctx.fresh_name("schema");
+    let out_schema = ctx.add_element(ctx.sort_ids.schema, &schema_name);
+    let out_wire = ctx.create_wire(out_schema)?;
+
+    let diff_name = ctx.fresh_name("diff");
+    let diff = ctx.add_element(ctx.sort_ids.diff_op, &diff_name);
+
+    let op_name = ctx.fresh_name("op");
+    let op = ctx.add_element(ctx.sort_ids.op, &op_name);
+
+    ctx.define_func("DiffOp/op", diff, op)?;
+    ctx.define_func("DiffOp/in", diff, input_wire)?;
+    ctx.define_func("DiffOp/out", diff, out_wire)?;
+
+    Ok(out_wire)
+}
+
+fn compile_integrate(ctx: &mut CompileContext<'_>, input_wire: Slid) -> Result<Slid, String> {
+    let schema_name = ctx.fresh_name("schema");
+    let out_schema = ctx.add_element(ctx.sort_ids.schema, &schema_name);
+    let out_wire = ctx.create_wire(out_schema)?;
+
+    let integrate_name = ctx.fresh_name("integrate");
+    let integrate = ctx.add_element(ctx.sort_ids.integrate_op, &integrate_name);
+
+    let op_name = ctx.fresh_name("op");
+    let op = ctx.add_element(ctx.sort_ids.op, &op_name);
+
+    ctx.define_func("IntegrateOp/op", integrate, op)?;
+    ctx.define_func("IntegrateOp/in", integrate, input_wire)?;
+    ctx.define_func("IntegrateOp/out", integrate, out_wire)?;
+
+    Ok(out_wire)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::repl::ReplState;
+
+    fn load_relalg_theory() -> Rc<ElaboratedTheory> {
+        let meta_content = std::fs::read_to_string("theories/GeologMeta.geolog")
+            .expect("Failed to read GeologMeta.geolog");
+        let ir_content = std::fs::read_to_string("theories/RelAlgIR.geolog")
+            .expect("Failed to read RelAlgIR.geolog");
+
+        let mut state = ReplState::new();
+        state
+            .execute_geolog(&meta_content)
+            .expect("GeologMeta should load");
+        state
+            .execute_geolog(&ir_content)
+            .expect("RelAlgIR should load");
+
+        state
+            .theories
+            .get("RelAlgIR")
+            .expect("RelAlgIR should exist")
+            .clone()
+    }
+
+    #[test]
+    fn test_compile_scan() {
+        let relalg_theory = load_relalg_theory();
+        let mut universe = Universe::new();
+
+        let plan = QueryOp::Scan { sort_idx: 0 };
+
+        let result = compile_to_relalg(&plan, &relalg_theory, &mut universe);
+        assert!(result.is_ok(), "Scan compilation should succeed");
+
+        let instance = result.unwrap();
+        // Should have: Theory, Srt, BaseSchema, Schema, Wire, ScanOp, Op
+        assert!(
+            instance.structure.len() >= 7,
+            "Scan should create at least 7 elements"
+        );
+    }
+
+    #[test]
+    fn test_compile_filter_scan() {
+        let relalg_theory = load_relalg_theory();
+        let mut universe = Universe::new();
+
+        let plan = QueryOp::Filter {
+            input: Box::new(QueryOp::Scan { sort_idx: 0 }),
+            pred: crate::query::backend::Predicate::True,
+        };
+
+        let result = compile_to_relalg(&plan, &relalg_theory, &mut universe);
+        assert!(result.is_ok(), "Filter(Scan) compilation should succeed");
+
+        let instance = result.unwrap();
+        // Should have scan elements + filter elements
+        assert!(
+            instance.structure.len() >= 12,
+            "Filter(Scan) should create at least 12 elements"
+        );
+    }
+
+    #[test]
+    fn test_compile_join() {
+        let relalg_theory = load_relalg_theory();
+        let mut universe = Universe::new();
+
+        let plan = QueryOp::Join {
+            left: Box::new(QueryOp::Scan { sort_idx: 0 }),
+            right: Box::new(QueryOp::Scan { sort_idx: 1 }),
+            cond: crate::query::backend::JoinCond::Cross,
+        };
+
+        let result = compile_to_relalg(&plan, &relalg_theory, &mut universe);
+        assert!(result.is_ok(), "Join compilation should succeed");
+    }
+
+    #[test]
+    fn test_compile_dbsp_operators() {
+        let relalg_theory = load_relalg_theory();
+        let mut universe = Universe::new();
+
+        // Test Delay
+        let delay_plan = QueryOp::Delay {
+            input: Box::new(QueryOp::Scan { sort_idx: 0 }),
+            state_id: 0,
+        };
+        assert!(
+            compile_to_relalg(&delay_plan, &relalg_theory, &mut universe).is_ok(),
+            "Delay compilation should succeed"
+        );
+
+        // Test Diff
+        let diff_plan = QueryOp::Diff {
+            input: Box::new(QueryOp::Scan { sort_idx: 0 }),
+            state_id: 0,
+        };
+        assert!(
+            compile_to_relalg(&diff_plan, &relalg_theory, &mut universe).is_ok(),
+            "Diff compilation should succeed"
+        );
+
+        // Test Integrate
+        let integrate_plan = QueryOp::Integrate {
+            input: Box::new(QueryOp::Scan { sort_idx: 0 }),
+            state_id: 0,
+        };
+        assert!(
+            compile_to_relalg(&integrate_plan, &relalg_theory, &mut universe).is_ok(),
+            "Integrate compilation should succeed"
+        );
+    }
+}
