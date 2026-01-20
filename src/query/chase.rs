@@ -1,19 +1,22 @@
 //! Chase algorithm for computing derived relations.
 //!
 //! The chase takes a structure and a set of axioms (sequents) and repeatedly
-//! applies the axioms until a fixpoint is reached.
+//! applies the axioms until a fixpoint is reached. This is the standard database
+//! chase algorithm adapted for geometric logic.
 //!
 //! # Axiom Structure
 //!
 //! Axioms are sequents of the form `premise ⊢ conclusion` where:
-//! - **premise** (body): conditions that must hold
+//! - **premise** (body): conditions that must hold (conjunction of relations/equalities)
 //! - **conclusion** (head): what to add when conditions hold
 //!
 //! # Supported Axioms
 //!
 //! Currently supports Horn clauses (no disjunctions/existentials in head):
-//! - `R(x,y), S(y,z) ⊢ T(x,z)` — add to relation
-//! - `R(x,y), f(x)=a ⊢ g(y)=b` — function extension
+//! - **Relation rules**: `R(x,y), S(y,z) ⊢ T(x,z)` — add to relation
+//! - **Function rules**: `R(x,y), f(x)=a ⊢ g(y)=b` — function extension
+//! - **Reflexivity**: `|- R(x,x)` — add reflexive closure
+//! - **Transitivity**: `R(x,y), R(y,z) ⊢ R(x,z)` — add transitive closure
 //!
 //! Existential support (creating new elements) is TODO.
 //!
@@ -22,9 +25,49 @@
 //! ```text
 //! while changed:
 //!     for each axiom (premise ⊢ conclusion):
-//!         matches = query(premise)  // using RelAlgIR
+//!         matches = query(premise)  // compiled to QueryOp
 //!         for each binding in matches:
 //!             changed |= fire(conclusion, binding)
+//! ```
+//!
+//! # Key Implementation Details
+//!
+//! ## Variable Binding and Column Mapping
+//!
+//! The chase compiles axiom premises to QueryOp plans which produce tuples.
+//! A key challenge is mapping between context variables and query output columns:
+//!
+//! - **Context variables**: Named variables in the axiom (e.g., x, y, z)
+//! - **Output columns**: Positions in the query result tuples
+//!
+//! For conjunctions of relation atoms with shared variables (like transitivity),
+//! we use equi-join filters to enforce that shared variables match:
+//!
+//! ```text
+//! [x:x, y:y] R, [x:y, y:z] R  ⊢  [x:x, y:z] R
+//!
+//! Query plan:
+//!   ScanRelation(R)           → columns [x, y]  (vars 0, 1)
+//!   ScanRelation(R)           → columns [y, z]  (vars 1, 2)
+//!   Cross Join                → columns [x, y, y', z]
+//!   Filter(col1 = col2)       → enforces y = y' (shared variable)
+//!
+//! Conclusion accesses: col0 (x) and col3 (z) for the result tuple
+//! ```
+//!
+//! # Usage
+//!
+//! ```ignore
+//! use geolog::query::chase::{compile_theory_axioms, chase_fixpoint};
+//!
+//! // Compile theory axioms to chase rules
+//! let rules = compile_theory_axioms(&theory)?;
+//!
+//! // Run chase to fixpoint
+//! let iterations = chase_fixpoint(&rules, &mut structure, &mut universe, &sig, 100)?;
+//!
+//! // Or use the :chase REPL command
+//! // :chase <instance> [max_iterations]
 //! ```
 
 use std::collections::HashMap;
