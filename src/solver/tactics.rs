@@ -709,4 +709,57 @@ mod tests {
             other => panic!("Expected Unsat, got {:?}", other),
         }
     }
+
+    #[test]
+    fn test_forward_chaining_adds_equations() {
+        use crate::core::{Context, Formula, Sequent, Term};
+
+        // Create a theory with an axiom: ∀x:Node, y:Node. True |- x = y
+        // (Every two nodes are equal)
+        let mut sig = Signature::new();
+        sig.add_sort("Node".to_string());
+
+        let ctx = Context::new()
+            .extend("x".to_string(), DerivedSort::Base(0))
+            .extend("y".to_string(), DerivedSort::Base(0));
+
+        let axiom = Sequent {
+            context: ctx,
+            premise: Formula::True,
+            conclusion: Formula::Eq(
+                Term::Var("x".to_string(), DerivedSort::Base(0)),
+                Term::Var("y".to_string(), DerivedSort::Base(0)),
+            ),
+        };
+
+        let theory = Rc::new(ElaboratedTheory {
+            params: vec![],
+            theory: Theory {
+                name: "AllEqual".to_string(),
+                signature: sig,
+                axioms: vec![axiom],
+            },
+        });
+
+        let mut tree = SearchTree::new(theory);
+
+        // Add two elements
+        let (a, _) = tree.add_element(0, 0).unwrap();
+        let (b, _) = tree.add_element(0, 0).unwrap();
+        assert_ne!(a, b);
+
+        // Forward chaining should detect the equation obligation and add pending equations
+        let result = ForwardChainingTactic.run(&mut tree, 0, &Budget::quick());
+
+        match result {
+            TacticResult::Progress { steps_taken, .. } => {
+                assert!(steps_taken > 0, "Should have made progress");
+            }
+            other => panic!("Expected Progress, got {:?}", other),
+        }
+
+        // Check that pending equations were added to congruence closure
+        let node = tree.get(0).unwrap();
+        assert!(node.cc.pending.len() > 0, "Should have pending equations");
+    }
 }
