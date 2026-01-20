@@ -242,9 +242,6 @@ struct RelAlgFuncs {
     left_path_rest: usize,
     right_path_path: usize,
     right_path_rest: usize,
-
-    // GeologMeta accessors
-    srt_sort_idx: usize,
 }
 
 impl RelAlgFuncs {
@@ -320,8 +317,6 @@ impl RelAlgFuncs {
             left_path_rest: get_func("LeftPath/rest")?,
             right_path_path: get_func("RightPath/path")?,
             right_path_rest: get_func("RightPath/rest")?,
-
-            srt_sort_idx: get_func("GeologMeta/Srt/sort_idx")?,
         })
     }
 }
@@ -467,19 +462,25 @@ impl<'a> InterpretContext<'a> {
 
     /// Get function value for an element
     fn get_func_value(&self, func_id: usize, elem: Slid) -> Option<Slid> {
-        self.instance
-            .structure
+        let structure = &self.instance.structure;
+        // Convert global Slid to sort-local index
+        let local_idx = structure.sort_local_id(elem).index();
+        structure
             .functions
             .get(func_id)
-            .and_then(|f| get_slid(f.get_local(elem.index())))
+            .and_then(|f| get_slid(f.get_local(local_idx)))
     }
 
-    /// Get sort index from a GeologMeta/Srt element
+    /// Get sort index from a GeologMeta/Srt element using the sort_mapping
     fn get_srt_sort_idx(&self, srt_elem: Slid) -> Result<usize, RelAlgError> {
-        // The sort_idx function maps Srt -> external sort index
-        // For now, we assume the Slid encodes the sort index directly
-        // This is a simplification - real implementation would look up the function value
-        Ok(srt_elem.index())
+        self.instance
+            .sort_mapping
+            .get(&srt_elem)
+            .copied()
+            .ok_or_else(|| RelAlgError::InvalidOp(format!(
+                "Unknown Srt element {:?} - not in sort_mapping",
+                srt_elem
+            )))
     }
 
     /// Parse all operations from the instance
@@ -1144,14 +1145,17 @@ pub fn execute_relalg(
         return Ok(Bag::new());
     }
 
-    // Find output wire
-    let output_wire_name = output_wire_name.unwrap_or("output");
-    let output_wire = instance
-        .names
-        .iter()
-        .find(|(_, name)| *name == output_wire_name)
-        .map(|(slid, _)| *slid)
-        .ok_or(RelAlgError::NoOutputWire)?;
+    // Find output wire - use instance.output_wire by default, or look up by name
+    let output_wire = if let Some(name) = output_wire_name {
+        instance
+            .names
+            .iter()
+            .find(|(_, n)| *n == name)
+            .map(|(slid, _)| *slid)
+            .ok_or(RelAlgError::NoOutputWire)?
+    } else {
+        instance.output_wire
+    };
 
     // Topologically sort operations
     let sorted = ctx.topological_sort(&ops)?;

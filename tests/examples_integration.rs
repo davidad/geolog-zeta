@@ -370,6 +370,83 @@ fn test_relalg_simple_examples() {
 }
 
 // ============================================================================
+// RelAlgIR compile → execute roundtrip
+// ============================================================================
+
+/// Tests that we can compile a query to RelAlgIR and then execute it,
+/// getting the same results as direct execution.
+#[test]
+fn test_relalg_compile_execute_roundtrip() {
+    use geolog::core::Structure;
+    use geolog::query::backend::{execute, QueryOp};
+    use geolog::query::from_relalg::execute_relalg;
+    use geolog::query::to_relalg::compile_to_relalg;
+    use geolog::universe::Universe;
+
+    // Load RelAlgIR theory
+    let meta_content = fs::read_to_string("theories/GeologMeta.geolog")
+        .expect("Failed to read GeologMeta.geolog");
+    let ir_content = fs::read_to_string("theories/RelAlgIR.geolog")
+        .expect("Failed to read RelAlgIR.geolog");
+
+    let mut state = ReplState::new();
+    state
+        .execute_geolog(&meta_content)
+        .expect("GeologMeta should load");
+    state
+        .execute_geolog(&ir_content)
+        .expect("RelAlgIR should load");
+
+    let relalg_theory = state
+        .theories
+        .get("RelAlgIR")
+        .expect("RelAlgIR should exist")
+        .clone();
+
+    // Create a simple test structure with 3 elements in sort 0
+    let mut target = Structure::new(1);
+    target.carriers[0].insert(0);
+    target.carriers[0].insert(1);
+    target.carriers[0].insert(2);
+
+    // Create a simple scan query
+    let scan_plan = QueryOp::Scan { sort_idx: 0 };
+
+    // Execute directly
+    let direct_result = execute(&scan_plan, &target);
+
+    // Compile to RelAlgIR
+    let mut universe = Universe::new();
+    let relalg_instance = compile_to_relalg(&scan_plan, &relalg_theory, &mut universe)
+        .expect("Compilation should succeed");
+
+    // Execute via RelAlgIR interpreter
+    let relalg_result = execute_relalg(
+        &relalg_instance,
+        &relalg_theory,
+        &target,
+        None,  // Use the output_wire from the instance
+    )
+    .expect("RelAlgIR execution should succeed");
+
+    // Compare results
+    assert_eq!(
+        direct_result.len(),
+        relalg_result.len(),
+        "Direct and RelAlgIR results should have same length"
+    );
+
+    for (tuple, mult) in direct_result.iter() {
+        assert_eq!(
+            relalg_result.tuples.get(tuple),
+            Some(mult),
+            "Tuple {:?} should have same multiplicity",
+            tuple
+        );
+    }
+}
+
+// ============================================================================
 // Meta-test: all examples should parse
 // ============================================================================
 
