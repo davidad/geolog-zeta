@@ -608,19 +608,42 @@ fn compile_join(
     ctx: &mut CompileContext<'_>,
     left_wire: Slid,
     right_wire: Slid,
-    _condition: &crate::query::backend::JoinCond,
+    condition: &crate::query::backend::JoinCond,
 ) -> Result<Slid, String> {
+    use crate::query::backend::JoinCond;
+
     // Create output schema (product of inputs) - simplified for now
     let schema_name = ctx.fresh_name("schema");
     let out_schema = ctx.add_element(ctx.sort_ids.schema, &schema_name);
     let out_wire = ctx.create_wire(out_schema)?;
 
-    // Create join condition (CrossJoin for now)
-    let cond_name = ctx.fresh_name("cross_join");
-    let cross_join = ctx.add_element(ctx.sort_ids.cross_join_cond, &cond_name);
-    let join_cond_name = ctx.fresh_name("join_cond");
-    let join_cond = ctx.add_element(ctx.sort_ids.join_cond, &join_cond_name);
-    ctx.define_func("CrossJoinCond/cond", cross_join, join_cond)?;
+    // Create join condition based on type
+    let join_cond = match condition {
+        JoinCond::Cross => {
+            let cond_name = ctx.fresh_name("cross_join");
+            let cross_join = ctx.add_element(ctx.sort_ids.cross_join_cond, &cond_name);
+            let join_cond_name = ctx.fresh_name("join_cond");
+            let join_cond_elem = ctx.add_element(ctx.sort_ids.join_cond, &join_cond_name);
+            ctx.define_func("CrossJoinCond/cond", cross_join, join_cond_elem)?;
+            join_cond_elem
+        }
+        JoinCond::Equi { left_col, right_col } => {
+            // Create column references for the join keys
+            let left_ref = ctx.create_col_ref(left_wire, *left_col)?;
+            let right_ref = ctx.create_col_ref(right_wire, *right_col)?;
+
+            let cond_name = ctx.fresh_name("equi_join");
+            let equi_join = ctx.add_element(ctx.sort_ids.equi_join_cond, &cond_name);
+            let join_cond_name = ctx.fresh_name("join_cond");
+            let join_cond_elem = ctx.add_element(ctx.sort_ids.join_cond, &join_cond_name);
+
+            ctx.define_func("EquiJoinCond/cond", equi_join, join_cond_elem)?;
+            ctx.define_func("EquiJoinCond/left_col", equi_join, left_ref)?;
+            ctx.define_func("EquiJoinCond/right_col", equi_join, right_ref)?;
+
+            join_cond_elem
+        }
+    };
 
     // Create JoinOp
     let join_name = ctx.fresh_name("join");
@@ -879,6 +902,7 @@ mod tests {
         let relalg_theory = load_relalg_theory();
         let mut universe = Universe::new();
 
+        // Test cross join
         let plan = QueryOp::Join {
             left: Box::new(QueryOp::Scan { sort_idx: 0 }),
             right: Box::new(QueryOp::Scan { sort_idx: 1 }),
@@ -886,7 +910,17 @@ mod tests {
         };
 
         let result = compile_to_relalg(&plan, &relalg_theory, &mut universe);
-        assert!(result.is_ok(), "Join compilation should succeed");
+        assert!(result.is_ok(), "Cross join compilation should succeed");
+
+        // Test equi-join
+        let equi_plan = QueryOp::Join {
+            left: Box::new(QueryOp::Scan { sort_idx: 0 }),
+            right: Box::new(QueryOp::Scan { sort_idx: 1 }),
+            cond: crate::query::backend::JoinCond::Equi { left_col: 0, right_col: 0 },
+        };
+
+        let result = compile_to_relalg(&equi_plan, &relalg_theory, &mut universe);
+        assert!(result.is_ok(), "Equi-join compilation should succeed");
     }
 
     #[test]
