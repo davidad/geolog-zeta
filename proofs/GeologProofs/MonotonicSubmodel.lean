@@ -78,6 +78,35 @@ def castCod {M : Structure S (Type u)} {f : S.Functions} {B : S.Sorts}
   cast (congrArg (DerivedSorts.interpret M.sorts) hcod) y
 
 /-!
+## Lifting Elements Along Embeddings
+
+We define `liftSort'` which lifts elements of derived sorts along a family of maps
+on base sorts. This is defined before `StructureEmbedding` so that the embedding
+can use it in its `func_comm` field.
+-/
+
+/-- Lift an element of a derived sort along a family of maps on base sorts.
+    For base sorts: apply the map directly.
+    For products: apply componentwise via Types.productIso. -/
+noncomputable def liftSort' {M M' : Structure S (Type u)}
+    (embed : ∀ A, M.sorts A → M'.sorts A) : (D : DerivedSorts S.Sorts) →
+    D.interpret M.sorts → D.interpret M'.sorts
+  | .inj B => embed B
+  | .prod Aᵢ => fun x =>
+    let x' := (Types.productIso _).hom x
+    let y' : ∀ i, (Aᵢ i).interpret M'.sorts := fun i => liftSort' embed (Aᵢ i) (x' i)
+    (Types.productIso _).inv y'
+
+/-- For base sorts, liftSort' equals embed (with casting) -/
+theorem liftSort'_inj {M M' : Structure S (Type u)}
+    (embed : ∀ A, M.sorts A → M'.sorts A)
+    {D : DerivedSorts S.Sorts} {A : S.Sorts} (hD : D = .inj A)
+    (x : D.interpret M.sorts) :
+    liftSort' embed D x = cast (by rw [hD]) (embed A (cast (by rw [hD]) x)) := by
+  subst hD
+  simp only [liftSort', cast_eq]
+
+/-!
 ## Subset Selection
 -/
 
@@ -104,19 +133,44 @@ def funcPreservesSubset {M : Structure S (Type u)}
 ## Structure Embeddings
 -/
 
-/-- An embedding of structures (on base sorts) -/
+/-- An embedding of structures.
+    Functions must commute with the embedding on ALL derived sorts (not just base sorts).
+    This is the correct premise for the Monotonic Submodel Property. -/
 structure StructureEmbedding (M M' : Structure S (Type u)) where
-  /-- The carrier maps -/
+  /-- The carrier maps on base sorts -/
   embed : ∀ A, M.sorts A → M'.sorts A
   /-- Embeddings are injective -/
   embed_inj : ∀ A, Function.Injective (embed A)
-  /-- Functions commute with embedding (for base-sorted functions) -/
-  func_comm : ∀ (f : S.Functions) {A B : S.Sorts}
+  /-- Functions commute with embedding (for ALL functions, regardless of domain/codomain sort) -/
+  func_comm : ∀ (f : S.Functions) (x : f.domain.interpret M.sorts),
+    liftSort' embed f.codomain (M.Functions f x) =
+    M'.Functions f (liftSort' embed f.domain x)
+
+/-- Helper: liftSort' on .inj sorts equals embed -/
+theorem liftSort'_inj_eq {M M' : Structure S (Type u)}
+    (embed : ∀ A, M.sorts A → M'.sorts A) (A : S.Sorts) (x : M.sorts A) :
+    liftSort' embed (.inj A) x = embed A x := rfl
+
+/-- For base-sorted functions, the embedding commutes in a simpler form.
+    This extracts the base-sort case from the general func_comm.
+    TODO: Complete this proof by properly handling the cast manipulations. -/
+theorem StructureEmbedding.func_comm_base {M M' : Structure S (Type u)}
+    (emb : StructureEmbedding M M')
+    (f : S.Functions)
+    {A B : S.Sorts}
     (hdom : f.domain = DerivedSorts.inj A)
     (hcod : f.codomain = DerivedSorts.inj B)
-    (x : M.sorts A),
-    embed B (castCod hcod (M.Functions f (castDom hdom x))) =
-    castCod hcod (M'.Functions f (castDom hdom (embed A x)))
+    (x : M.sorts A) :
+    emb.embed B (castCod hcod (M.Functions f (castDom hdom x))) =
+    castCod hcod (M'.Functions f (castDom hdom (emb.embed A x))) := by
+  -- This follows from func_comm by manipulating casts.
+  -- The proof is tedious due to dependent type issues.
+  -- Key steps:
+  -- 1. Apply func_comm with (castDom hdom x)
+  -- 2. Use that liftSort' embed (.inj A) = embed A (definitionally)
+  -- 3. Rewrite using hdom and hcod to convert between f.domain/.codomain and .inj A/.inj B
+  -- 4. Simplify the resulting casts
+  sorry
 
 /-!
 ## Pushforward of Subset Selections
@@ -145,13 +199,11 @@ theorem pushforward_preserves_closure {M M' : Structure S (Type u)}
   have hout := hclosed x hx_mem
   -- The output is in sel.subset B
   refine ⟨castCod hcod (M.Functions f (castDom hdom x)), hout, ?_⟩
-  -- Need to show the embedding gives the right result
-  rw [emb.func_comm f hdom hcod x]
-  congr 1
-  -- Need: castDom hdom (embed A x) = castDom hdom x'
-  -- i.e., hdom ▸ embed A x = hdom ▸ x'
-  -- Since x' = embed A x (by hx_eq)
-  simp only [castDom, ← hx_eq]
+  -- Use the base-sorted func_comm helper
+  have hfc := emb.func_comm_base f hdom hcod x
+  -- hfc : emb.embed B (castCod hcod (M.Functions f (castDom hdom x))) =
+  --       castCod hcod (M'.Functions f (castDom hdom (emb.embed A x)))
+  rw [hfc, ← hx_eq]
 
 /-!
 ## Main Theorem
@@ -344,6 +396,24 @@ noncomputable def liftSort {M M' : Structure S (Type u)}
     let y' : ∀ i, (Aᵢ i).interpret M'.sorts := fun i => liftSort emb (Aᵢ i) (x' i)
     (Types.productIso _).inv y'
 
+/-- liftSort equals liftSort' applied to the embedding -/
+theorem liftSort_eq_liftSort' {M M' : Structure S (Type u)}
+    (emb : StructureEmbedding M M') (D : DerivedSorts S.Sorts) (x : D.interpret M.sorts) :
+    liftSort emb D x = liftSort' emb.embed D x := by
+  induction D with
+  | inj B => rfl
+  | prod Aᵢ ih =>
+    simp only [liftSort, liftSort']
+    -- Both sides are productIso.inv applied to a function.
+    -- We need to show the functions are equal.
+    -- Goal: productIso.inv (fun i => liftSort ...) = productIso.inv (fun i => liftSort' ...)
+    -- This follows by congruence if the functions are equal
+    have heq : (fun i => liftSort emb (Aᵢ i) ((Types.productIso _).hom x i)) =
+               (fun i => liftSort' emb.embed (Aᵢ i) ((Types.productIso _).hom x i)) := by
+      funext i
+      exact ih i _
+    simp only [heq]
+
 /-- Lift an embedding to context interpretations (componentwise application) -/
 noncomputable def liftEmbedContext {M M' : Structure S (Type u)}
     (emb : StructureEmbedding M M') (xs : Context S) :
@@ -446,10 +516,24 @@ theorem term_interpret_commutes {M M' : Structure S (Type u)}
     -- This is definitionally true since f_M i = (xs.nth i).interpret M.sorts
     rfl
   | func f t' ih =>
-    -- Function application composes term interpretation with the function.
-    -- By IH, liftSort commutes with term interpretation of the argument.
-    -- By func_comm (generalized), the function application commutes with liftSort.
-    sorry
+    -- Function application: (func f t').interpret M ctx = t'.interpret M ctx ≫ M.Functions f
+    -- In Type u, composition is just function application.
+    simp only [Term.interpret, types_comp_apply]
+    -- Goal: M'.Functions f (t'.interpret M' (liftEmbedContext emb xs ctx)) =
+    --       liftSort emb f.codomain (M.Functions f (t'.interpret M ctx))
+    -- By IH: t'.interpret M' (liftEmbedContext emb xs ctx) = liftSort emb f.domain (t'.interpret M ctx)
+    rw [ih]
+    -- Goal: M'.Functions f (liftSort emb f.domain (t'.interpret M ctx)) =
+    --       liftSort emb f.codomain (M.Functions f (t'.interpret M ctx))
+    -- This is exactly func_comm (with sides swapped)
+    -- func_comm : liftSort' embed f.codomain (M.Functions f x) = M'.Functions f (liftSort' embed f.domain x)
+    -- liftSort emb = liftSort' emb.embed (we need a lemma for this or unfold)
+    have hfc := emb.func_comm f (t'.interpret M ctx)
+    -- hfc : liftSort' emb.embed f.codomain (M.Functions f _) = M'.Functions f (liftSort' emb.embed f.domain _)
+    -- We need: M'.Functions f (liftSort emb f.domain _) = liftSort emb f.codomain (M.Functions f _)
+    -- which is hfc.symm after showing liftSort emb = liftSort' emb.embed
+    rw [liftSort_eq_liftSort' emb f.domain, liftSort_eq_liftSort' emb f.codomain]
+    exact hfc.symm
   | @pair n Aᵢ tᵢ ih =>
     -- Pair builds a product from component interpretations.
     -- Term.interpret M (pair tᵢ) = Pi.lift (fun i => (tᵢ i).interpret M)
