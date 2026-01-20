@@ -818,6 +818,8 @@ pub enum MetaCommand {
     Retract { instance: String, element: String },
     /// Query instance: `:query <instance> <sort> [filter conditions]`
     Query { instance: String, sort: String },
+    /// Explain query plan: `:explain <instance> <sort>`
+    Explain { instance: String, sort: String },
     /// Solve: find an instance of a theory using the geometric logic solver
     /// `:solve <theory> [budget_ms]`
     Solve { theory: String, budget_ms: Option<u64> },
@@ -921,6 +923,17 @@ impl MetaCommand {
                     }
                 } else {
                     MetaCommand::Unknown(":query requires <instance> <sort>".to_string())
+                }
+            }
+            "explain" => {
+                let args: Vec<&str> = std::iter::once(arg).flatten().chain(parts).collect();
+                if args.len() >= 2 {
+                    MetaCommand::Explain {
+                        instance: args[0].to_string(),
+                        sort: args[1].to_string(),
+                    }
+                } else {
+                    MetaCommand::Unknown(":explain requires <instance> <sort>".to_string())
                 }
             }
             "solve" => {

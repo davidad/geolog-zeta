@@ -169,6 +169,9 @@ fn handle_command(state: &mut ReplState, cmd: MetaCommand) -> bool {
         MetaCommand::Query { instance, sort } => {
             handle_query(state, &instance, &sort);
         }
+        MetaCommand::Explain { instance, sort } => {
+            handle_explain(state, &instance, &sort);
+        }
         MetaCommand::Solve { theory, budget_ms } => {
             handle_solve(state, &theory, budget_ms);
         }
@@ -249,6 +252,7 @@ fn print_help(topic: Option<&str>) {
             println!();
             println!("Query:");
             println!("  :query <inst> <sort>        List all elements of a sort");
+            println!("  :explain <inst> <sort>      Show query execution plan");
             println!();
             println!("Solver:");
             println!("  :solve <theory> [budget_ms]          Find model of theory from scratch");
@@ -539,6 +543,52 @@ fn handle_query(state: &ReplState, instance_name: &str, sort_name: &str) {
             eprintln!("Query error: {}", e);
         }
     }
+}
+
+/// Handle :explain command - show query execution plan
+fn handle_explain(state: &ReplState, instance_name: &str, sort_name: &str) {
+    use geolog::query::QueryOp;
+
+    // Get the instance
+    let entry = match state.instances.get(instance_name) {
+        Some(e) => e,
+        None => {
+            eprintln!("Instance '{}' not found", instance_name);
+            return;
+        }
+    };
+
+    // Get the theory
+    let theory = match state.theories.get(&entry.theory_name) {
+        Some(t) => t,
+        None => {
+            eprintln!("Theory '{}' not found", entry.theory_name);
+            return;
+        }
+    };
+
+    // Find the sort index
+    let sort_idx = match theory.theory.signature.sorts.iter().position(|s| s == sort_name) {
+        Some(idx) => idx,
+        None => {
+            eprintln!(
+                "Sort '{}' not found in theory '{}'",
+                sort_name, entry.theory_name
+            );
+            return;
+        }
+    };
+
+    // Build the query plan (same as query_sort in repl.rs)
+    let plan = QueryOp::Scan { sort_idx };
+
+    // Display the plan using the Display impl
+    println!("Query plan for ':query {} {}':", instance_name, sort_name);
+    println!();
+    println!("{}", plan);
+    println!();
+    println!("Sort: {} (index {})", sort_name, sort_idx);
+    println!("Instance: {} (theory: {})", instance_name, entry.theory_name);
 }
 
 /// Handle :solve command - find a model of a theory from scratch
