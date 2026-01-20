@@ -1,0 +1,58 @@
+// Test that Trace theory with product codomains works
+
+theory PetriNet {
+  P : Sort;
+  T : Sort;
+  in : Sort;
+  out : Sort;
+  in/src : in -> P;
+  in/tgt : in -> T;
+  out/src : out -> T;
+  out/tgt : out -> P;
+}
+
+// Simple Petri net: A --t--> B
+instance SimpleNet : PetriNet = {
+  A : P;
+  B : P;
+  t : T;
+  arc_in : in;
+  arc_in in/src = A;
+  arc_in in/tgt = t;
+  arc_out : out;
+  arc_out out/src = t;
+  arc_out out/tgt = B;
+}
+
+// Trace theory with product codomains for wire endpoints
+theory (N : PetriNet instance) Trace {
+  F : Sort;
+  F/of : F -> N/T;
+
+  W : Sort;
+  W/src : W -> [firing : F, arc : N/out];
+  W/tgt : W -> [firing : F, arc : N/in];
+
+  input_terminal : Sort;
+  output_terminal : Sort;
+  input_terminal/of : input_terminal -> N/P;
+  output_terminal/of : output_terminal -> N/P;
+  input_terminal/tgt : input_terminal -> [firing : F, arc : N/in];
+  output_terminal/src : output_terminal -> [firing : F, arc : N/out];
+}
+
+// A simple trace: one firing of t, with input/output terminals
+instance SimpleTrace : SimpleNet Trace = {
+  f1 : F;
+  f1 F/of = SimpleNet/t;
+
+  // Input terminal (token comes from external marking)
+  it : input_terminal;
+  it input_terminal/of = SimpleNet/A;
+  it input_terminal/tgt = [firing: f1, arc: SimpleNet/arc_in];
+
+  // Output terminal (token goes to external marking)
+  ot : output_terminal;
+  ot output_terminal/of = SimpleNet/B;
+  ot output_terminal/src = [firing: f1, arc: SimpleNet/arc_out];
+}

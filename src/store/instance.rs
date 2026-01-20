@@ -239,6 +239,10 @@ impl Store {
                     // Product domain functions need special handling
                     // TODO: Handle product domains
                 }
+                crate::core::FunctionColumn::ProductCodomain { .. } => {
+                    // Product codomain functions need special handling
+                    // TODO: Handle product codomains (store each field value)
+                }
             }
         }
 

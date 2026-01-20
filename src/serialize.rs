@@ -41,6 +41,14 @@ pub enum FunctionColumnData {
         entries: Vec<(Vec<usize>, usize)>,
         field_sorts: Vec<usize>,
     },
+    /// Product codomain: base domain maps to multiple fields
+    ProductCodomain {
+        /// One column per field - each Vec<Option<usize>> is indexed by domain sort-local index
+        field_columns: Vec<Vec<Option<usize>>>,
+        field_names: Vec<String>,
+        field_sorts: Vec<usize>,
+        domain_sort: usize,
+    },
 }
 
 /// Serializable form of a Structure
@@ -81,6 +89,27 @@ impl StructureData {
                     FunctionColumnData::ProductLocal {
                         entries,
                         field_sorts: field_sorts.clone(),
+                    }
+                }
+                FunctionColumn::ProductCodomain {
+                    field_columns,
+                    field_names,
+                    field_sorts,
+                    domain_sort,
+                } => {
+                    let serialized_columns: Vec<Vec<Option<usize>>> = field_columns
+                        .iter()
+                        .map(|col| {
+                            col.iter()
+                                .map(|&opt| get_slid(opt).map(|s| s.index()))
+                                .collect()
+                        })
+                        .collect();
+                    FunctionColumnData::ProductCodomain {
+                        field_columns: serialized_columns,
+                        field_names: field_names.clone(),
+                        field_sorts: field_sorts.clone(),
+                        domain_sort: *domain_sort,
                     }
                 }
             })
@@ -142,6 +171,27 @@ impl StructureData {
                     FunctionColumn::ProductLocal {
                         storage,
                         field_sorts: field_sorts.clone(),
+                    }
+                }
+                FunctionColumnData::ProductCodomain {
+                    field_columns,
+                    field_names,
+                    field_sorts,
+                    domain_sort,
+                } => {
+                    let restored_columns: Vec<Vec<crate::id::OptSlid>> = field_columns
+                        .iter()
+                        .map(|col| {
+                            col.iter()
+                                .map(|&opt| opt.map(Slid::from_usize).and_then(some_slid))
+                                .collect()
+                        })
+                        .collect();
+                    FunctionColumn::ProductCodomain {
+                        field_columns: restored_columns,
+                        field_names: field_names.clone(),
+                        field_sorts: field_sorts.clone(),
+                        domain_sort: *domain_sort,
                     }
                 }
             })

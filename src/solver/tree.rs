@@ -443,6 +443,17 @@ impl SearchTree {
                     crate::core::FunctionColumn::ProductLocal { storage, .. } => {
                         storage.defined_count()
                     }
+                    crate::core::FunctionColumn::ProductCodomain { field_columns, .. } => {
+                        // Count elements where ALL fields are defined
+                        if field_columns.is_empty() {
+                            0
+                        } else {
+                            let len = field_columns[0].len();
+                            (0..len)
+                                .filter(|&i| field_columns.iter().all(|col| col.get(i).is_some_and(|opt| opt.is_some())))
+                                .count()
+                        }
+                    }
                 })
                 .collect(),
             num_relation_tuples: node.structure.relations.iter().map(|r| r.len()).collect(),

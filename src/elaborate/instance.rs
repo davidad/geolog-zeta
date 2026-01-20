@@ -227,27 +227,44 @@ fn elaborate_instance_ctx_inner(
     }
 
     // 3b. Initialize function storage now that carrier sizes are known
-    // Extract domain info for each function (base or product)
-    let domains: Vec<FunctionDomainInfo> = theory
+    // Extract both domain and codomain info for each function
+    let func_infos: Vec<FunctionFullInfo> = theory
         .theory
         .signature
         .functions
         .iter()
-        .map(|func| match &func.domain {
-            DerivedSort::Base(id) => FunctionDomainInfo::Base(*id),
-            DerivedSort::Product(fields) => {
-                let field_sorts: Vec<SortId> = fields
-                    .iter()
-                    .filter_map(|(_, ds)| match ds {
-                        DerivedSort::Base(id) => Some(*id),
-                        DerivedSort::Product(_) => None, // Nested products not supported
-                    })
-                    .collect();
-                FunctionDomainInfo::Product(field_sorts)
-            }
+        .map(|func| {
+            let domain = match &func.domain {
+                DerivedSort::Base(id) => FunctionDomainInfo::Base(*id),
+                DerivedSort::Product(fields) => {
+                    let field_sorts: Vec<SortId> = fields
+                        .iter()
+                        .filter_map(|(_, ds)| match ds {
+                            DerivedSort::Base(id) => Some(*id),
+                            DerivedSort::Product(_) => None, // Nested products not supported
+                        })
+                        .collect();
+                    FunctionDomainInfo::Product(field_sorts)
+                }
+            };
+            let codomain = match &func.codomain {
+                DerivedSort::Base(id) => FunctionCodomainInfo::Local(*id),
+                DerivedSort::Product(fields) => {
+                    let field_names: Vec<String> = fields.iter().map(|(name, _)| name.clone()).collect();
+                    let field_sorts: Vec<SortId> = fields
+                        .iter()
+                        .filter_map(|(_, ds)| match ds {
+                            DerivedSort::Base(id) => Some(*id),
+                            DerivedSort::Product(_) => None, // Nested products not supported
+                        })
+                        .collect();
+                    FunctionCodomainInfo::Product { field_names, field_sorts }
+                }
+            };
+            FunctionFullInfo { domain, codomain }
         })
         .collect();
-    structure.init_functions_full(&domains);
+    structure.init_functions_complete(&func_infos);
 
     // 3c. Import function values from param instances
     // For each param (N, ExampleNet), for each function in param theory (src, tgt),
@@ -323,9 +340,6 @@ fn elaborate_instance_ctx_inner(
             let decomposed =
                 decompose_func_app(lhs, &name_to_slid, &theory.theory.signature)?;
 
-            // Resolve rhs to an element
-            let value_slid = resolve_instance_element(rhs, &name_to_slid)?;
-
             match decomposed {
                 DecomposedFuncApp::Base { elem, func_id } => {
                     // Type checking: verify element sort matches function domain
@@ -345,42 +359,90 @@ fn elaborate_instance_ctx_inner(
                         });
                     }
 
-                    // Type checking: verify value sort matches function codomain
-                    let value_sort_id = structure.sorts[value_slid.index()];
-                    if let DerivedSort::Base(expected_codomain) = &func.codomain
-                        && value_sort_id != *expected_codomain
-                    {
-                        return Err(ElabError::CodomainMismatch {
-                            func_name: func.name.clone(),
-                            element_name: slid_to_name
-                                .get(&value_slid)
-                                .cloned()
-                                .unwrap_or_else(|| format!("slid_{}", value_slid)),
-                            expected_sort: theory.theory.signature.sorts[*expected_codomain].clone(),
-                            actual_sort: theory.theory.signature.sorts[value_sort_id].clone(),
-                        });
-                    }
+                    // Check if codomain is a product (needs Record RHS) or base (needs element RHS)
+                    match &func.codomain {
+                        DerivedSort::Base(expected_codomain) => {
+                            // Base codomain: resolve RHS to single element
+                            let value_slid = resolve_instance_element(rhs, &name_to_slid)?;
+                            let value_sort_id = structure.sorts[value_slid.index()];
+                            if value_sort_id != *expected_codomain {
+                                return Err(ElabError::CodomainMismatch {
+                                    func_name: func.name.clone(),
+                                    element_name: slid_to_name
+                                        .get(&value_slid)
+                                        .cloned()
+                                        .unwrap_or_else(|| format!("slid_{}", value_slid)),
+                                    expected_sort: theory.theory.signature.sorts[*expected_codomain].clone(),
+                                    actual_sort: theory.theory.signature.sorts[value_sort_id].clone(),
+                                });
+                            }
+                            // Define the function value
+                            structure
+                                .define_function(func_id, elem, value_slid)
+                                .map_err(ElabError::DuplicateDefinition)?;
+                        }
+                        DerivedSort::Product(codomain_fields) => {
+                            // Product codomain: RHS must be a Record
+                            let rhs_fields = match rhs {
+                                ast::Term::Record(fields) => fields,
+                                _ => return Err(ElabError::UnsupportedFeature(format!(
+                                    "function {} has product codomain, RHS must be a record literal like [field1: v1, field2: v2], got {:?}",
+                                    func.name, rhs
+                                ))),
+                            };
 
-                    // Define the function value
-                    structure
-                        .define_function(func_id, elem, value_slid)
-                        .map_err(ElabError::DuplicateDefinition)?;
+                            // Resolve each field value and type-check
+                            let mut codomain_values: Vec<(&str, Slid)> = Vec::with_capacity(rhs_fields.len());
+                            for (field_name, field_term) in rhs_fields {
+                                // Find the expected sort for this field
+                                let expected_sort = codomain_fields.iter()
+                                    .find(|(name, _)| name == field_name)
+                                    .ok_or_else(|| ElabError::UnsupportedFeature(format!(
+                                        "unknown field '{}' in codomain of function {} (expected: {:?})",
+                                        field_name, func.name,
+                                        codomain_fields.iter().map(|(n, _)| n).collect::<Vec<_>>()
+                                    )))?;
+
+                                let value_slid = resolve_instance_element(field_term, &name_to_slid)?;
+                                let value_sort_id = structure.sorts[value_slid.index()];
+
+                                if let DerivedSort::Base(expected_sort_id) = &expected_sort.1 {
+                                    if value_sort_id != *expected_sort_id {
+                                        return Err(ElabError::CodomainMismatch {
+                                            func_name: func.name.clone(),
+                                            element_name: format!("field '{}': {}", field_name,
+                                                slid_to_name.get(&value_slid).cloned().unwrap_or_else(|| format!("slid_{}", value_slid))),
+                                            expected_sort: theory.theory.signature.sorts[*expected_sort_id].clone(),
+                                            actual_sort: theory.theory.signature.sorts[value_sort_id].clone(),
+                                        });
+                                    }
+                                }
+
+                                codomain_values.push((field_name.as_str(), value_slid));
+                            }
+
+                            // Define the product codomain function value
+                            structure
+                                .define_function_product_codomain(func_id, elem, &codomain_values)
+                                .map_err(ElabError::DuplicateDefinition)?;
+                        }
+                    }
                 }
 
                 DecomposedFuncApp::Product { tuple, func_id } => {
                     let func = &theory.theory.signature.functions[func_id];
 
                     // Type checking: verify tuple elements match product domain fields
-                    if let DerivedSort::Product(fields) = &func.domain {
-                        if tuple.len() != fields.len() {
+                    if let DerivedSort::Product(domain_fields) = &func.domain {
+                        if tuple.len() != domain_fields.len() {
                             return Err(ElabError::UnsupportedFeature(format!(
                                 "product domain arity mismatch: expected {}, got {}",
-                                fields.len(),
+                                domain_fields.len(),
                                 tuple.len()
                             )));
                         }
 
-                        for (slid, (field_name, field_sort)) in tuple.iter().zip(fields.iter()) {
+                        for (slid, (field_name, field_sort)) in tuple.iter().zip(domain_fields.iter()) {
                             let elem_sort_id = structure.sorts[slid.index()];
                             if let DerivedSort::Base(expected_sort) = field_sort
                                 && elem_sort_id != *expected_sort {
@@ -408,26 +470,36 @@ fn elaborate_instance_ctx_inner(
                         )));
                     }
 
-                    // Type checking: verify value sort matches function codomain
-                    let value_sort_id = structure.sorts[value_slid.index()];
-                    if let DerivedSort::Base(expected_codomain) = &func.codomain
-                        && value_sort_id != *expected_codomain
-                    {
-                        return Err(ElabError::CodomainMismatch {
-                            func_name: func.name.clone(),
-                            element_name: slid_to_name
-                                .get(&value_slid)
-                                .cloned()
-                                .unwrap_or_else(|| format!("slid_{}", value_slid)),
-                            expected_sort: theory.theory.signature.sorts[*expected_codomain].clone(),
-                            actual_sort: theory.theory.signature.sorts[value_sort_id].clone(),
-                        });
+                    // Handle codomain: base vs product
+                    match &func.codomain {
+                        DerivedSort::Base(expected_codomain) => {
+                            // Resolve RHS to single element
+                            let value_slid = resolve_instance_element(rhs, &name_to_slid)?;
+                            let value_sort_id = structure.sorts[value_slid.index()];
+                            if value_sort_id != *expected_codomain {
+                                return Err(ElabError::CodomainMismatch {
+                                    func_name: func.name.clone(),
+                                    element_name: slid_to_name
+                                        .get(&value_slid)
+                                        .cloned()
+                                        .unwrap_or_else(|| format!("slid_{}", value_slid)),
+                                    expected_sort: theory.theory.signature.sorts[*expected_codomain].clone(),
+                                    actual_sort: theory.theory.signature.sorts[value_sort_id].clone(),
+                                });
+                            }
+                            // Define the function value for product domain
+                            structure
+                                .define_function_product(func_id, &tuple, value_slid)
+                                .map_err(ElabError::DuplicateDefinition)?;
+                        }
+                        DerivedSort::Product(_) => {
+                            // Product domain with product codomain: not yet supported
+                            return Err(ElabError::UnsupportedFeature(format!(
+                                "function {} has both product domain and product codomain (not yet supported)",
+                                func.name
+                            )));
+                        }
                     }
-
-                    // Define the function value for product domain
-                    structure
-                        .define_function_product(func_id, &tuple, value_slid)
-                        .map_err(ElabError::DuplicateDefinition)?;
                 }
             }
         }
@@ -943,6 +1015,42 @@ fn validate_totality(
                 }
             }
 
+            // Base domain with product codomain: check all field columns
+            (DerivedSort::Base(domain_sort_id), FunctionColumn::ProductCodomain { field_columns, field_names, .. }) => {
+                // For product codomains, a value is defined if ALL fields are defined
+                let carrier_size = structure.carrier_size(*domain_sort_id);
+                for sort_slid in 0..carrier_size {
+                    // Check if any field is undefined for this element
+                    let all_defined = field_columns.iter().all(|col| {
+                        col.get(sort_slid)
+                            .and_then(|opt| crate::id::get_slid(*opt))
+                            .is_some()
+                    });
+                    if !all_defined {
+                        let slid = Slid::from_usize(
+                            structure.carriers[*domain_sort_id]
+                                .select(sort_slid as u64)
+                                .expect("sort_slid should be valid") as usize,
+                        );
+                        let name = slid_to_name
+                            .get(&slid)
+                            .cloned()
+                            .unwrap_or_else(|| format!("element#{}", slid));
+                        // Find which fields are missing
+                        let missing_fields: Vec<_> = field_columns.iter()
+                            .zip(field_names.iter())
+                            .filter(|(col, _)| {
+                                col.get(sort_slid)
+                                    .and_then(|opt| crate::id::get_slid(*opt))
+                                    .is_none()
+                            })
+                            .map(|(_, name)| name.as_str())
+                            .collect();
+                        missing.push(format!("{} (fields: {:?})", name, missing_fields));
+                    }
+                }
+            }
+
             // Mismatched domain/column types (shouldn't happen if init is correct)
             (DerivedSort::Base(_), FunctionColumn::ProductLocal { .. }) => {
                 return Err(ElabError::UnsupportedFeature(format!(
@@ -953,6 +1061,12 @@ fn validate_totality(
             (DerivedSort::Product(_), FunctionColumn::Local(_) | FunctionColumn::External(_)) => {
                 return Err(ElabError::UnsupportedFeature(format!(
                     "function {} has product domain but columnar storage",
+                    func_sym.name
+                )));
+            }
+            (DerivedSort::Product(_), FunctionColumn::ProductCodomain { .. }) => {
+                return Err(ElabError::UnsupportedFeature(format!(
+                    "function {} has product domain with product codomain (not yet supported)",
                     func_sym.name
                 )));
             }

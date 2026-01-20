@@ -829,25 +829,69 @@ impl ReplState {
 
             match &func_sym.domain {
                 DerivedSort::Base(domain_sort_id) => {
-                    // Base domain: iterate over carrier elements
-                    for slid_u64 in entry.structure.carriers[*domain_sort_id].iter() {
-                        let slid = Slid::from_usize(slid_u64 as usize);
-                        let sort_slid = entry.structure.sort_local_id(slid);
-                        if let Some(codomain_slid) =
-                            entry.structure.get_function(func_id, sort_slid)
-                        {
-                            let domain_name = entry
-                                .get_name(slid)
-                                .map(|s| s.to_string())
-                                .unwrap_or_else(|| format!("#{}", slid_u64));
-                            let codomain_name = entry
-                                .get_name(codomain_slid)
-                                .map(|s| s.to_string())
-                                .unwrap_or_else(|| format!("#{}", codomain_slid));
-                            values.push(format!(
-                                "{} {} = {}",
-                                domain_name, func_sym.name, codomain_name
-                            ));
+                    // Check if this is a product codomain function
+                    if let FunctionColumn::ProductCodomain { field_columns, field_names, .. } =
+                        &entry.structure.functions[func_id]
+                    {
+                        // Product codomain: format as `domain func = [field1: v1, ...]`
+                        for slid_u64 in entry.structure.carriers[*domain_sort_id].iter() {
+                            let slid = Slid::from_usize(slid_u64 as usize);
+                            let sort_slid = entry.structure.sort_local_id(slid);
+                            let idx = sort_slid.index();
+
+                            // Check if all fields are defined for this element
+                            let all_defined = field_columns.iter().all(|col| {
+                                col.get(idx)
+                                    .and_then(|opt| crate::id::get_slid(*opt))
+                                    .is_some()
+                            });
+
+                            if all_defined {
+                                let domain_name = entry
+                                    .get_name(slid)
+                                    .map(|s| s.to_string())
+                                    .unwrap_or_else(|| format!("#{}", slid_u64));
+
+                                let field_strs: Vec<String> = field_names
+                                    .iter()
+                                    .zip(field_columns.iter())
+                                    .map(|(name, col)| {
+                                        let codomain_slid = crate::id::get_slid(col[idx]).unwrap();
+                                        let codomain_name = entry
+                                            .get_name(codomain_slid)
+                                            .map(|s| s.to_string())
+                                            .unwrap_or_else(|| format!("#{}", codomain_slid));
+                                        format!("{}: {}", name, codomain_name)
+                                    })
+                                    .collect();
+
+                                values.push(format!(
+                                    "{} {} = [{}]",
+                                    domain_name, func_sym.name, field_strs.join(", ")
+                                ));
+                            }
+                        }
+                    } else {
+                        // Base codomain: iterate over carrier elements
+                        for slid_u64 in entry.structure.carriers[*domain_sort_id].iter() {
+                            let slid = Slid::from_usize(slid_u64 as usize);
+                            let sort_slid = entry.structure.sort_local_id(slid);
+                            if let Some(codomain_slid) =
+                                entry.structure.get_function(func_id, sort_slid)
+                            {
+                                let domain_name = entry
+                                    .get_name(slid)
+                                    .map(|s| s.to_string())
+                                    .unwrap_or_else(|| format!("#{}", slid_u64));
+                                let codomain_name = entry
+                                    .get_name(codomain_slid)
+                                    .map(|s| s.to_string())
+                                    .unwrap_or_else(|| format!("#{}", codomain_slid));
+                                values.push(format!(
+                                    "{} {} = {}",
+                                    domain_name, func_sym.name, codomain_name
+                                ));
+                            }
                         }
                     }
                 }
