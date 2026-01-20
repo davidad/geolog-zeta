@@ -716,6 +716,11 @@ fn compile_op(ctx: &mut CompileContext<'_>, op: &QueryOp) -> Result<Slid, String
     match op {
         QueryOp::Scan { sort_idx } => compile_scan(ctx, *sort_idx),
 
+        QueryOp::ScanRelation { rel_id } => {
+            // TODO: Add ScanRelationOp to RelAlgIR theory and implement
+            Err(format!("ScanRelation compilation not yet implemented (rel_id={})", rel_id))
+        }
+
         QueryOp::Filter { input, pred } => {
             let input_wire = compile_op(ctx, input)?;
             compile_filter(ctx, input_wire, pred)

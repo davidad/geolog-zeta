@@ -150,18 +150,10 @@ fn compile_premise(
         }
 
         Formula::Rel(rel_id, _arg) => {
-            // Relation: scan the relation's sort, filter by membership
-            // TODO: Use _arg to extract column bindings
-            let rel = &sig.relations[*rel_id];
-            let sort_idx = resolve_sort_index(&rel.domain, sig)?;
-
-            // For a relation R(x), we need to scan elements and check membership
-            // This becomes: Scan(sort) filtered by R(col)
-            let scan = QueryOp::Scan { sort_idx };
-
-            // TODO: Add relation membership predicate
-            // For now, just return the scan (assumes relation is total)
-            Ok(scan)
+            // Relation: scan tuples in the relation directly
+            // TODO: Use _arg to extract column bindings for joining
+            // For now, we just scan all tuples in the relation
+            Ok(QueryOp::ScanRelation { rel_id: *rel_id })
         }
 
         Formula::Conj(formulas) => {
@@ -550,12 +542,4 @@ pub fn compile_theory_axioms(theory: &ElaboratedTheory) -> Result<Vec<ChaseRule>
     Ok(rules)
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_chase_rule_compilation() {
-        // This is a placeholder - we'll add real tests once we have test fixtures
-    }
-}
+// Tests are in tests/unit_chase.rs

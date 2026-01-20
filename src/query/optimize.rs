@@ -37,6 +37,8 @@ fn optimize_children(plan: &QueryOp) -> QueryOp {
     match plan {
         QueryOp::Scan { sort_idx } => QueryOp::Scan { sort_idx: *sort_idx },
 
+        QueryOp::ScanRelation { rel_id } => QueryOp::ScanRelation { rel_id: *rel_id },
+
         QueryOp::Filter { input, pred } => QueryOp::Filter {
             input: Box::new(optimize(input)),
             pred: pred.clone(),

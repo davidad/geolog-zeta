@@ -79,7 +79,7 @@ impl Bag {
         let mut result = Bag::new();
         for (tuple, mult) in self.iter() {
             if *mult > 0 {
-                result.insert(tuple.clone(), 1);
+                result.insert(tuple.to_vec(), 1);
             }
         }
         result
@@ -99,6 +99,10 @@ impl Bag {
 pub enum QueryOp {
     /// Scan all elements of a sort
     Scan { sort_idx: usize },
+
+    /// Scan all tuples in a relation
+    /// Each tuple becomes a row in the result bag
+    ScanRelation { rel_id: usize },
 
     /// Filter by predicate
     Filter {
@@ -229,6 +233,9 @@ impl QueryOp {
         match self {
             QueryOp::Scan { sort_idx } => {
                 write!(f, "{}Scan(sort={})", pad, sort_idx)
+            }
+            QueryOp::ScanRelation { rel_id } => {
+                write!(f, "{}ScanRelation(rel={})", pad, rel_id)
             }
             QueryOp::Filter { input, pred } => {
                 writeln!(f, "{}Filter({})", pad, pred)?;
@@ -408,6 +415,16 @@ pub fn execute(plan: &QueryOp, structure: &Structure) -> Bag {
             result
         }
 
+        QueryOp::ScanRelation { rel_id } => {
+            let mut result = Bag::new();
+            if let Some(rel) = structure.relations.get(*rel_id) {
+                for tuple in rel.iter() {
+                    result.insert(tuple.to_vec(), 1);
+                }
+            }
+            result
+        }
+
         QueryOp::Filter { input, pred } => {
             let input_bag = execute(input, structure);
             let mut result = Bag::new();
@@ -518,6 +535,7 @@ pub fn execute_stream(plan: &QueryOp, structure: &Structure, ctx: &mut StreamCon
     match plan {
         // Stateless operators - delegate to execute()
         QueryOp::Scan { .. }
+        | QueryOp::ScanRelation { .. }
         | QueryOp::Filter { .. }
         | QueryOp::Project { .. }
         | QueryOp::Join { .. }
@@ -584,6 +602,16 @@ fn execute_stream_stateless(plan: &QueryOp, structure: &Structure, ctx: &mut Str
             if let Some(carrier) = structure.carriers.get(*sort_idx) {
                 for elem in carrier.iter() {
                     result.insert(vec![Slid::from_usize(elem as usize)], 1);
+                }
+            }
+            result
+        }
+
+        QueryOp::ScanRelation { rel_id } => {
+            let mut result = Bag::new();
+            if let Some(rel) = structure.relations.get(*rel_id) {
+                for tuple in rel.iter() {
+                    result.insert(tuple.to_vec(), 1);
                 }
             }
             result
@@ -806,6 +834,16 @@ pub fn execute_optimized(plan: &QueryOp, structure: &Structure) -> Bag {
             result
         }
 
+        QueryOp::ScanRelation { rel_id } => {
+            let mut result = Bag::new();
+            if let Some(rel) = structure.relations.get(*rel_id) {
+                for tuple in rel.iter() {
+                    result.insert(tuple.to_vec(), 1);
+                }
+            }
+            result
+        }
+
         QueryOp::Filter { input, pred } => {
             let input_bag = execute_optimized(input, structure);
             let mut result = Bag::new();
@@ -915,6 +953,30 @@ mod tests {
         let result = execute(&filter, &structure);
         assert_eq!(result.len(), 1);
         assert!(result.tuples.contains_key(&vec![Slid::from_usize(1)]));
+    }
+
+    #[test]
+    fn test_scan_relation() {
+        use crate::core::{RelationStorage, VecRelation};
+
+        let mut structure = Structure::new(1);
+        structure.carriers[0].insert(0);
+        structure.carriers[0].insert(1);
+
+        // Initialize a relation with arity 2
+        structure.relations.push(VecRelation::new(2));
+
+        // Add tuples to the relation
+        structure.relations[0].insert(vec![Slid::from_usize(0), Slid::from_usize(1)]);
+        structure.relations[0].insert(vec![Slid::from_usize(1), Slid::from_usize(0)]);
+
+        // Scan the relation
+        let scan_rel = QueryOp::ScanRelation { rel_id: 0 };
+        let result = execute(&scan_rel, &structure);
+
+        assert_eq!(result.len(), 2);
+        assert!(result.tuples.contains_key(&vec![Slid::from_usize(0), Slid::from_usize(1)]));
+        assert!(result.tuples.contains_key(&vec![Slid::from_usize(1), Slid::from_usize(0)]));
     }
 
     #[test]
