@@ -358,7 +358,6 @@ theorem rel_mem_transfer {M M' : Structure S (Type u)}
   rw [liftSort'_inj_cast emb.embed hdom] at h
   simp only [cast_cast, cast_eq, x'] at h
   convert h using 2
-  simp only [cast_cast, cast_eq]
 
 /-!
 ## Connection to Theory Satisfaction
@@ -603,6 +602,44 @@ theorem term_interpret_commutes {M M' : Structure S (Type u)}
       Types_productIso_hom_apply f_M x i
     simp only [g, h2]
     rfl
+
+/-- Context morphism interpretation commutes with liftEmbedContext.
+    This is the context morphism analogue of term_interpret_commutes.
+    For a context morphism σ : ys ⟶ xs, we have:
+      liftEmbedContext xs (σ.interpret M ctx) = σ.interpret M' (liftEmbedContext ys ctx) -/
+theorem hom_interpret_commutes {M M' : Structure S (Type u)}
+    [κ : SmallUniverse S] [G : Geometric κ (Type u)]
+    (emb : StructureEmbedding M M')
+    {ys xs : Context S}
+    (σ : ys ⟶ xs) (ctx : Context.interpret M ys) :
+    liftEmbedContext emb xs (Context.Hom.interpret M σ ctx) =
+    Context.Hom.interpret M' σ (liftEmbedContext emb ys ctx) := by
+  -- σ.interpret = Pi.lift (fun i => (σ i).interpret)
+  -- Both sides are built from Pi.lift; compare componentwise
+  simp only [Context.Hom.interpret]
+  -- Goal: liftEmbedContext xs (Pi.lift (fun i => (σ i).interpret M) ctx) =
+  --       Pi.lift (fun i => (σ i).interpret M') (liftEmbedContext ys ctx)
+  -- Use Types.productIso to extract components
+  let f_M := fun i : Fin xs.length => (xs.nth i).interpret M.sorts
+  let f_M' := fun i : Fin xs.length => (xs.nth i).interpret M'.sorts
+  apply (Types.productIso f_M').toEquiv.injective
+  funext i
+  -- Compare components: apply productIso.hom and extract i-th component
+  simp only [Iso.toEquiv_fun]
+  rw [Types_productIso_hom_apply f_M', Types_productIso_hom_apply f_M']
+  -- RHS: Pi.π f_M' i (Pi.lift (fun i => (σ i).interpret M') (liftEmbedContext ys ctx))
+  --    = (σ i).interpret M' (liftEmbedContext ys ctx)
+  rw [Types.pi_lift_π_apply]
+  -- LHS: Pi.π f_M' i (liftEmbedContext xs (Pi.lift (fun i => (σ i).interpret M) ctx))
+  -- By definition of liftEmbedContext
+  simp only [liftEmbedContext]
+  rw [Types_productIso_inv_apply f_M', Types_productIso_hom_apply f_M]
+  -- LHS: liftSort emb (xs.nth i) (Pi.π f_M i (Pi.lift (fun i => (σ i).interpret M) ctx))
+  rw [Types.pi_lift_π_apply]
+  -- LHS: liftSort emb (xs.nth i) ((σ i).interpret M ctx)
+  -- RHS: (σ i).interpret M' (liftEmbedContext ys ctx)
+  -- By term_interpret_commutes
+  exact (term_interpret_commutes emb (σ i) ctx).symm
 
 /-!
 **Formula Satisfaction Monotonicity**
@@ -864,6 +901,18 @@ theorem exists_range_iff {X Y : Type u} [HasImages (Type u)] (f : X ⟶ Y) (P : 
     use z
     simp only [types_comp_apply, hz, hfx]
 
+/-- In Subobject X (for Type u), the categorical coproduct equals the lattice supremum.
+    This follows from the universal properties: both are the least upper bound of the family. -/
+theorem coproduct_eq_iSup {X : Type u} {ι : Type*} (P : ι → Subobject X) [HasCoproduct P] :
+    ∐ P = ⨆ i, P i := by
+  apply le_antisymm
+  · -- ∐ P ≤ ⨆ P: construct morphism from ∐ P to ⨆ P using the coproduct universal property
+    exact Quiver.Hom.le (Sigma.desc (fun i => (le_iSup P i).hom))
+  · -- ⨆ P ≤ ∐ P: show P i ≤ ∐ P for all i, then ⨆ is least upper bound
+    apply iSup_le
+    intro i
+    exact Quiver.Hom.le (Sigma.ι P i)
+
 /-- In Type u, x ∈ range (⨆ᵢ Pᵢ).arrow iff ∃ i, x ∈ range (Pᵢ).arrow.
     This is the set-theoretic fact that supremum of subobjects is union. -/
 theorem iSup_range_iff {X : Type u} {ι : Type*} (P : ι → Subobject X) (x : X) :
@@ -979,52 +1028,55 @@ theorem formula_satisfaction_monotone {M M' : Structure S (Type u)}
     -- Now goal is: liftSort emb _ (t1.interpret M t) = liftSort emb _ (t2.interpret M t)
     -- This follows from hsat by congruence (liftSort is a function)
     rw [hsat]
-  | «exists» φ ih =>
+  | @«exists» A xs' φ ih =>
     -- Existential quantification: ∃x.φ(ctx, x) interprets as
     --   (Subobject.exists π).obj (φ.interpret)
-    -- where π : Context.interpret M (xs.cons A) → Context.interpret M xs
+    -- where π : Context.interpret M (xs'.cons A) → Context.interpret M xs'
     -- is the projection that drops the last variable.
+    -- Note: xs' is the base context, xs = exists binds xs' with "∃A.φ" having context xs'
     --
     -- In Type u, (exists f).obj P corresponds to the image of P under f:
     --   y ∈ ((exists f).obj P).arrow iff ∃ x ∈ P.arrow, f x = y
-    --
-    -- For the proof:
-    -- - hsat says t ∈ range ((exists π).obj (φ.interpret M)).arrow
-    -- - This means ∃ (a : A.interpret M.sorts), (t, a) ∈ range (φ.interpret M).arrow ∧ π(t,a) = t
-    -- - By IH on φ with context (t, a), we get (liftEmbedContext (t,a)) ∈ φ.interpret M'
-    -- - The lifted context should be (liftEmbedContext t, embed a)
-    -- - Applying π' gives liftEmbedContext t
-    -- - Therefore liftEmbedContext t ∈ (exists π').obj (φ.interpret M')
-    --
-    -- This requires:
-    -- 1. A lemma about (exists f).obj P range characterization
-    -- 2. Proper lifting of extended contexts
     unfold formulaSatisfied subobjectMem at hsat ⊢
     simp only [Formula.interpret] at hsat ⊢
-    sorry
+    -- hsat : t ∈ range ((Subobject.exists ((xs'.π A).interpret M)).obj (φ.interpret M)).arrow
+    -- Goal : liftEmbedContext xs' t ∈ range ((Subobject.exists ((xs'.π A).interpret M')).obj (φ.interpret M')).arrow
+    rw [exists_range_iff] at hsat ⊢
+    -- hsat : ∃ ctx', ctx' ∈ range (φ.interpret M).arrow ∧ (xs'.π A).interpret M ctx' = t
+    -- Goal : ∃ ctx', ctx' ∈ range (φ.interpret M').arrow ∧ (xs'.π A).interpret M' ctx' = liftEmbedContext xs' t
+    obtain ⟨ctx', hctx'_in, hctx'_proj⟩ := hsat
+    -- Lift ctx' to M'
+    let ctx'_lifted := liftEmbedContext emb.toStructureEmbedding _ ctx'
+    use ctx'_lifted
+    constructor
+    · -- Show ctx'_lifted ∈ range (φ.interpret M').arrow by IH
+      exact ih ctx' hctx'_in
+    · -- Show (xs'.π A).interpret M' ctx'_lifted = liftEmbedContext xs' t
+      -- By hom_interpret_commutes: liftEmbedContext xs' ((xs'.π A).interpret M ctx') =
+      --                            (xs'.π A).interpret M' (liftEmbedContext (A ∶ xs') ctx')
+      have hcomm := hom_interpret_commutes emb.toStructureEmbedding (xs'.π A) ctx'
+      -- hcomm : liftEmbedContext xs' ((xs'.π A).interpret M ctx') = (xs'.π A).interpret M' ctx'_lifted
+      rw [← hcomm, hctx'_proj]
   | infdisj φᵢ ih =>
     -- Infinitary disjunction: ⋁ᵢφᵢ interprets as ∐ (fun i ↦ φᵢ.interpret)
     -- which is the coproduct/supremum of subobjects.
     --
     -- In Type u, coproduct of subobjects corresponds to union:
     --   x ∈ (⨆ᵢ Pᵢ).arrow iff ∃ i, x ∈ (Pᵢ).arrow
-    --
-    -- The key insight is that in Type u, ∐ = ⨆ for subobjects.
-    -- The proof requires showing the categorical coproduct in Subobject
-    -- coincides with the lattice supremum, which follows from
-    -- Types.subobjectEquivSet being an order isomorphism.
-    --
-    -- For the structural proof:
-    -- - hsat says t ∈ range (∐ᵢ (φᵢ.interpret M)).arrow
-    -- - This means ∃ i, t ∈ range (φᵢ i.interpret M).arrow
-    -- - By IH on φᵢ i, we get liftEmbedContext t ∈ range (φᵢ i.interpret M').arrow
-    -- - Therefore liftEmbedContext t ∈ (∐ᵢ (φᵢ.interpret M')).arrow
     unfold formulaSatisfied subobjectMem at hsat ⊢
     simp only [Formula.interpret] at hsat ⊢
-    -- The coproduct/supremum connection requires substantial categorical machinery.
-    -- Morally: ∐ P = ⨆ P in Subobject X (Type u), and iSup_range_iff gives
-    -- the characterization. The IH then transfers each disjunct.
-    sorry
+    -- hsat : t ∈ range (∐ᵢ (φᵢ.interpret M)).arrow
+    -- Goal : liftEmbedContext xs t ∈ range (∐ᵢ (φᵢ.interpret M')).arrow
+    -- Use coproduct_eq_iSup: ∐ P = ⨆ P for subobjects
+    rw [coproduct_eq_iSup] at hsat ⊢
+    -- Now use iSup_range_iff to convert to existential
+    rw [iSup_range_iff] at hsat ⊢
+    -- hsat : ∃ i, t ∈ range ((φᵢ i).interpret M).arrow
+    -- Goal : ∃ i, liftEmbedContext xs t ∈ range ((φᵢ i).interpret M').arrow
+    obtain ⟨i, hi⟩ := hsat
+    use i
+    -- By IH: formulaSatisfied (φᵢ i) t → formulaSatisfied (φᵢ i) (liftEmbedContext t)
+    exact ih i t hi
 
 /-!
 ### Theory Satisfaction Transfer
