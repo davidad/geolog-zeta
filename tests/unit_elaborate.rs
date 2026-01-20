@@ -2,10 +2,12 @@
 
 use geolog::ast;
 use geolog::core::DerivedSort;
-use geolog::elaborate::{ElabError, Env, elaborate_instance, elaborate_theory};
+use geolog::elaborate::{ElabError, ElaborationContext, Env, elaborate_instance_ctx, elaborate_theory};
 use geolog::id::{NumericId, Slid};
 use geolog::parse;
+use geolog::repl::InstanceEntry;
 use geolog::universe::Universe;
+use std::collections::HashMap;
 use std::rc::Rc;
 
 #[test]
@@ -206,8 +208,14 @@ instance ExampleNet : PetriNet = {
 
     // Then elaborate ExampleNet instance
     if let ast::Declaration::Instance(inst) = &file.declarations[1].node {
+        let instances: HashMap<String, InstanceEntry> = HashMap::new();
+        let mut ctx = ElaborationContext {
+            theories: &env.theories,
+            instances: &instances,
+            universe: &mut universe,
+        };
         let structure =
-            elaborate_instance(&env, inst, &mut universe).expect("instance elaboration failed");
+            elaborate_instance_ctx(&mut ctx, inst).expect("instance elaboration failed");
 
         // Elements are created in order: A(0), B(1), C(2), ab(3), ab_in(4), ab_out(5)
         assert_eq!(structure.len(), 6); // A, B, C, ab, ab_in, ab_out
@@ -269,7 +277,13 @@ instance PartialNet : PetriNet = {
 
     // Then try to elaborate the partial instance — should fail
     if let ast::Declaration::Instance(i) = &file.declarations[1].node {
-        let result = elaborate_instance(&env, i, &mut universe);
+        let instances: HashMap<String, InstanceEntry> = HashMap::new();
+        let mut ctx = ElaborationContext {
+            theories: &env.theories,
+            instances: &instances,
+            universe: &mut universe,
+        };
+        let result = elaborate_instance_ctx(&mut ctx, i);
         assert!(result.is_err(), "expected error for partial function");
 
         let err = result.unwrap_err();
@@ -315,7 +329,13 @@ instance BadNet : PetriNet = {
     }
 
     if let ast::Declaration::Instance(i) = &file.declarations[1].node {
-        let result = elaborate_instance(&env, i, &mut universe);
+        let instances: HashMap<String, InstanceEntry> = HashMap::new();
+        let mut ctx = ElaborationContext {
+            theories: &env.theories,
+            instances: &instances,
+            universe: &mut universe,
+        };
+        let result = elaborate_instance_ctx(&mut ctx, i);
         assert!(result.is_err(), "expected domain type error");
 
         let err = result.unwrap_err();
@@ -366,7 +386,13 @@ instance BadNet : PetriNet = {
     }
 
     if let ast::Declaration::Instance(i) = &file.declarations[1].node {
-        let result = elaborate_instance(&env, i, &mut universe);
+        let instances: HashMap<String, InstanceEntry> = HashMap::new();
+        let mut ctx = ElaborationContext {
+            theories: &env.theories,
+            instances: &instances,
+            universe: &mut universe,
+        };
+        let result = elaborate_instance_ctx(&mut ctx, i);
         assert!(result.is_err(), "expected codomain type error");
 
         let err = result.unwrap_err();

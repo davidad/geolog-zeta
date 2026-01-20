@@ -12,6 +12,4 @@ mod theory;
 pub use env::{elaborate_formula, elaborate_term, elaborate_type, Env};
 pub use error::{ElabError, ElabResult};
 pub use instance::{ElaborationContext, InstanceEntry, elaborate_instance_ctx};
-#[allow(deprecated)]
-pub use instance::elaborate_instance;
 pub use theory::elaborate_theory;
