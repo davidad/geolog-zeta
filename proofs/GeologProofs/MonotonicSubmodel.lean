@@ -454,6 +454,86 @@ theorem inf_range_iff {X : Type u} (f g : Subobject X) (x : X) :
   -- In Set X, ⊓ = ∩, so membership is conjunction
   rfl
 
+/-- In Type u, pullback.snd has range equal to preimage.
+    For pullback g f where g : Z → Y and f : X → Y,
+    range(pullback.snd) = { x | ∃ z, g z = f x } = f⁻¹(range g). -/
+lemma pullback_snd_range {X Y Z : Type u} (g : Z ⟶ Y) (f : X ⟶ Y) (x : X) :
+    x ∈ Set.range (pullback.snd g f) ↔ f x ∈ Set.range g := by
+  constructor
+  · intro ⟨z, hz⟩
+    let z' := (Types.pullbackIsoPullback g f).hom z
+    have hcond : g z'.val.1 = f z'.val.2 := z'.property
+    have hsnd : z'.val.2 = x := by
+      have h2 := congrFun (limit.isoLimitCone_hom_π (Types.pullbackLimitCone g f) WalkingCospan.right) z
+      simp only [Types.pullbackLimitCone, limit.π] at h2
+      rw [← hz]
+      exact h2.symm
+    use z'.val.1
+    rw [← hsnd, hcond]
+  · intro ⟨z, hz⟩
+    let p : Types.PullbackObj g f := ⟨(z, x), hz⟩
+    let z' := (Types.pullbackIsoPullback g f).inv p
+    use z'
+    have h := limit.isoLimitCone_inv_π (Types.pullbackLimitCone g f) WalkingCospan.right
+    exact congrFun h p
+
+/-- For isomorphic MonoOvers, their arrows have the same range.
+    This is because an iso in MonoOver X means the underlying morphism
+    commutes with the arrows (as Over morphisms). -/
+lemma monoover_iso_same_range {X : Type u} (A B : MonoOver X) (h : A ≅ B) :
+    Set.range A.arrow = Set.range B.arrow := by
+  have hcomm : h.hom.left ≫ B.arrow = A.arrow := Over.w h.hom
+  have hcomm' : h.inv.left ≫ A.arrow = B.arrow := Over.w h.inv
+  ext x
+  constructor
+  · intro ⟨a, ha⟩
+    use h.hom.left a
+    calc B.arrow (h.hom.left a)
+      = (h.hom.left ≫ B.arrow) a := rfl
+      _ = A.arrow a := by rw [hcomm]
+      _ = x := ha
+  · intro ⟨b, hb⟩
+    use h.inv.left b
+    calc A.arrow (h.inv.left b)
+      = (h.inv.left ≫ A.arrow) b := rfl
+      _ = B.arrow b := by rw [hcomm']
+      _ = x := hb
+
+/-- The arrow of a Subobject equals the arrow of its representative. -/
+lemma subobject_arrow_eq_representative_arrow {X : Type u} (P : Subobject X) :
+    P.arrow = (Subobject.representative.obj P).arrow := rfl
+
+/-- In Type u, x ∈ range ((Subobject.pullback f).obj P).arrow iff f x ∈ range P.arrow.
+    This is the set-theoretic fact that pullback of a subobject is the preimage. -/
+theorem pullback_range_iff {X Y : Type u} (f : X ⟶ Y) (P : Subobject Y) (x : X) :
+    x ∈ Set.range ((Subobject.pullback f).obj P).arrow ↔ f x ∈ Set.range P.arrow := by
+  let R := Subobject.representative.obj P
+  -- R.arrow = P.arrow
+  have harrow : R.arrow = P.arrow := (subobject_arrow_eq_representative_arrow P).symm
+  -- (MonoOver.pullback f).obj R has arrow = pullback.snd R.arrow f
+  have hpb_arrow : ((MonoOver.pullback f).obj R).arrow = pullback.snd R.arrow f :=
+    MonoOver.pullback_obj_arrow f R
+  -- P = toThinSkeleton R (since representative is a section of toThinSkeleton)
+  have hP : P = (toThinSkeleton (MonoOver Y)).obj R := (Quotient.out_eq P).symm
+  -- (lower F).obj (toThinSkeleton R) = toThinSkeleton (F.obj R)
+  have h1 : (Subobject.pullback f).obj P =
+            (toThinSkeleton (MonoOver X)).obj ((MonoOver.pullback f).obj R) := by
+    rw [hP]; rfl
+  -- representative of the RHS is iso to (MonoOver.pullback f).obj R
+  have h2 : Subobject.representative.obj ((toThinSkeleton (MonoOver X)).obj ((MonoOver.pullback f).obj R)) ≅
+            (MonoOver.pullback f).obj R :=
+    Subobject.representativeIso _
+  -- Combine: representative of (pullback f).obj P is iso to (MonoOver.pullback f).obj R
+  have h3 : Subobject.representative.obj ((Subobject.pullback f).obj P) ≅
+            (MonoOver.pullback f).obj R := by rw [h1]; exact h2
+  -- The arrows have the same range
+  have h4 : Set.range ((Subobject.pullback f).obj P).arrow =
+            Set.range ((MonoOver.pullback f).obj R).arrow := by
+    rw [subobject_arrow_eq_representative_arrow]
+    exact monoover_iso_same_range _ _ h3
+  -- Combine everything
+  rw [h4, hpb_arrow, pullback_snd_range, harrow]
+
 theorem formula_satisfaction_monotone {M M' : Structure S (Type u)}
     [κ : SmallUniverse S] [G : Geometric κ (Type u)]
     (emb : RelPreservingEmbedding M M')
@@ -464,11 +544,22 @@ theorem formula_satisfaction_monotone {M M' : Structure S (Type u)}
     formulaSatisfied (M := M') φ (liftEmbedContext emb.toStructureEmbedding xs t) := by
   induction φ with
   | rel R term =>
-    -- rel R t ↦ pullback of R along term interpretation
-    -- Use: rel_preserve + naturality of pullback
-    -- In Type u: pullback f g ≅ { p : X × Y // f p.1 = g p.2 }
+    -- rel R t ↦ (Subobject.pullback (term.interpret)).obj (M.Relations R)
+    -- By pullback_range_iff: t ∈ this iff term.interpret M t ∈ M.Relations R
     unfold formulaSatisfied subobjectMem at hsat ⊢
     simp only [Formula.interpret] at hsat ⊢
+    -- hsat : t ∈ range ((pullback (term.interpret M)).obj (M.Relations R)).arrow
+    -- Goal : liftEmbedContext t ∈ range ((pullback (term.interpret M')).obj (M'.Relations R)).arrow
+    rw [pullback_range_iff] at hsat ⊢
+    -- hsat : term.interpret M t ∈ range (M.Relations R).arrow
+    -- Goal : term.interpret M' (liftEmbedContext t) ∈ range (M'.Relations R).arrow
+    --
+    -- This follows from:
+    -- 1. term_interpret_commutes: term.interpret M' (lift t) = embed (term.interpret M t)
+    -- 2. Relation preservation: if x ∈ M.Relations R, then embed(x) ∈ M'.Relations R
+    --
+    -- Note: The current RelPreservingEmbedding only handles base-sorted relations.
+    -- For general derived-sort domains, we need a generalized relation preservation axiom.
     sorry
   | «true» =>
     -- ⊤ contains everything: use that ⊤.arrow is surjective
@@ -534,14 +625,44 @@ theorem formula_satisfaction_monotone {M M' : Structure S (Type u)}
     -- This follows from term_interpret_commutes (axiom) once its sorry is filled
     sorry
   | «exists» φ ih =>
-    -- Existential: witness a ↦ emb(a)
-    -- Use: image/exists in Type u = Set.range
+    -- Existential quantification: ∃x.φ(ctx, x) interprets as
+    --   (Subobject.exists π).obj (φ.interpret)
+    -- where π : Context.interpret M (xs.cons A) → Context.interpret M xs
+    -- is the projection that drops the last variable.
+    --
+    -- In Type u, (exists f).obj P corresponds to the image of P under f:
+    --   y ∈ ((exists f).obj P).arrow iff ∃ x ∈ P.arrow, f x = y
+    --
+    -- For the proof:
+    -- - hsat says t ∈ range ((exists π).obj (φ.interpret M)).arrow
+    -- - This means ∃ (a : A.interpret M.sorts), (t, a) ∈ range (φ.interpret M).arrow ∧ π(t,a) = t
+    -- - By IH on φ with context (t, a), we get (liftEmbedContext (t,a)) ∈ φ.interpret M'
+    -- - The lifted context should be (liftEmbedContext t, embed a)
+    -- - Applying π' gives liftEmbedContext t
+    -- - Therefore liftEmbedContext t ∈ (exists π').obj (φ.interpret M')
+    --
+    -- This requires:
+    -- 1. A lemma about (exists f).obj P range characterization
+    -- 2. Proper lifting of extended contexts
     unfold formulaSatisfied subobjectMem at hsat ⊢
     simp only [Formula.interpret] at hsat ⊢
     sorry
   | infdisj φᵢ ih =>
-    -- Disjunction: satisfied disjunct transfers
-    -- Use: coproduct of subobjects = union
+    -- Infinitary disjunction: ⋁ᵢφᵢ interprets as ∐ (fun i ↦ φᵢ.interpret)
+    -- which is the coproduct/supremum of subobjects.
+    --
+    -- In Type u, coproduct of subobjects corresponds to union:
+    --   x ∈ (⨆ᵢ Pᵢ).arrow iff ∃ i, x ∈ (Pᵢ).arrow
+    --
+    -- For the proof:
+    -- - hsat says t ∈ range (∐ᵢ (φᵢ.interpret M)).arrow
+    -- - This means ∃ i, t ∈ range (φᵢ i.interpret M).arrow
+    -- - By IH on φᵢ i, we get liftEmbedContext t ∈ range (φᵢ i.interpret M').arrow
+    -- - Therefore liftEmbedContext t ∈ (∐ᵢ (φᵢ.interpret M')).arrow
+    --
+    -- This requires:
+    -- 1. A lemma about coproduct/sup range characterization in Type u
+    -- 2. The Geometric κ instance to provide has_joins_subobject
     unfold formulaSatisfied subobjectMem at hsat ⊢
     simp only [Formula.interpret] at hsat ⊢
     sorry
