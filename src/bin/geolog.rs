@@ -17,6 +17,7 @@ use rustyline::error::ReadlineError;
 use rustyline::history::DefaultHistory;
 use rustyline::{Config, Editor};
 
+use geolog::id::NumericId;
 use geolog::repl::{
     ExecuteResult, InputResult, InspectResult, ListTarget, MetaCommand, ReplState,
     format_instance_detail, format_theory_detail,
@@ -679,9 +680,24 @@ fn handle_compile(state: &mut ReplState, instance_name: &str, sort_name: &str) {
             println!("  Elements: {}", instance.structure.len());
             println!("  Output wire: {:?}", instance.output_wire);
             println!();
+
+            // Group elements by sort and show with sort names
+            let sig = &relalg_theory.theory.signature;
+            println!("Elements by sort:");
+            for (sort_idx, sort_name) in sig.sorts.iter().enumerate() {
+                let count = instance.structure.carrier_size(sort_idx);
+                if count > 0 {
+                    println!("  {}: {} element(s)", sort_name, count);
+                }
+            }
+            println!();
+
+            // Show named elements with their sorts
             println!("Named elements:");
             for (slid, name) in instance.names.iter() {
-                println!("  {} -> {}", name, slid);
+                let sort_idx = instance.structure.sorts[slid.index()];
+                let sort_name = &sig.sorts[sort_idx];
+                println!("  {} : {} = {:?}", name, sort_name, slid);
             }
         }
         Err(e) => {
