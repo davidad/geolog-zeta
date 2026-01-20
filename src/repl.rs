@@ -828,6 +828,9 @@ pub enum MetaCommand {
     /// Extend: find extensions of an existing instance to a (larger) theory
     /// `:extend <instance> <theory> [budget_ms]`
     Extend { instance: String, theory: String, budget_ms: Option<u64> },
+    /// Chase: run chase algorithm on instance to compute derived relations/functions
+    /// `:chase <instance> [max_iterations]`
+    Chase { instance: String, max_iterations: Option<usize> },
     Unknown(String),
 }
 
@@ -972,6 +975,17 @@ impl MetaCommand {
                     }
                 } else {
                     MetaCommand::Unknown(":extend requires <instance> <theory> [budget_ms]".to_string())
+                }
+            }
+            "chase" => {
+                if let Some(instance_name) = arg {
+                    let max_iterations = parts.next().and_then(|s| s.parse().ok());
+                    MetaCommand::Chase {
+                        instance: instance_name.to_string(),
+                        max_iterations,
+                    }
+                } else {
+                    MetaCommand::Unknown(":chase requires <instance> [max_iterations]".to_string())
                 }
             }
             other => MetaCommand::Unknown(format!("Unknown command: :{}", other)),

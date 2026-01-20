@@ -182,6 +182,9 @@ fn handle_command(state: &mut ReplState, cmd: MetaCommand) -> bool {
         MetaCommand::Extend { instance, theory, budget_ms } => {
             handle_extend(state, &instance, &theory, budget_ms);
         }
+        MetaCommand::Chase { instance, max_iterations } => {
+            handle_chase(state, &instance, max_iterations);
+        }
         MetaCommand::Unknown(msg) => {
             eprintln!("Error: {}", msg);
             eprintln!("Type :help for available commands");
@@ -258,6 +261,7 @@ fn print_help(topic: Option<&str>) {
             println!("  :query <inst> <sort>        List all elements of a sort");
             println!("  :explain <inst> <sort>      Show query execution plan");
             println!("  :compile <inst> <sort>      Show RelAlgIR compilation");
+            println!("  :chase <inst> [max_iter]    Run chase on instance axioms");
             println!();
             println!("Solver:");
             println!("  :solve <theory> [budget_ms]          Find model of theory from scratch");
@@ -869,6 +873,111 @@ fn handle_extend(state: &ReplState, instance_name: &str, theory_name: &str, budg
             println!("◯ INCOMPLETE after {:.2}ms", time_ms);
             println!("  {}", reason);
             println!("  Try increasing the budget: :extend {} {} <budget_ms>", instance_name, theory_name);
+        }
+    }
+}
+
+/// Handle :chase command - run chase algorithm on instance's theory axioms
+fn handle_chase(state: &mut ReplState, instance_name: &str, max_iterations: Option<usize>) {
+    use geolog::query::chase::{chase_fixpoint, compile_axiom};
+
+    // Get the instance
+    let entry = match state.instances.get_mut(instance_name) {
+        Some(e) => e,
+        None => {
+            eprintln!("Instance '{}' not found", instance_name);
+            return;
+        }
+    };
+
+    // Get the theory
+    let theory = match state.theories.get(&entry.theory_name) {
+        Some(t) => t.clone(),
+        None => {
+            eprintln!("Theory '{}' not found", entry.theory_name);
+            return;
+        }
+    };
+
+    let sig = &theory.theory.signature;
+    let axioms = &theory.theory.axioms;
+
+    if axioms.is_empty() {
+        println!("Theory '{}' has no axioms to chase.", entry.theory_name);
+        return;
+    }
+
+    println!("Running chase on instance '{}' (theory '{}')...", instance_name, entry.theory_name);
+    println!("  {} axioms to process", axioms.len());
+
+    // Compile axioms to chase rules
+    let mut rules = Vec::new();
+    for (i, axiom) in axioms.iter().enumerate() {
+        let axiom_name = format!("axiom_{}", i);
+        match compile_axiom(axiom, sig, axiom_name.clone()) {
+            Ok(rule) => {
+                println!("  Compiled axiom {}: {}", i, rule.name);
+                rules.push(rule);
+            }
+            Err(e) => {
+                println!("  Skipping axiom {} (unsupported): {}", i, e);
+            }
+        }
+    }
+
+    if rules.is_empty() {
+        println!("No axioms could be compiled to chase rules.");
+        return;
+    }
+
+    println!("\nExecuting chase with {} rules...", rules.len());
+
+    // Run the chase
+    let max_iter = max_iterations.unwrap_or(100);
+    let start = std::time::Instant::now();
+
+    match chase_fixpoint(&rules, &mut entry.structure, &mut state.store.universe, sig, max_iter) {
+        Ok(iterations) => {
+            let elapsed = start.elapsed();
+            println!("✓ Chase completed in {} iterations ({:.2}ms)", iterations, elapsed.as_secs_f64() * 1000.0);
+            println!("\nStructure after chase:");
+            print_structure_summary(&entry.structure, sig);
+        }
+        Err(e) => {
+            eprintln!("✗ Chase error: {:?}", e);
+        }
+    }
+}
+
+/// Print a summary of structure contents
+fn print_structure_summary(structure: &geolog::core::Structure, sig: &geolog::core::Signature) {
+    use geolog::core::RelationStorage;
+
+    // Show carriers
+    let total_elements: usize = (0..sig.sorts.len())
+        .map(|s| structure.carrier_size(s))
+        .sum();
+    println!("  Elements: {} total", total_elements);
+
+    for (sort_id, sort_name) in sig.sorts.iter().enumerate() {
+        let size = structure.carrier_size(sort_id);
+        if size > 0 {
+            println!("    {}: {} element(s)", sort_name, size);
+        }
+    }
+
+    // Show relations
+    let mut has_relations = false;
+    for (rel_id, rel) in sig.relations.iter().enumerate() {
+        if rel_id < structure.relations.len() {
+            let count = structure.relations[rel_id].len();
+            if count > 0 {
+                if !has_relations {
+                    println!("  Relations:");
+                    has_relations = true;
+                }
+                println!("    {}: {} tuple(s)", rel.name, count);
+            }
         }
     }
 }
