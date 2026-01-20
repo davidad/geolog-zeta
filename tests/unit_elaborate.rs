@@ -214,8 +214,9 @@ instance ExampleNet : PetriNet = {
             instances: &instances,
             universe: &mut universe,
         };
-        let structure =
+        let result =
             elaborate_instance_ctx(&mut ctx, inst).expect("instance elaboration failed");
+        let structure = result.structure;
 
         // Elements are created in order: A(0), B(1), C(2), ab(3), ab_in(4), ab_out(5)
         assert_eq!(structure.len(), 6); // A, B, C, ab, ab_in, ab_out

@@ -23,6 +23,19 @@ pub struct ElaborationContext<'a> {
     pub universe: &'a mut Universe,
 }
 
+/// Result of elaborating an instance.
+///
+/// Contains the structure and element name mappings.
+#[derive(Debug)]
+pub struct InstanceElaborationResult {
+    /// The elaborated structure
+    pub structure: Structure,
+    /// Mapping from Slid to element name (for display)
+    pub slid_to_name: HashMap<Slid, String>,
+    /// Mapping from element name to Slid (for lookups)
+    pub name_to_slid: HashMap<String, Slid>,
+}
+
 /// An instance entry for elaboration context.
 ///
 /// This is a simpler version than what's in the REPL - just enough for elaboration.
@@ -65,15 +78,18 @@ impl InstanceEntry {
     }
 }
 
-/// Elaborate an instance declaration into a Structure.
+/// Elaborate an instance declaration into a Structure with element name mappings.
 ///
 /// This is the context-aware version that supports cross-instance references.
 /// For parameterized instances like `marking0 : ExampleNet Marking`, elements
 /// from param instances (ExampleNet) are imported into the new structure.
+///
+/// Returns both the structure and the element name mappings, so the caller
+/// can track names for both local and imported elements.
 pub fn elaborate_instance_ctx(
     ctx: &mut ElaborationContext<'_>,
     instance: &ast::InstanceDecl,
-) -> ElabResult<Structure> {
+) -> ElabResult<InstanceElaborationResult> {
     // Build Env from context theories for theory lookups
     let env = Env {
         theories: ctx.theories.clone(),
@@ -484,7 +500,11 @@ pub fn elaborate_instance_ctx(
     // 6. Validate totality: all functions must be defined on all elements of their domain
     validate_totality(&structure, &theory.theory.signature, &slid_to_name)?;
 
-    Ok(structure)
+    Ok(InstanceElaborationResult {
+        structure,
+        slid_to_name,
+        name_to_slid,
+    })
 }
 
 // ============================================================================

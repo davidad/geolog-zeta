@@ -15,7 +15,7 @@ use std::rc::Rc;
 
 use crate::ast;
 use crate::core::{DerivedSort, ElaboratedTheory, Structure};
-use crate::elaborate::{Env, ElaborationContext, elaborate_instance_ctx, elaborate_theory};
+use crate::elaborate::{Env, ElaborationContext, InstanceElaborationResult, elaborate_instance_ctx, elaborate_theory};
 use crate::id::{NumericId, Slid};
 use crate::store::Store;
 
@@ -239,47 +239,32 @@ impl ReplState {
                     }
 
                     // Use the elaboration that works with our transitional state
-                    let structure = self.elaborate_instance_internal(inst)
+                    let elab_result = self.elaborate_instance_internal(inst)
                         .map_err(|e| format!("Elaboration error: {}", e))?;
 
                     let instance_name = inst.name.clone();
                     let theory_name = type_expr_to_theory_name(&inst.theory);
-                    let num_elements = structure.len();
+                    let num_elements = elab_result.structure.len();
 
-                    // Build InstanceEntry with element names
-                    let mut entry = InstanceEntry::new(structure, theory_name.clone());
+                    // Build InstanceEntry with element names from elaboration
+                    // This includes BOTH imported elements AND locally declared elements
+                    let mut entry = InstanceEntry::new(elab_result.structure, theory_name.clone());
 
-                    // Register element names for elements declared in THIS instance
-                    let local_elements: Vec<_> = inst
-                        .body
-                        .iter()
-                        .filter_map(|item| {
-                            if let ast::InstanceItem::Element(name, _) = &item.node {
-                                Some(name.clone())
-                            } else {
-                                None
-                            }
-                        })
-                        .collect();
-
-                    // The structure contains: [imported elements...] [local elements...]
-                    let num_imported = entry.structure.len() - local_elements.len();
-                    let mut slid_counter = num_imported;
-
-                    for elem_name in &local_elements {
-                        let slid = Slid::from_usize(slid_counter);
+                    // Register ALL element names from elaboration result
+                    for (slid, elem_name) in elab_result.slid_to_name {
                         entry.register_element(elem_name.clone(), slid);
 
-                        // Register in store's naming index
-                        let luid = entry.structure.get_luid(slid);
-                        if let Some(uuid) = self.store.universe.get(luid) {
-                            self.store.naming.insert(
-                                uuid,
-                                vec![instance_name.clone(), elem_name.clone()],
-                            );
+                        // Register local (non-qualified) names in store's naming index
+                        // Only register names that don't contain '/' (local to this instance)
+                        if !elem_name.contains('/') {
+                            let luid = entry.structure.get_luid(slid);
+                            if let Some(uuid) = self.store.universe.get(luid) {
+                                self.store.naming.insert(
+                                    uuid,
+                                    vec![instance_name.clone(), elem_name.clone()],
+                                );
+                            }
                         }
-
-                        slid_counter += 1;
                     }
 
                     // Register in Store and persist instance data
@@ -325,7 +310,7 @@ impl ReplState {
     }
 
     /// Internal instance elaboration that works with our transitional state
-    fn elaborate_instance_internal(&mut self, inst: &ast::InstanceDecl) -> Result<Structure, String> {
+    fn elaborate_instance_internal(&mut self, inst: &ast::InstanceDecl) -> Result<InstanceElaborationResult, String> {
         // Build elaboration context from our state
         let mut ctx = ElaborationContext {
             theories: &self.theories,

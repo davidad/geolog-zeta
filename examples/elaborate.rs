@@ -138,7 +138,8 @@ instance ExampleNet : PetriNet = {
                     universe: &mut universe,
                 };
                 match elaborate_instance_ctx(&mut ctx, i) {
-                    Ok(structure) => {
+                    Ok(result) => {
+                        let structure = &result.structure;
                         println!("OK!");
                         println!("  Theory: {}", theory_name);
                         println!("  Elements: {} total", structure.len());
