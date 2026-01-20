@@ -39,6 +39,20 @@
 //!
 //! Not yet supported: `Constant` (needs Elem), `Apply` (needs Func).
 //!
+//! # Supported Predicates
+//!
+//! | Predicate        | RelAlgIR Sort    | Notes                        |
+//! |------------------|------------------|------------------------------|
+//! | `True`           | `TruePred`       | Always true                  |
+//! | `False`          | `FalsePred`      | Always false                 |
+//! | `ColEqCol`       | `ColEqPred`      | Two columns equal            |
+//! | `ColEqConst`     | `ConstEqPred`    | Column equals constant       |
+//! | `FuncEq`         | `FuncEqPred`     | f(arg) = result              |
+//! | `And`            | `AndPred`        | Conjunction                  |
+//! | `Or`             | `OrPred`         | Disjunction                  |
+//!
+//! Not yet supported: `FuncEqConst` (needs FuncConstEqPred in RelAlgIR).
+//!
 //! # Example
 //!
 //! ```ignore
@@ -92,8 +106,19 @@ struct CompileContext<'a> {
     // Maps source signature SortId -> RelAlgIR Slid for GeologMeta/Srt element
     srt_elements: HashMap<usize, Slid>,
 
+    // GeologMeta/Elem elements for target instance elements
+    // Maps target instance Slid -> RelAlgIR Slid for GeologMeta/Elem element
+    elem_elements: HashMap<Slid, Slid>,
+
+    // GeologMeta/Func elements for target signature functions
+    // Maps target func index -> RelAlgIR Slid for GeologMeta/Func element
+    func_elements: HashMap<usize, Slid>,
+
     // The "self-referencing" Theory element (for standalone queries)
     theory_elem: Option<Slid>,
+
+    // Placeholder Instance element for Elem references
+    instance_elem: Option<Slid>,
 }
 
 /// Cached sort IDs from the RelAlgIR theory.
@@ -106,6 +131,8 @@ struct RelAlgSortIds {
     dsort: SortId,
     base_ds: SortId,
     func: SortId,
+    elem: SortId,
+    instance: SortId,
 
     // RelAlgIR sorts
     schema: SortId,
@@ -138,6 +165,7 @@ struct RelAlgSortIds {
     false_pred: SortId,
     col_eq_pred: SortId,
     const_eq_pred: SortId,
+    func_eq_pred: SortId,
     and_pred: SortId,
     or_pred: SortId,
 
@@ -167,6 +195,8 @@ impl RelAlgSortIds {
             dsort: lookup("GeologMeta/DSort")?,
             base_ds: lookup("GeologMeta/BaseDS")?,
             func: lookup("GeologMeta/Func")?,
+            elem: lookup("GeologMeta/Elem")?,
+            instance: lookup("GeologMeta/Instance")?,
 
             // RelAlgIR sorts
             schema: lookup("Schema")?,
@@ -197,6 +227,7 @@ impl RelAlgSortIds {
             false_pred: lookup("FalsePred")?,
             col_eq_pred: lookup("ColEqPred")?,
             const_eq_pred: lookup("ConstEqPred")?,
+            func_eq_pred: lookup("FuncEqPred")?,
             and_pred: lookup("AndPred")?,
             or_pred: lookup("OrPred")?,
 
@@ -246,7 +277,10 @@ impl<'a> CompileContext<'a> {
             counter: 0,
             sort_ids,
             srt_elements: HashMap::new(),
+            elem_elements: HashMap::new(),
+            func_elements: HashMap::new(),
             theory_elem: None,
+            instance_elem: None,
         })
     }
 
@@ -308,6 +342,71 @@ impl<'a> CompileContext<'a> {
         self.define_func("GeologMeta/Srt/theory", elem, theory)?;
 
         self.srt_elements.insert(source_sort, elem);
+        Ok(elem)
+    }
+
+    /// Get or create a placeholder Instance element for Elem references.
+    /// This represents "the instance being queried" - resolved at execution time.
+    fn get_instance_elem(&mut self) -> Slid {
+        if let Some(elem) = self.instance_elem {
+            return elem;
+        }
+
+        let theory = self.get_theory_elem();
+        let elem = self.add_element(self.sort_ids.instance, "query_instance");
+
+        // Instance/theory = our theory element
+        let _ = self.define_func("GeologMeta/Instance/theory", elem, theory);
+
+        self.instance_elem = Some(elem);
+        elem
+    }
+
+    /// Get or create an Elem element for a target instance element.
+    ///
+    /// Note: Slid doesn't encode the sort, so we use sort 0 as a placeholder.
+    /// A full implementation would require passing the source structure to look up
+    /// the actual sort. The Elem is still created and linked, just with incomplete
+    /// sort information.
+    fn get_elem(&mut self, target_slid: Slid) -> Result<Slid, String> {
+        if let Some(&elem) = self.elem_elements.get(&target_slid) {
+            return Ok(elem);
+        }
+
+        // TODO: To properly set Elem/sort, we'd need access to the source structure
+        // to look up target_slid's sort. For now, use sort 0 as a placeholder.
+        let placeholder_sort = 0;
+        let srt_elem = self.get_srt_elem(placeholder_sort)?;
+        let instance = self.get_instance_elem();
+
+        let name = self.fresh_name("elem");
+        let elem = self.add_element(self.sort_ids.elem, &name);
+
+        // Elem/instance = our instance element
+        self.define_func("GeologMeta/Elem/instance", elem, instance)?;
+        // Elem/sort = the sort element (placeholder)
+        self.define_func("GeologMeta/Elem/sort", elem, srt_elem)?;
+
+        self.elem_elements.insert(target_slid, elem);
+        Ok(elem)
+    }
+
+    /// Get or create a Func element for a target signature function.
+    fn get_func_elem(&mut self, func_idx: usize) -> Result<Slid, String> {
+        if let Some(&elem) = self.func_elements.get(&func_idx) {
+            return Ok(elem);
+        }
+
+        let theory = self.get_theory_elem();
+        let name = self.fresh_name("func");
+        let elem = self.add_element(self.sort_ids.func, &name);
+
+        // Func/theory = our theory element
+        self.define_func("GeologMeta/Func/theory", elem, theory)?;
+        // Note: Func/dom and Func/cod require DSort elements, which we don't
+        // track. For now, these are left undefined (partial function).
+
+        self.func_elements.insert(func_idx, elem);
         Ok(elem)
     }
 
@@ -429,6 +528,56 @@ impl<'a> CompileContext<'a> {
 
         Ok(col_ref)
     }
+
+    /// Create a ConstEqPred (col = constant)
+    fn create_const_eq_pred(&mut self, wire: Slid, col: usize, val: Slid) -> Result<Slid, String> {
+        // Create ColRef for the column
+        let col_ref = self.create_col_ref(wire, col)?;
+
+        // Create Elem element for the constant value
+        let elem = self.get_elem(val)?;
+
+        let eq_name = self.fresh_name("const_eq_pred");
+        let const_eq = self.add_element(self.sort_ids.const_eq_pred, &eq_name);
+
+        let pred_name = self.fresh_name("pred");
+        let pred = self.add_element(self.sort_ids.pred, &pred_name);
+
+        self.define_func("ConstEqPred/pred", const_eq, pred)?;
+        self.define_func("ConstEqPred/col", const_eq, col_ref)?;
+        self.define_func("ConstEqPred/val", const_eq, elem)?;
+
+        Ok(pred)
+    }
+
+    /// Create a FuncEqPred (func(arg_col) = result_col)
+    fn create_func_eq_pred(
+        &mut self,
+        wire: Slid,
+        func_idx: usize,
+        arg_col: usize,
+        result_col: usize,
+    ) -> Result<Slid, String> {
+        // Create Func element
+        let func = self.get_func_elem(func_idx)?;
+
+        // Create ColRefs
+        let arg_ref = self.create_col_ref(wire, arg_col)?;
+        let result_ref = self.create_col_ref(wire, result_col)?;
+
+        let eq_name = self.fresh_name("func_eq_pred");
+        let func_eq = self.add_element(self.sort_ids.func_eq_pred, &eq_name);
+
+        let pred_name = self.fresh_name("pred");
+        let pred = self.add_element(self.sort_ids.pred, &pred_name);
+
+        self.define_func("FuncEqPred/pred", func_eq, pred)?;
+        self.define_func("FuncEqPred/func", func_eq, func)?;
+        self.define_func("FuncEqPred/arg", func_eq, arg_ref)?;
+        self.define_func("FuncEqPred/result", func_eq, result_ref)?;
+
+        Ok(pred)
+    }
 }
 
 /// Compile a predicate to a Pred element
@@ -450,14 +599,20 @@ fn compile_predicate(
         Predicate::ColEqCol { left, right } => {
             ctx.create_col_eq_pred(wire, *left, *right)
         }
-        Predicate::ColEqConst { col: _, val: _ } => {
-            // ConstEqPred requires Elem elements which we don't have
-            // Fall back to TruePred for now
-            let (_, pred_elem) = ctx.create_true_pred()?;
-            Ok(pred_elem)
+        Predicate::ColEqConst { col, val } => {
+            ctx.create_const_eq_pred(wire, *col, *val)
         }
-        Predicate::FuncEq { .. } | Predicate::FuncEqConst { .. } => {
-            // FuncEqPred requires Func elements - fall back to TruePred
+        Predicate::FuncEq {
+            func_idx,
+            arg_col,
+            result_col,
+        } => {
+            ctx.create_func_eq_pred(wire, *func_idx, *arg_col, *result_col)
+        }
+        Predicate::FuncEqConst { .. } => {
+            // FuncEqConst (func(col) = expected) doesn't have a direct RelAlgIR mapping.
+            // Would need a "constant result" predicate type. Fall back to TruePred for now.
+            // TODO: Add FuncConstEqPred to RelAlgIR theory
             let (_, pred_elem) = ctx.create_true_pred()?;
             Ok(pred_elem)
         }
@@ -872,6 +1027,7 @@ fn compile_project(
 mod tests {
     use super::*;
     use crate::repl::ReplState;
+    use egglog_numeric_id::NumericId;
 
     fn load_relalg_theory() -> Rc<ElaboratedTheory> {
         let meta_content = std::fs::read_to_string("theories/GeologMeta.geolog")
@@ -996,6 +1152,46 @@ mod tests {
 
         let result = compile_to_relalg(&plan, &relalg_theory, &mut universe);
         assert!(result.is_ok(), "ColEqCol predicate compilation should succeed");
+
+        // Test ColEqConst predicate
+        let plan = QueryOp::Filter {
+            input: Box::new(QueryOp::Scan { sort_idx: 0 }),
+            pred: crate::query::backend::Predicate::ColEqConst {
+                col: 0,
+                val: Slid::from_usize(42),
+            },
+        };
+
+        let result = compile_to_relalg(&plan, &relalg_theory, &mut universe);
+        assert!(
+            result.is_ok(),
+            "ColEqConst predicate compilation should succeed"
+        );
+        let instance = result.unwrap();
+        // Should have created an Elem element for the constant
+        assert!(
+            instance.names.values().any(|n| n.starts_with("elem_")),
+            "Should create Elem element for constant"
+        );
+
+        // Test FuncEq predicate
+        let plan = QueryOp::Filter {
+            input: Box::new(QueryOp::Scan { sort_idx: 0 }),
+            pred: crate::query::backend::Predicate::FuncEq {
+                func_idx: 0,
+                arg_col: 0,
+                result_col: 1,
+            },
+        };
+
+        let result = compile_to_relalg(&plan, &relalg_theory, &mut universe);
+        assert!(result.is_ok(), "FuncEq predicate compilation should succeed");
+        let instance = result.unwrap();
+        // Should have created a Func element
+        assert!(
+            instance.names.values().any(|n| n.starts_with("func_")),
+            "Should create Func element for function reference"
+        );
     }
 
     #[test]
