@@ -42,7 +42,7 @@ This example demonstrates geolog's full power: deeply parameterized theories, ne
 
 ```geolog
 // ============================================================
-// THEORY: PetriNet - Basic structure with arc semantics
+// THEORY: PetriNet - Vanilla Petri net with arc structure
 // ============================================================
 
 theory PetriNet {
@@ -166,7 +166,7 @@ instance ExampleNet : PetriNet = {
 }
 
 // ============================================================
-// The Reachability Problem: one token in A → one token in B
+// Tiny Reachability Problem: one token in A → one token in B
 // ============================================================
 
 instance problem0 : ExampleNet ReachabilityProblem = {
@@ -184,7 +184,7 @@ instance problem0 : ExampleNet ReachabilityProblem = {
 // THE SOLUTION
 // ============================================================
 // This instance was synthesized automatically by Claude Opus 4.5.
-// As was this entire README, and this entire project, really.
+// (As was this entire README, and this entire project, really.)
 // ============================================================
 
 instance solution0 : ExampleNet problem0 Solution = {
@@ -226,7 +226,7 @@ instance solution0 : ExampleNet problem0 Solution = {
 }
 ```
 
-This Solution instance is a **constructive proof** that B is reachable from A:
+This Solution instance is a **constructive diagrammatic proof** that B is reachable from A:
 - Fire transition `ab` once
 - The input terminal witnesses that the initial token (in A) feeds into the firing
 - The output terminal witnesses that the firing produces the target token (in B)

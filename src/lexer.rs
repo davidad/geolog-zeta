@@ -114,17 +114,24 @@ pub fn lexer() -> impl Parser<char, Vec<(Token, Span)>, Error = Simple<char>> {
         just('?').to(Token::Question),
     ));
 
-    let token = keyword_or_ident.or(punctuation);
+    // Comments: // to end of line (handles both mid-file and end-of-file)
+    // IMPORTANT: Must check for // BEFORE single / to avoid tokenizing as two Slash tokens
+    let line_comment = just("//")
+        .then(none_of('\n').repeated())
+        .then(just('\n').or_not())  // Either newline or EOF
+        .ignored();
 
-    // Comments: // to end of line
-    let comment = just("//").then(take_until(just('\n'))).padded();
+    // Token OR comment - comments produce None, tokens produce Some
+    let token_or_skip = line_comment
+        .to(None)
+        .or(keyword_or_ident.or(punctuation).map(Some));
 
-    token
-        .map_with_span(|tok, span| (tok, span))
-        .padded_by(comment.repeated())
+    token_or_skip
+        .map_with_span(|opt_tok, span| opt_tok.map(|tok| (tok, span)))
         .padded()
         .repeated()
         .then_ignore(end())
+        .map(|items| items.into_iter().flatten().collect())
 }
 
 // Unit tests moved to tests/unit_parsing.rs

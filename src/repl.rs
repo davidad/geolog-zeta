@@ -80,7 +80,10 @@ impl ReplState {
         let instances: HashMap<String, InstanceEntry> = reconstructed
             .into_iter()
             .map(|(name, ri)| {
-                let mut entry = InstanceEntry::new(ri.structure, ri.theory_name);
+                // For now, use theory_name as theory_type too
+                // TODO: Store full theory_type in GeologMeta for proper reconstruction
+                let theory_type = ri.theory_name.clone();
+                let mut entry = InstanceEntry::new(ri.structure, ri.theory_name, theory_type);
                 // Populate element names
                 for (slid, elem_name) in ri.element_names {
                     entry.register_element(elem_name, slid);
@@ -255,11 +258,12 @@ impl ReplState {
 
                     let instance_name = inst.name.clone();
                     let theory_name = type_expr_to_theory_name(&inst.theory);
+                    let theory_type = type_expr_to_full_string(&inst.theory);
                     let num_elements = elab_result.structure.len();
 
                     // Build InstanceEntry with element names from elaboration
                     // This includes BOTH imported elements AND locally declared elements
-                    let mut entry = InstanceEntry::new(elab_result.structure, theory_name.clone());
+                    let mut entry = InstanceEntry::new(elab_result.structure, theory_name.clone(), theory_type);
 
                     // Register ALL element names from elaboration result
                     for (slid, elem_name) in elab_result.slid_to_name {
@@ -947,6 +951,34 @@ fn type_expr_to_theory_name(type_expr: &ast::TypeExpr) -> String {
         ast::TypeExpr::Arrow(_, _) => "Arrow".to_string(),
         ast::TypeExpr::Record(_) => "Record".to_string(),
         ast::TypeExpr::Instance(inner) => type_expr_to_theory_name(inner),
+    }
+}
+
+/// Convert a type expression to its full string representation.
+/// E.g., `App(App(ExampleNet, problem0), Solution)` -> "ExampleNet problem0 Solution"
+fn type_expr_to_full_string(type_expr: &ast::TypeExpr) -> String {
+    match type_expr {
+        ast::TypeExpr::Sort => "Sort".to_string(),
+        ast::TypeExpr::Prop => "Prop".to_string(),
+        ast::TypeExpr::Path(path) => path.segments.join("/"),
+        ast::TypeExpr::App(base, arg) => {
+            let base_str = type_expr_to_full_string(base);
+            let arg_str = type_expr_to_full_string(arg);
+            format!("{} {}", base_str, arg_str)
+        }
+        ast::TypeExpr::Arrow(from, to) => {
+            format!("{} -> {}", type_expr_to_full_string(from), type_expr_to_full_string(to))
+        }
+        ast::TypeExpr::Record(fields) => {
+            let field_strs: Vec<String> = fields
+                .iter()
+                .map(|(name, ty)| format!("{}: {}", name, type_expr_to_full_string(ty)))
+                .collect();
+            format!("[{}]", field_strs.join(", "))
+        }
+        ast::TypeExpr::Instance(inner) => {
+            format!("{} instance", type_expr_to_full_string(inner))
+        }
     }
 }
 

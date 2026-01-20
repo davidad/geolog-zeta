@@ -53,7 +53,7 @@ fn test_instance_entry_element_management() {
     structure.add_element(&mut universe, 0);
 
     // Create instance entry
-    let mut entry = InstanceEntry::new(structure, "TestTheory".to_string());
+    let mut entry = InstanceEntry::new(structure, "TestTheory".to_string(), "TestTheory".to_string());
     entry.register_element("a".to_string(), Slid::from_usize(0));
     entry.register_element("b".to_string(), Slid::from_usize(1));
 

@@ -11,6 +11,9 @@ use crate::universe::Universe;
 use super::env::Env;
 use super::error::{ElabError, ElabResult};
 
+// Re-use remapping utilities from theory elaboration
+use super::theory::{collect_type_args_from_theory_type, build_param_subst, remap_sort_for_param_import};
+
 /// Minimal context for instance elaboration - what we need from the caller.
 ///
 /// This replaces the old `Workspace` dependency, making elaboration more modular.
@@ -42,8 +45,11 @@ pub struct InstanceElaborationResult {
 pub struct InstanceEntry {
     /// The structure containing the instance data
     pub structure: Structure,
-    /// The theory name this instance is of
+    /// The base theory name this instance is of (e.g., "ReachabilityProblem")
     pub theory_name: String,
+    /// The full theory type string (e.g., "ExampleNet ReachabilityProblem")
+    /// This is needed to compute parameter substitutions when importing elements.
+    pub theory_type: String,
     /// Map from element names to Slids
     pub element_names: HashMap<String, Slid>,
     /// Reverse map from Slids to names
@@ -52,10 +58,11 @@ pub struct InstanceEntry {
 
 impl InstanceEntry {
     /// Create a new instance entry
-    pub fn new(structure: Structure, theory_name: String) -> Self {
+    pub fn new(structure: Structure, theory_name: String, theory_type: String) -> Self {
         Self {
             structure,
             theory_name,
+            theory_type,
             element_names: HashMap::new(),
             slid_to_name: HashMap::new(),
         }
@@ -151,14 +158,31 @@ fn elaborate_instance_ctx_inner(
             // Get the param theory to know sort mappings
             let param_theory_name = &param_entry.theory_name;
             if let Some(param_theory) = ctx.theories.get(param_theory_name) {
+                // Build parameter substitution map for this param instance
+                // This tells us how to remap sorts from the param instance to local sorts.
+                //
+                // For example, if param_entry is `problem0 : ExampleNet ReachabilityProblem`:
+                // - param_theory = ReachabilityProblem, which has param (N : PetriNet)
+                // - type_args = ["ExampleNet"] (from problem0's theory_type)
+                // - param_subst = {"N" -> "ExampleNet"}
+                let type_args = collect_type_args_from_theory_type(&param_entry.theory_type);
+                let param_subst = build_param_subst(param_theory, &type_args);
+
                 // For each element in the param instance, import it
                 for (&slid, elem_name) in &param_entry.slid_to_name {
                     // Get the element's sort in the param instance
                     let param_sort_id = param_entry.structure.sorts[slid.index()];
                     let param_sort_name = &param_theory.theory.signature.sorts[param_sort_id];
 
-                    // Map to local sort: N/P where N is param_name
-                    let local_sort_name = format!("{}/{}", param_name, param_sort_name);
+                    // Map to local sort using parameter substitution
+                    // This handles cases like "N/P" in problem0 -> "N/P" in solution0
+                    // (not "RP/N/P" which doesn't exist)
+                    let local_sort_name = remap_sort_for_param_import(
+                        param_sort_name,
+                        param_name,
+                        &param_subst,
+                        &resolved.arguments,
+                    );
                     let local_sort_id = theory
                         .theory
                         .signature
@@ -229,17 +253,29 @@ fn elaborate_instance_ctx_inner(
         if let Some(param_entry) = ctx.instances.get(instance_name) {
             let param_theory_name = &param_entry.theory_name;
             if let Some(param_theory) = ctx.theories.get(param_theory_name) {
+                // Build parameter substitution map (same as for element import)
+                let type_args = collect_type_args_from_theory_type(&param_entry.theory_type);
+                let param_subst = build_param_subst(param_theory, &type_args);
+
                 // For each function in the param theory
                 for (param_func_id, param_func) in
                     param_theory.theory.signature.functions.iter().enumerate()
                 {
-                    // Find the corresponding local function: N/func_name
-                    let local_func_name = format!("{}/{}", param_name, param_func.name);
-                    let local_func_id = theory
-                        .theory
-                        .signature
-                        .lookup_func(&local_func_name)
-                        .ok_or_else(|| ElabError::UnknownFunction(local_func_name.clone()))?;
+                    // Find the corresponding local function using the same remapping logic
+                    let local_func_name = remap_sort_for_param_import(
+                        &param_func.name,
+                        param_name,
+                        &param_subst,
+                        &resolved.arguments,
+                    );
+                    let local_func_id = match theory.theory.signature.lookup_func(&local_func_name) {
+                        Some(id) => id,
+                        None => {
+                            // Function might be from a shared param and already imported
+                            // (e.g., N/in/src when N is shared between params)
+                            continue;
+                        }
+                    };
 
                     // For each element in the domain, copy the function value
                     if let DerivedSort::Base(param_domain_sort) = &param_func.domain {

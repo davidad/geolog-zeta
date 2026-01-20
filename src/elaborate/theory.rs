@@ -493,7 +493,7 @@ fn collect_sort_params(
 
 /// Recursively collect type arguments from an App chain.
 /// For `A B C Foo`, this returns ["A", "B", "C"] (Foo is the theory name).
-fn collect_type_args(ty: &ast::TypeExpr, args: &mut Vec<String>) {
+pub fn collect_type_args(ty: &ast::TypeExpr, args: &mut Vec<String>) {
     match ty {
         ast::TypeExpr::App(base, arg) => {
             // For App(base, arg):
@@ -681,6 +681,88 @@ fn extract_theory_name(ty: &ast::TypeExpr) -> ElabResult<String> {
             ty
         ))),
     }
+}
+
+/// Collect type arguments from a theory type string like "ExampleNet ReachabilityProblem".
+/// Returns the arguments (everything except the final theory name).
+pub fn collect_type_args_from_theory_type(theory_type: &str) -> Vec<String> {
+    let tokens: Vec<&str> = theory_type.split_whitespace().collect();
+    if tokens.len() <= 1 {
+        vec![]
+    } else {
+        // All but the last token are arguments
+        tokens[..tokens.len()-1].iter().map(|s| s.to_string()).collect()
+    }
+}
+
+/// Build a parameter substitution map for importing elements from a parameterized instance.
+///
+/// Given a param instance with a certain theory type (e.g., "ExampleNet ReachabilityProblem"),
+/// this builds a mapping from that theory's param names to the actual bindings.
+///
+/// For example, if:
+/// - `param_theory_type` = "ExampleNet ReachabilityProblem"
+/// - ReachabilityProblem has param `(N : PetriNet instance)`
+/// - The type args are ["ExampleNet"]
+///
+/// Returns: {"N" -> "ExampleNet"}
+pub fn build_param_subst(
+    param_theory: &ElaboratedTheory,
+    type_args: &[String],
+) -> HashMap<String, String> {
+    let mut param_subst = HashMap::new();
+    for (bp, arg) in param_theory.params.iter().zip(type_args.iter()) {
+        if bp.theory_name != "Sort" {
+            // Instance param - map its name to the type arg
+            param_subst.insert(bp.name.clone(), arg.clone());
+        }
+    }
+    param_subst
+}
+
+/// Remap a sort name from a param instance to the local theory's sort namespace.
+///
+/// This handles the case where a param instance has sorts from its own params,
+/// and we need to figure out which local sorts they correspond to.
+///
+/// For example, when importing from `problem0` (an `ExampleNet ReachabilityProblem`)
+/// into `solution0` (an `ExampleNet problem0 Solution`):
+/// - problem0 has sort "N/P" where N = ExampleNet
+/// - solution0 has sort "N/P" where N = ExampleNet (from outer param)
+/// - So "N/P" from problem0 maps to "N/P" in solution0 (not "RP/N/P")
+///
+/// Arguments:
+/// - `sort_name`: The sort name in the param instance's signature (e.g., "N/P")
+/// - `param_name`: The local param name (e.g., "RP")
+/// - `param_subst`: Mapping from param instance's param names to their bindings (e.g., {"N" -> "ExampleNet"})
+/// - `local_arguments`: The local instance's param bindings (e.g., [("N", "ExampleNet"), ("RP", "problem0")])
+///
+/// Returns the sort name to use in the local signature.
+pub fn remap_sort_for_param_import(
+    sort_name: &str,
+    param_name: &str,
+    param_subst: &HashMap<String, String>,
+    local_arguments: &[(String, String)],
+) -> String {
+    // Check if this sort starts with a param name that we're substituting
+    if let Some((prefix, suffix)) = sort_name.split_once('/') {
+        if let Some(bound_instance) = param_subst.get(prefix) {
+            // This sort is from a param in the param instance.
+            // Find which local param is bound to the same instance.
+            for (local_param_name, local_instance) in local_arguments {
+                if local_instance == bound_instance {
+                    // Found it! Use the local param's prefix instead.
+                    return format!("{}/{}", local_param_name, suffix);
+                }
+            }
+            // Fallback: the instance isn't directly a local param,
+            // just use param_name prefix
+            return format!("{}/{}", param_name, sort_name);
+        }
+    }
+
+    // Unqualified sort or no substitution applicable - prefix with param_name
+    format!("{}/{}", param_name, sort_name)
 }
 
 /// Format a type expression as a string (for storing instance field types)
