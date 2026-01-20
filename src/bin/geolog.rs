@@ -172,6 +172,9 @@ fn handle_command(state: &mut ReplState, cmd: MetaCommand) -> bool {
         MetaCommand::Solve { theory, budget_ms } => {
             handle_solve(state, &theory, budget_ms);
         }
+        MetaCommand::Extend { instance, theory, budget_ms } => {
+            handle_extend(state, &instance, &theory, budget_ms);
+        }
         MetaCommand::Unknown(msg) => {
             eprintln!("Error: {}", msg);
             eprintln!("Type :help for available commands");
@@ -248,7 +251,8 @@ fn print_help(topic: Option<&str>) {
             println!("  :query <inst> <sort>        List all elements of a sort");
             println!();
             println!("Solver:");
-            println!("  :solve <theory> [budget_ms] Find instance using geometric logic solver");
+            println!("  :solve <theory> [budget_ms]          Find model of theory from scratch");
+            println!("  :extend <inst> <theory> [budget_ms]  Find extension of instance to theory");
             println!();
             println!("Enter geolog definitions directly (theories, instances).");
             println!("Multi-line input is supported - brackets are matched automatically.");
@@ -537,11 +541,9 @@ fn handle_query(state: &ReplState, instance_name: &str, sort_name: &str) {
     }
 }
 
-/// Handle :solve command
+/// Handle :solve command - find a model of a theory from scratch
 fn handle_solve(state: &ReplState, theory_name: &str, budget_ms: Option<u64>) {
-    use geolog::core::RelationStorage;
-    use geolog::id::NumericId;
-    use geolog::solver::{AutoTactic, Budget, SearchTree, Tactic, TacticResult};
+    use geolog::solver::{solve, Budget, EnumerationResult};
 
     // Look up the theory
     let theory = match state.theories.get(theory_name) {
@@ -563,147 +565,144 @@ fn handle_solve(state: &ReplState, theory_name: &str, budget_ms: Option<u64>) {
         theory.theory.axioms.len()
     );
 
-    // Create search tree
-    let mut tree = SearchTree::new(theory.clone());
-
-    // Initialize function and relation storage at root
-    // Functions: domain sort ids
-    let domain_sort_ids: Vec<Option<usize>> = sig
-        .functions
-        .iter()
-        .map(|f| match &f.domain {
-            geolog::core::DerivedSort::Base(sid) => Some(*sid),
-            geolog::core::DerivedSort::Product(_) => None, // Product domains need special handling
-        })
-        .collect();
-    if let Err(e) = tree.init_functions(0, &domain_sort_ids) {
-        eprintln!("Failed to init functions: {}", e);
-        return;
-    }
-
-    // Relations: arities
-    let arities: Vec<usize> = sig
-        .relations
-        .iter()
-        .map(|r| match &r.domain {
-            geolog::core::DerivedSort::Base(_) => 1,
-            geolog::core::DerivedSort::Product(fields) => fields.len(),
-        })
-        .collect();
-    if let Err(e) = tree.init_relations(0, &arities) {
-        eprintln!("Failed to init relations: {}", e);
-        return;
-    }
-
-    // Run the solver
+    // Use unified solver API
     let budget = Budget::new(budget_ms.unwrap_or(5000), 10000);
-    let start = std::time::Instant::now();
-    let result = AutoTactic.run(&mut tree, 0, &budget);
-    let elapsed = start.elapsed();
+    let result = solve(theory.clone(), budget);
 
     // Report result
     match result {
-        TacticResult::Solved => {
-            println!("✓ SOLVED in {:.2}ms", elapsed.as_secs_f64() * 1000.0);
-            // Show the resulting structure
-            let node = tree.get(0).unwrap();
-            let total_elements: usize = (0..sig.sorts.len())
-                .map(|s| node.structure.carrier_size(s))
-                .sum();
-
-            if total_elements == 0 {
-                println!("\nWitness: empty structure (trivial model)");
-            } else {
-                println!("\nWitness structure:");
-                // Show sorts with elements
-                for (sort_id, sort_name) in sig.sorts.iter().enumerate() {
-                    let size = node.structure.carrier_size(sort_id);
-                    if size > 0 {
-                        if size <= 10 {
-                            // Show element IDs for small carriers
-                            let ids: Vec<String> = (0..size)
-                                .map(|i| format!("#{}", i))
-                                .collect();
-                            println!("  {}: {{ {} }}", sort_name, ids.join(", "));
-                        } else {
-                            println!("  {}: {} element(s)", sort_name, size);
-                        }
-                    }
-                }
-                // Show relations with tuples
-                for (rel_id, rel) in sig.relations.iter().enumerate() {
-                    if rel_id < node.structure.relations.len() {
-                        let rel_storage = &node.structure.relations[rel_id];
-                        let tuple_count = rel_storage.len();
-                        if tuple_count > 0 {
-                            if tuple_count <= 10 {
-                                // Show actual tuples for small relations
-                                let tuples: Vec<String> = rel_storage
-                                    .iter()
-                                    .map(|t| {
-                                        let coords: Vec<String> =
-                                            t.iter().map(|s| format!("#{}", s.index())).collect();
-                                        format!("({})", coords.join(", "))
-                                    })
-                                    .collect();
-                                println!("  {}: {{ {} }}", rel.name, tuples.join(", "));
-                            } else {
-                                println!("  {}: {} tuple(s)", rel.name, tuple_count);
-                            }
-                        }
-                    }
-                }
-            }
+        EnumerationResult::Found { model, time_ms } => {
+            println!("✓ SOLVED in {:.2}ms", time_ms);
+            print_witness_structure(&model, sig);
         }
-        TacticResult::Unsat(clause) => {
-            println!("✗ UNSAT in {:.2}ms", elapsed.as_secs_f64() * 1000.0);
-            if let Some(c) = clause {
-                if let Some(ref expl) = c.explanation {
-                    println!("  Reason: {}", expl);
-                }
-            } else {
-                println!("  The theory has no models (derives False).");
-            }
+        EnumerationResult::Unsat { time_ms } => {
+            println!("✗ UNSAT in {:.2}ms", time_ms);
+            println!("  The theory has no models (derives False).");
         }
-        TacticResult::HasObligations(obs) => {
-            println!(
-                "◯ INCOMPLETE after {:.2}ms - {} unfulfilled obligations",
-                elapsed.as_secs_f64() * 1000.0,
-                obs.len()
-            );
-            for (i, ob) in obs.iter().take(5).enumerate() {
-                println!("  {}. {}", i + 1, ob.description);
-            }
-            if obs.len() > 5 {
-                println!("  ... and {} more", obs.len() - 5);
-            }
-        }
-        TacticResult::Progress { steps_taken, branches_created } => {
-            println!(
-                "◯ PROGRESS after {:.2}ms: {} steps, {} branches",
-                elapsed.as_secs_f64() * 1000.0,
-                steps_taken,
-                branches_created
-            );
-            let summary = tree.summary(5);
-            println!(
-                "  {} nodes, {} on frontier, {} solved, {} unsat",
-                summary.total_nodes,
-                summary.frontier_size,
-                summary.solved_count,
-                summary.unsat_count
-            );
-        }
-        TacticResult::Timeout { steps_taken } => {
-            println!(
-                "⏱ TIMEOUT after {:.2}ms ({} steps)",
-                elapsed.as_secs_f64() * 1000.0,
-                steps_taken
-            );
+        EnumerationResult::Incomplete { time_ms, reason, .. } => {
+            println!("◯ INCOMPLETE after {:.2}ms", time_ms);
+            println!("  {}", reason);
             println!("  Try increasing the budget: :solve {} <budget_ms>", theory_name);
         }
-        TacticResult::Error(e) => {
-            eprintln!("✗ ERROR: {}", e);
+    }
+}
+
+/// Print a witness structure (model) to stdout
+fn print_witness_structure(model: &geolog::core::Structure, sig: &geolog::core::Signature) {
+    use geolog::core::RelationStorage;
+    use geolog::id::NumericId;
+
+    let total_elements: usize = (0..sig.sorts.len())
+        .map(|s| model.carrier_size(s))
+        .sum();
+
+    if total_elements == 0 {
+        println!("\nWitness: empty structure (trivial model)");
+    } else {
+        println!("\nWitness structure:");
+        // Show sorts with elements
+        for (sort_id, sort_name) in sig.sorts.iter().enumerate() {
+            let size = model.carrier_size(sort_id);
+            if size > 0 {
+                if size <= 10 {
+                    let ids: Vec<String> = (0..size).map(|i| format!("#{}", i)).collect();
+                    println!("  {}: {{ {} }}", sort_name, ids.join(", "));
+                } else {
+                    println!("  {}: {} element(s)", sort_name, size);
+                }
+            }
+        }
+        // Show relations with tuples
+        for (rel_id, rel) in sig.relations.iter().enumerate() {
+            if rel_id < model.relations.len() {
+                let rel_storage = &model.relations[rel_id];
+                let tuple_count = rel_storage.len();
+                if tuple_count > 0 {
+                    if tuple_count <= 10 {
+                        let tuples: Vec<String> = rel_storage
+                            .iter()
+                            .map(|t| {
+                                let coords: Vec<String> =
+                                    t.iter().map(|s| format!("#{}", s.index())).collect();
+                                format!("({})", coords.join(", "))
+                            })
+                            .collect();
+                        println!("  {}: {{ {} }}", rel.name, tuples.join(", "));
+                    } else {
+                        println!("  {}: {} tuple(s)", rel.name, tuple_count);
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Handle :extend command - find extensions of an existing instance to a theory
+///
+/// This uses the unified model enumeration API: `query(base, theory, budget)` finds
+/// models of `theory` that extend `base`. This is the unified generalization of
+/// `:solve` (where base is empty) and "find models extending M".
+fn handle_extend(state: &ReplState, instance_name: &str, theory_name: &str, budget_ms: Option<u64>) {
+    use geolog::solver::{query, Budget, EnumerationResult};
+    use geolog::universe::Universe;
+
+    // Look up the base instance
+    let base_entry = match state.instances.get(instance_name) {
+        Some(entry) => entry,
+        None => {
+            eprintln!("Instance '{}' not found", instance_name);
+            eprintln!("Use :list instances to see available instances");
+            return;
+        }
+    };
+
+    // Look up the extension theory
+    let theory = match state.theories.get(theory_name) {
+        Some(t) => t.clone(),
+        None => {
+            eprintln!("Theory '{}' not found", theory_name);
+            eprintln!("Use :list theories to see available theories");
+            return;
+        }
+    };
+
+    println!("Extending instance '{}' to theory '{}'...", instance_name, theory_name);
+    let sig = &theory.theory.signature;
+    println!(
+        "  Base: {} (theory {})",
+        instance_name, base_entry.theory_name
+    );
+    println!(
+        "  Target: {} sorts, {} functions, {} relations, {} axioms",
+        sig.sorts.len(),
+        sig.functions.len(),
+        sig.relations.len(),
+        theory.theory.axioms.len()
+    );
+
+    // Clone base structure and create a fresh universe for the extension
+    // (The solver will allocate new elements as needed)
+    let base_structure = base_entry.structure.clone();
+    let universe = Universe::new(); // Fresh universe for new allocations
+
+    // Use unified query API
+    let budget = Budget::new(budget_ms.unwrap_or(5000), 10000);
+    let result = query(base_structure, universe, theory.clone(), budget);
+
+    // Report result
+    match result {
+        EnumerationResult::Found { model, time_ms } => {
+            println!("✓ EXTENDED in {:.2}ms", time_ms);
+            print_witness_structure(&model, sig);
+        }
+        EnumerationResult::Unsat { time_ms } => {
+            println!("✗ NO EXTENSION EXISTS in {:.2}ms", time_ms);
+            println!("  The base instance cannot be extended to satisfy '{}'.", theory_name);
+        }
+        EnumerationResult::Incomplete { time_ms, reason, .. } => {
+            println!("◯ INCOMPLETE after {:.2}ms", time_ms);
+            println!("  {}", reason);
+            println!("  Try increasing the budget: :extend {} {} <budget_ms>", instance_name, theory_name);
         }
     }
 }

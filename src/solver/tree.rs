@@ -27,10 +27,45 @@ impl SearchTree {
     ///
     /// The root node contains an empty Structure with the right number of
     /// sorts but no elements.
+    ///
+    /// This is equivalent to `SearchTree::from_base(theory, empty_structure)`.
+    /// Use this for `:solve` (finding models from scratch).
     pub fn new(theory: Rc<ElaboratedTheory>) -> Self {
         let num_sorts = theory.theory.signature.sorts.len();
         let root_structure = Structure::new(num_sorts);
+        Self::from_base_inner(theory, root_structure, Universe::new())
+    }
 
+    /// Create a search tree starting from an existing base structure.
+    ///
+    /// This enables the unified model-finding API:
+    /// - `:solve T` = `SearchTree::new(T)` = find models of T from scratch
+    /// - `:query M T'` = `SearchTree::from_base(T', M)` = find extensions of M to T'
+    ///
+    /// The base structure's elements, function values, and relation tuples are
+    /// preserved as "frozen" facts. The solver will only add new facts, not remove
+    /// existing ones (the refinement order).
+    ///
+    /// # Arguments
+    /// - `theory`: The theory to satisfy (may extend the base structure's theory)
+    /// - `base`: The starting structure (may already have elements, functions, relations)
+    /// - `universe`: The universe for Luid allocation (should contain Luids from base)
+    ///
+    /// # Panics
+    /// Panics if the base structure has more sorts than the theory signature.
+    pub fn from_base(theory: Rc<ElaboratedTheory>, base: Structure, universe: Universe) -> Self {
+        let num_sorts = theory.theory.signature.sorts.len();
+        assert!(
+            base.carriers.len() <= num_sorts,
+            "Base structure has {} sorts but theory only has {}",
+            base.carriers.len(),
+            num_sorts
+        );
+        Self::from_base_inner(theory, base, universe)
+    }
+
+    /// Internal constructor shared by `new` and `from_base`.
+    fn from_base_inner(theory: Rc<ElaboratedTheory>, root_structure: Structure, universe: Universe) -> Self {
         let root = SearchNode {
             id: 0,
             parent: None,
@@ -46,7 +81,7 @@ impl SearchTree {
         Self {
             nodes: vec![root],
             theory,
-            universe: Universe::new(),
+            universe,
         }
     }
 

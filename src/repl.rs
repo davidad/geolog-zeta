@@ -821,6 +821,9 @@ pub enum MetaCommand {
     /// Solve: find an instance of a theory using the geometric logic solver
     /// `:solve <theory> [budget_ms]`
     Solve { theory: String, budget_ms: Option<u64> },
+    /// Extend: find extensions of an existing instance to a (larger) theory
+    /// `:extend <instance> <theory> [budget_ms]`
+    Extend { instance: String, theory: String, budget_ms: Option<u64> },
     Unknown(String),
 }
 
@@ -930,6 +933,19 @@ impl MetaCommand {
                     }
                 } else {
                     MetaCommand::Unknown(":solve requires <theory> [budget_ms]".to_string())
+                }
+            }
+            "extend" => {
+                let args: Vec<&str> = std::iter::once(arg).flatten().chain(parts).collect();
+                if args.len() >= 2 {
+                    let budget_ms = args.get(2).and_then(|s| s.parse().ok());
+                    MetaCommand::Extend {
+                        instance: args[0].to_string(),
+                        theory: args[1].to_string(),
+                        budget_ms,
+                    }
+                } else {
+                    MetaCommand::Unknown(":extend requires <instance> <theory> [budget_ms]".to_string())
                 }
             }
             other => MetaCommand::Unknown(format!("Unknown command: :{}", other)),

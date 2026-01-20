@@ -1289,4 +1289,102 @@ mod tests {
             "E(w1, w2) should be asserted"
         );
     }
+
+    #[test]
+    fn test_from_base_preserves_structure() {
+        // Test that from_base preserves the base structure's elements and facts
+        use crate::core::Structure;
+        use crate::universe::Universe;
+
+        let theory = make_simple_theory();
+
+        // Create a base structure with some elements
+        let mut universe = Universe::new();
+        let mut base = Structure::new(1);
+        let (elem_a, _) = base.add_element(&mut universe, 0);
+        let (elem_b, _) = base.add_element(&mut universe, 0);
+
+        // Initialize function storage and define f(a) = b
+        base.init_functions(&[Some(0)]);
+        base.define_function(0, elem_a, elem_b).unwrap();
+
+        // Create search tree from base
+        let tree = SearchTree::from_base(theory, base, universe);
+
+        // The root should preserve the base structure
+        let root = tree.get(0).unwrap();
+        assert_eq!(root.structure.carrier_size(0), 2, "Should have 2 elements from base");
+        let sort_slid_a = root.structure.sort_local_id(elem_a);
+        assert_eq!(
+            root.structure.get_function(0, sort_slid_a),
+            Some(elem_b),
+            "f(a) = b should be preserved"
+        );
+    }
+
+    #[test]
+    fn test_from_base_solver_can_extend() {
+        // Test that the solver can extend a base structure to satisfy axioms
+        use crate::core::{Context, Formula, RelationStorage, Sequent, Structure, Term};
+        use crate::universe::Universe;
+
+        // Theory: Node sort with relation R : Node -> Prop
+        // Axiom: ∀x:Node. ∃y:Node. R(y)
+        // (every existing element implies existence of some R-element)
+        let mut sig = Signature::new();
+        let node = sig.add_sort("Node".to_string());
+        sig.add_relation("R".to_string(), DerivedSort::Base(node));
+
+        let axiom = Sequent {
+            context: Context {
+                vars: vec![("x".to_string(), DerivedSort::Base(node))],
+            },
+            premise: Formula::True,
+            conclusion: Formula::Exists(
+                "y".to_string(),
+                DerivedSort::Base(node),
+                Box::new(Formula::Rel(
+                    0, // R
+                    Term::Var("y".to_string(), DerivedSort::Base(node)),
+                )),
+            ),
+        };
+
+        let theory = Rc::new(ElaboratedTheory {
+            params: vec![],
+            theory: Theory {
+                name: "ExistsR".to_string(),
+                signature: sig,
+                axioms: vec![axiom],
+            },
+        });
+
+        // Create base structure with one element, R not yet holding
+        let mut universe = Universe::new();
+        let mut base = Structure::new(1);
+        let (_elem_a, _) = base.add_element(&mut universe, 0);
+        base.init_relations(&[1]); // R has arity 1
+
+        // Create search tree from base
+        let mut tree = SearchTree::from_base(theory, base, universe);
+
+        // Verify starting state: one element, R is empty
+        assert_eq!(tree.get(0).unwrap().structure.carrier_size(0), 1);
+        assert!(tree.get(0).unwrap().structure.relations[0].is_empty());
+
+        // Run forward chaining - should create witness for R(y)
+        let result = ForwardChainingTactic.run(&mut tree, 0, &Budget::quick());
+
+        match result {
+            TacticResult::Progress { .. } => {
+                let node = tree.get(0).unwrap();
+                // Should have at least one R-element now
+                assert!(
+                    !node.structure.relations[0].is_empty(),
+                    "R should have at least one tuple after forward chaining"
+                );
+            }
+            other => panic!("Expected Progress, got {:?}", other),
+        }
+    }
 }
