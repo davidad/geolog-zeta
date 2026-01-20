@@ -451,6 +451,114 @@ impl Tactic for ForwardChainingTactic {
     }
 }
 
+/// Equation propagation tactic: process pending equations in the congruence closure.
+///
+/// This tactic:
+/// 1. Pops pending equations from the CC queue
+/// 2. Merges the equivalence classes
+/// 3. Checks for function conflicts (f(a) = x and f(b) = y where a = b implies x = y)
+/// 4. Adds any new equations discovered via congruence
+///
+/// This is a simplified version that doesn't do full congruence closure,
+/// but handles the basic case of merging and detecting function conflicts.
+pub struct PropagateEquationsTactic;
+
+impl Tactic for PropagateEquationsTactic {
+    fn run(&mut self, tree: &mut SearchTree, node: NodeId, budget: &Budget) -> TacticResult {
+        let start = std::time::Instant::now();
+        let mut steps = 0;
+        #[allow(unused_variables)]
+        let mut new_equations = 0;
+
+        // Process pending equations
+        loop {
+            if start.elapsed().as_millis() as u64 > budget.time_ms || steps >= budget.steps {
+                return TacticResult::Timeout { steps_taken: steps };
+            }
+
+            // Pop next equation
+            let eq = {
+                let node = match tree.get_mut(node) {
+                    Some(n) => n,
+                    None => return TacticResult::Error("Invalid node ID".to_string()),
+                };
+                node.cc.pop_pending()
+            };
+
+            let eq = match eq {
+                Some(e) => e,
+                None => break, // No more pending equations
+            };
+
+            // Merge the equivalence classes
+            let merged = {
+                let node = tree.get_mut(node).unwrap();
+                node.cc.merge(eq.lhs, eq.rhs)
+            };
+
+            if merged {
+                steps += 1;
+
+                // Check for function conflicts
+                // For each function f, if f(a) and f(b) are both defined and a = b,
+                // then we need f(a) = f(b)
+                let sig = tree.signature().clone();
+                let conflicts: Vec<(Slid, Slid)> = {
+                    let node = tree.get(node).unwrap();
+                    let mut conflicts = Vec::new();
+
+                    for func_id in 0..sig.functions.len() {
+                        if func_id >= node.structure.functions.len() {
+                            continue;
+                        }
+
+                        // Get values for eq.lhs and eq.rhs
+                        let lhs_sort_slid = node.structure.sort_local_id(eq.lhs);
+                        let rhs_sort_slid = node.structure.sort_local_id(eq.rhs);
+
+                        let lhs_val = node.structure.get_function(func_id, lhs_sort_slid);
+                        let rhs_val = node.structure.get_function(func_id, rhs_sort_slid);
+
+                        if let (Some(lv), Some(rv)) = (lhs_val, rhs_val) {
+                            if lv != rv {
+                                // Function conflict: f(a) = lv and f(b) = rv, but a = b
+                                // Add equation lv = rv
+                                conflicts.push((lv, rv));
+                            }
+                        }
+                    }
+                    conflicts
+                };
+
+                // Add conflict-induced equations
+                for (lv, rv) in conflicts {
+                    tree.add_pending_equation(
+                        node,
+                        lv,
+                        rv,
+                        super::types::EquationReason::Congruence { func_id: 0 }, // TODO: track actual func_id
+                    );
+                    new_equations += 1;
+                }
+            }
+        }
+
+        if steps > 0 {
+            TacticResult::Progress {
+                steps_taken: steps,
+                branches_created: 0,
+            }
+        } else {
+            // No pending equations - fall through to check
+            CheckTactic.run(tree, node, budget)
+        }
+    }
+
+    fn name(&self) -> &str {
+        "propagate_equations"
+    }
+}
+
 /// Helper: evaluate a term to a single Slid given variable assignment and structure.
 /// Returns None if the term contains constructs we can't handle or if evaluation fails.
 fn eval_term_to_slid(
@@ -761,5 +869,62 @@ mod tests {
         // Check that pending equations were added to congruence closure
         let node = tree.get(0).unwrap();
         assert!(node.cc.pending.len() > 0, "Should have pending equations");
+    }
+
+    #[test]
+    fn test_propagate_equations_merges() {
+        use crate::core::{Context, Formula, Sequent, Term};
+
+        // Create a theory with an axiom: ∀x:Node, y:Node. True |- x = y
+        let mut sig = Signature::new();
+        sig.add_sort("Node".to_string());
+
+        let ctx = Context::new()
+            .extend("x".to_string(), DerivedSort::Base(0))
+            .extend("y".to_string(), DerivedSort::Base(0));
+
+        let axiom = Sequent {
+            context: ctx,
+            premise: Formula::True,
+            conclusion: Formula::Eq(
+                Term::Var("x".to_string(), DerivedSort::Base(0)),
+                Term::Var("y".to_string(), DerivedSort::Base(0)),
+            ),
+        };
+
+        let theory = Rc::new(ElaboratedTheory {
+            params: vec![],
+            theory: Theory {
+                name: "AllEqual".to_string(),
+                signature: sig,
+                axioms: vec![axiom],
+            },
+        });
+
+        let mut tree = SearchTree::new(theory);
+
+        // Add two elements
+        let (a, _) = tree.add_element(0, 0).unwrap();
+        let (b, _) = tree.add_element(0, 0).unwrap();
+
+        // First run forward chaining to add equations
+        ForwardChainingTactic.run(&mut tree, 0, &Budget::quick());
+
+        // Verify equations are pending
+        assert!(tree.get(0).unwrap().cc.pending.len() > 0);
+
+        // Run equation propagation
+        let result = PropagateEquationsTactic.run(&mut tree, 0, &Budget::quick());
+
+        match result {
+            TacticResult::Progress { steps_taken, .. } => {
+                assert!(steps_taken > 0, "Should have processed equations");
+            }
+            other => panic!("Expected Progress, got {:?}", other),
+        }
+
+        // Check that a and b are now in the same equivalence class
+        let node = tree.get_mut(0).unwrap();
+        assert!(node.cc.are_equal(a, b), "a and b should be equal after propagation");
     }
 }
