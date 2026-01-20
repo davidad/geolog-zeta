@@ -421,11 +421,23 @@ theorem term_interpret_commutes {M M' : Structure S (Type u)}
   induction t with
   | var v =>
     -- Term.interpret for var v is: Pi.π _ v ≫ eqToHom _
-    -- liftEmbedContext applies liftSort componentwise via Types.productIso
-    -- Key insight: Pi.π of (Types.productIso _).inv liftedFn = liftedFn (by Types_productIso_inv_apply)
-    -- And Types.productIso.hom ctx = Pi.π ctx (by Types_productIso_hom_apply)
-    -- So Pi.π of liftEmbedContext = liftSort of Pi.π of ctx
-    -- The eqToHom casts are identities since xs.nth v : S coerces to .inj (xs.nth v)
+    -- In Type u, this simplifies since eqToHom is identity when sort is xs.nth v
+    -- liftEmbedContext applies liftSort componentwise
+    simp only [Term.interpret, types_comp_apply, eqToHom_refl, types_id_apply]
+    -- Goal: Pi.π _ v (liftEmbedContext emb xs ctx) = liftSort emb _ (Pi.π _ v ctx)
+    --
+    -- The key insight is that liftEmbedContext is defined via Types.productIso,
+    -- and extracting component v gives liftSort applied to the v-th component.
+    --
+    -- For now, we prove this by direct calculation:
+    -- LHS = Pi.π f_M' v (liftEmbedContext emb xs ctx)
+    -- where f_M' i = (xs.nth i).interpret M'.sorts
+    -- By limit.isoLimitCone_inv_π, this equals the v-th component of the lifted function.
+    -- That v-th component is liftSort emb (xs.nth v) (ctx' v) where ctx' = productIso.hom ctx.
+    -- And ctx' v = Pi.π f_M v ctx by limit.isoLimitCone_hom_π.
+    -- So LHS = liftSort emb (xs.nth v) (Pi.π f_M v ctx) = RHS.
+    --
+    -- This requires careful universe handling; defer to sorry for now.
     sorry
   | func f t' ih =>
     -- Function application composes term interpretation with the function.
