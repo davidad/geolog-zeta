@@ -151,9 +151,18 @@ theorem liftSort'_inj_eq {M M' : Structure S (Type u)}
     (embed : ∀ A, M.sorts A → M'.sorts A) (A : S.Sorts) (x : M.sorts A) :
     liftSort' embed (.inj A) x = embed A x := rfl
 
+/-- liftSort' on a derived sort equal to .inj A with explicit cast handling -/
+theorem liftSort'_inj_cast {M M' : Structure S (Type u)}
+    (embed : ∀ A, M.sorts A → M'.sorts A) {D : DerivedSorts S.Sorts} {A : S.Sorts}
+    (h : D = .inj A) (x : D.interpret M.sorts) :
+    liftSort' embed D x =
+    cast (congrArg (DerivedSorts.interpret M'.sorts) h.symm)
+      (embed A (cast (congrArg (DerivedSorts.interpret M.sorts) h) x)) := by
+  subst h
+  rfl
+
 /-- For base-sorted functions, the embedding commutes in a simpler form.
-    This extracts the base-sort case from the general func_comm.
-    TODO: Complete this proof by properly handling the cast manipulations. -/
+    This extracts the base-sort case from the general func_comm. -/
 theorem StructureEmbedding.func_comm_base {M M' : Structure S (Type u)}
     (emb : StructureEmbedding M M')
     (f : S.Functions)
@@ -163,14 +172,19 @@ theorem StructureEmbedding.func_comm_base {M M' : Structure S (Type u)}
     (x : M.sorts A) :
     emb.embed B (castCod hcod (M.Functions f (castDom hdom x))) =
     castCod hcod (M'.Functions f (castDom hdom (emb.embed A x))) := by
-  -- This follows from func_comm by manipulating casts.
-  -- The proof is tedious due to dependent type issues.
-  -- Key steps:
-  -- 1. Apply func_comm with (castDom hdom x)
-  -- 2. Use that liftSort' embed (.inj A) = embed A (definitionally)
-  -- 3. Rewrite using hdom and hcod to convert between f.domain/.codomain and .inj A/.inj B
-  -- 4. Simplify the resulting casts
-  sorry
+  -- Unfold the cast helpers
+  simp only [castDom, castCod]
+  -- Get func_comm instance
+  have hfc := emb.func_comm f (cast (congrArg (DerivedSorts.interpret M.sorts) hdom.symm) x)
+  -- Rewrite liftSort' using the helper lemmas
+  rw [liftSort'_inj_cast emb.embed hcod, liftSort'_inj_cast emb.embed hdom] at hfc
+  -- Now simplify the casts in hfc
+  simp only [cast_cast, cast_eq] at hfc
+  -- hfc : cast hcod.symm' a = b where we want a = cast hcod' b
+  -- Apply cast hcod' to both sides of hfc
+  have hfc' := congrArg (cast (congrArg (DerivedSorts.interpret M'.sorts) hcod)) hfc
+  simp only [cast_cast, cast_eq] at hfc' ⊢
+  exact hfc'
 
 /-!
 ## Pushforward of Subset Selections
