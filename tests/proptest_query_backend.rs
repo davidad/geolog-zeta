@@ -653,3 +653,218 @@ fn test_pattern_compile_with_function_filter() {
     // Element 1 (maps to 20) should not be included
     assert!(!result.tuples.contains_key(&vec![slid1]));
 }
+
+// ============================================================================
+// DBSP Temporal Operator Property Tests
+// ============================================================================
+
+use geolog::query::backend::StreamContext;
+use geolog::query::backend::execute_stream;
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(50))]
+
+    /// Delay at timestep 0 always produces empty output
+    #[test]
+    fn test_delay_initial_empty_proptest(
+        structure in arb_structure(2, 5),
+        sort_idx in 0usize..2,
+    ) {
+        let mut ctx = StreamContext::new();
+        let plan = QueryOp::Delay {
+            input: Box::new(QueryOp::Scan { sort_idx }),
+            state_id: 0,
+        };
+
+        // At timestep 0, delay should output empty
+        let result = execute_stream(&plan, &structure, &mut ctx);
+        prop_assert!(result.is_empty(), "Delay at t=0 should be empty");
+    }
+
+    /// Delay outputs previous timestep's value
+    #[test]
+    fn test_delay_outputs_previous_proptest(
+        structure in arb_structure(1, 8),
+    ) {
+        let mut ctx = StreamContext::new();
+        let scan = QueryOp::Scan { sort_idx: 0 };
+        let delay = QueryOp::Delay {
+            input: Box::new(scan.clone()),
+            state_id: 0,
+        };
+
+        // Step 0: capture input, output empty
+        let _ = execute_stream(&delay, &structure, &mut ctx);
+        ctx.step();
+
+        // Step 1: should output what was input at step 0
+        let result = execute_stream(&delay, &structure, &mut ctx);
+        let expected = reference_scan(&structure, 0);
+
+        prop_assert_eq!(bag_to_set(&result), expected, "Delay should output previous input");
+    }
+
+    /// ∫(δ(x)) = x for stable input (fundamental DBSP identity)
+    #[test]
+    fn test_integrate_diff_identity(
+        structure in arb_structure(1, 10),
+    ) {
+        let mut ctx = StreamContext::new();
+
+        // ∫(δ(scan))
+        let plan = QueryOp::Integrate {
+            input: Box::new(QueryOp::Diff {
+                input: Box::new(QueryOp::Scan { sort_idx: 0 }),
+                state_id: 0,
+            }),
+            state_id: 1,
+        };
+
+        // Step 0: should equal scan
+        let result = execute_stream(&plan, &structure, &mut ctx);
+        let expected = reference_scan(&structure, 0);
+        prop_assert_eq!(bag_to_set(&result), expected.clone(), "∫(δ(scan)) should equal scan at t=0");
+
+        ctx.step();
+
+        // Step 1: still should equal scan (no changes)
+        let result = execute_stream(&plan, &structure, &mut ctx);
+        prop_assert_eq!(bag_to_set(&result), expected, "∫(δ(scan)) should equal scan at t=1");
+    }
+
+    /// Diff of stable input becomes empty after first timestep
+    #[test]
+    fn test_diff_stable_becomes_empty(
+        structure in arb_structure(1, 8),
+    ) {
+        let mut ctx = StreamContext::new();
+        let plan = QueryOp::Diff {
+            input: Box::new(QueryOp::Scan { sort_idx: 0 }),
+            state_id: 0,
+        };
+
+        // Step 0: diff = scan - {} = scan (all elements are "new")
+        let result0 = execute_stream(&plan, &structure, &mut ctx);
+        let expected0 = reference_scan(&structure, 0);
+        prop_assert_eq!(bag_to_set(&result0), expected0);
+        ctx.step();
+
+        // Step 1: diff = scan - scan = {} (no changes)
+        let result1 = execute_stream(&plan, &structure, &mut ctx);
+        prop_assert!(result1.is_empty(), "Diff of stable input should be empty");
+    }
+
+    /// Integrate accumulates multiplicities across timesteps
+    #[test]
+    fn test_integrate_accumulates(
+        tuple in prop::collection::vec(0usize..100, 1..=2),
+        num_steps in 1usize..5,
+    ) {
+        let structure = Structure::new(1);
+        let mut ctx = StreamContext::new();
+
+        let slid_tuple: Vec<Slid> = tuple.iter().map(|&i| Slid::from_usize(i)).collect();
+        let plan = QueryOp::Integrate {
+            input: Box::new(QueryOp::Constant { tuple: slid_tuple.clone() }),
+            state_id: 0,
+        };
+
+        for step in 0..num_steps {
+            let result = execute_stream(&plan, &structure, &mut ctx);
+
+            // After step i, multiplicity should be i+1
+            let expected_mult = (step + 1) as i64;
+            let actual_mult = result.tuples.get(&slid_tuple).copied().unwrap_or(0);
+            prop_assert_eq!(actual_mult, expected_mult, "Multiplicity at step {}", step);
+
+            ctx.step();
+        }
+    }
+
+    /// Negate and Integrate compose correctly: ∫(negate(δ(x))) + ∫(δ(x)) = 0
+    #[test]
+    fn test_negate_integrate_diff_cancellation(
+        structure in arb_structure(1, 5),
+    ) {
+        let mut ctx1 = StreamContext::new();
+        let mut ctx2 = StreamContext::new();
+
+        let diff = QueryOp::Diff {
+            input: Box::new(QueryOp::Scan { sort_idx: 0 }),
+            state_id: 0,
+        };
+
+        // ∫(δ(scan))
+        let int_pos = QueryOp::Integrate {
+            input: Box::new(diff.clone()),
+            state_id: 1,
+        };
+
+        // ∫(negate(δ(scan)))
+        let int_neg = QueryOp::Integrate {
+            input: Box::new(QueryOp::Negate {
+                input: Box::new(QueryOp::Diff {
+                    input: Box::new(QueryOp::Scan { sort_idx: 0 }),
+                    state_id: 2,
+                }),
+            }),
+            state_id: 3,
+        };
+
+        // Execute both for a couple steps
+        let result_pos = execute_stream(&int_pos, &structure, &mut ctx1);
+        let result_neg = execute_stream(&int_neg, &structure, &mut ctx2);
+
+        // Union should cancel to zero
+        let combined = result_pos.union(&result_neg);
+        prop_assert!(combined.is_empty() || combined.iter().all(|(_, m)| *m == 0),
+            "∫(δ) + ∫(¬δ) should cancel");
+    }
+
+    /// DBSP filter distributes: Filter(Diff(x)) = Diff(Filter(x)) for stable input
+    /// (This is a key DBSP optimization: incrementalize then filter = filter then incrementalize)
+    #[test]
+    fn test_dbsp_filter_distribution(
+        structure in arb_structure(1, 10),
+        filter_val in 0usize..100,
+    ) {
+        let filter_slid = Slid::from_usize(filter_val);
+        let mut ctx1 = StreamContext::new();
+        let mut ctx2 = StreamContext::new();
+
+        // Filter(Diff(Scan))
+        let plan1 = QueryOp::Filter {
+            input: Box::new(QueryOp::Diff {
+                input: Box::new(QueryOp::Scan { sort_idx: 0 }),
+                state_id: 0,
+            }),
+            pred: Predicate::ColEqConst { col: 0, val: filter_slid },
+        };
+
+        // Diff(Filter(Scan))
+        let plan2 = QueryOp::Diff {
+            input: Box::new(QueryOp::Filter {
+                input: Box::new(QueryOp::Scan { sort_idx: 0 }),
+                pred: Predicate::ColEqConst { col: 0, val: filter_slid },
+            }),
+            state_id: 1,
+        };
+
+        // Both should produce same results
+        let result1 = execute_stream(&plan1, &structure, &mut ctx1);
+        let result2 = execute_stream(&plan2, &structure, &mut ctx2);
+
+        prop_assert_eq!(bag_to_set(&result1), bag_to_set(&result2),
+            "Filter(Diff(x)) = Diff(Filter(x))");
+
+        ctx1.step();
+        ctx2.step();
+
+        // Should remain equal at next timestep
+        let result1 = execute_stream(&plan1, &structure, &mut ctx1);
+        let result2 = execute_stream(&plan2, &structure, &mut ctx2);
+
+        prop_assert_eq!(bag_to_set(&result1), bag_to_set(&result2),
+            "Filter(Diff(x)) = Diff(Filter(x)) at t=1");
+    }
+}
