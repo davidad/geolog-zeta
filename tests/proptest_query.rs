@@ -662,5 +662,48 @@ mod chase_proptest {
             let changed2 = chase_step(&[rule], &mut structure, &mut universe, &theory.signature).unwrap();
             prop_assert!(!changed2);
         }
+
+        #[test]
+        fn chase_fixpoint_converges(
+            num_elements in 1..8usize,
+        ) {
+            use geolog::query::chase::chase_fixpoint;
+
+            let mut universe = Universe::new();
+            let mut structure = {
+                let mut s = Structure::new(1);
+                for i in 0..num_elements {
+                    s.carriers[0].insert(i as u64);
+                }
+                s.relations.push(VecRelation::new(1)); // Unary relation
+                s
+            };
+            let theory = simple_relation_theory();
+
+            // Rule: scan all elements and add to unary relation
+            let rule = ChaseRule {
+                name: "add_all".to_string(),
+                var_indices: [("x".to_string(), 0)].into_iter().collect(),
+                query: geolog::query::backend::QueryOp::Scan { sort_idx: 0 },
+                head: ChaseHead::AddRelation {
+                    rel_id: 0,
+                    arg_indices: vec![0],
+                },
+            };
+
+            // Chase should converge in exactly 2 iterations:
+            // 1. Add all elements to relation
+            // 2. Verify no more changes
+            let iterations = chase_fixpoint(
+                std::slice::from_ref(&rule),
+                &mut structure,
+                &mut universe,
+                &theory.signature,
+                100,
+            ).unwrap();
+
+            prop_assert_eq!(iterations, 2);
+            prop_assert_eq!(structure.relations[0].len(), num_elements);
+        }
     }
 }
