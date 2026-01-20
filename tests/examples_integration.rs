@@ -679,10 +679,7 @@ fn test_all_examples_parse() {
     // Also skip examples with known elaboration issues (tracked in beads)
     let requires_theories = [
         "relalg_simple.geolog",
-        // These have axiom elaboration issues with nested instance params (geolog-jw3)
-        "petri_net_solution.geolog",
-        "petri_net_full.geolog",
-        // These need unqualified element lookup from param instances
+        // These need unqualified element lookup from param instances (geolog-04f)
         "sort_param_simple.geolog",
         "iso_instance_test.geolog",
     ];

@@ -124,15 +124,11 @@ pub fn elaborate_theory(env: &mut Env, theory: &ast::TheoryDecl) -> ElabResult<E
             if let Some(base_theory) = env.theories.get(&theory_name) {
                 // Build mapping from base_theory's instance params to our type args
                 // For `RP : N ReachabilityProblem instance`:
-                // - type args = ["N", "ReachabilityProblem"] (collect all, drop last for theory name)
-                // - base_theory params = [("N", "PetriNet")]
+                // - collect_type_args returns ["N"] (all paths except the theory name)
+                // - base_theory.params = [("N", "PetriNet")]
                 // - mapping = {"N" -> "N"}
                 let mut type_args = Vec::new();
                 collect_type_args(&inner, &mut type_args);
-                // Drop the last one (theory name)
-                if !type_args.is_empty() {
-                    type_args.pop();
-                }
 
                 // Build param substitution map: base_theory param name -> our type arg value
                 let mut param_subst: HashMap<String, String> = HashMap::new();
