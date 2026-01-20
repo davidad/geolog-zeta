@@ -676,12 +676,8 @@ fn test_all_examples_parse() {
     }
 
     // Examples that require loading theories first (tested separately)
-    // Also skip examples with known elaboration issues (tracked in beads)
     let requires_theories = [
         "relalg_simple.geolog",
-        // These need unqualified element lookup from param instances (geolog-04f)
-        "sort_param_simple.geolog",
-        "iso_instance_test.geolog",
     ];
 
     let mut failures = Vec::new();

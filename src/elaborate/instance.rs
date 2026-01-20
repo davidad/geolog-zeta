@@ -156,8 +156,9 @@ fn elaborate_instance_ctx_inner(
     // so we can later import function values.
     let mut param_slid_to_local: HashMap<(String, Slid), Slid> = HashMap::new();
 
-    for (param_name, instance_name) in &resolved.arguments {
-        if let Some(param_entry) = ctx.instances.get(instance_name) {
+    for (param_name, arg_value) in &resolved.arguments {
+        // Case 1: argument is an instance name (e.g., "ExampleNet" for N : PetriNet instance)
+        if let Some(param_entry) = ctx.instances.get(arg_value) {
             // Get the param theory to know sort mappings
             let param_theory_name = &param_entry.theory_name;
             if let Some(param_theory) = ctx.theories.get(param_theory_name) {
@@ -199,15 +200,58 @@ fn elaborate_instance_ctx_inner(
                     let local_slid = structure.add_element_with_luid(luid, local_sort_id);
 
                     // Register names: both "N/elemname" and "InstanceName/elemname"
+                    // Also register unqualified "elemname" for convenient access
+                    // (local elements declared later will shadow these if there's a collision)
                     let qualified_param = format!("{}/{}", param_name, elem_name);
-                    let qualified_instance = format!("{}/{}", instance_name, elem_name);
+                    let qualified_instance = format!("{}/{}", arg_value, elem_name);
 
+                    name_to_slid.insert(elem_name.clone(), local_slid);
                     name_to_slid.insert(qualified_param.clone(), local_slid);
                     name_to_slid.insert(qualified_instance.clone(), local_slid);
                     slid_to_name.insert(local_slid, qualified_instance);
 
                     // Record mapping for function value import
-                    param_slid_to_local.insert((instance_name.clone(), slid), local_slid);
+                    param_slid_to_local.insert((arg_value.clone(), slid), local_slid);
+                }
+            }
+        }
+        // Case 2: argument is a sort path like "As/a" (for Sort params)
+        // Parse as InstanceName/SortName and import elements of that sort
+        else if let Some((source_instance_name, source_sort_name)) = arg_value.split_once('/') {
+            if let Some(source_entry) = ctx.instances.get(source_instance_name) {
+                let source_theory_name = &source_entry.theory_name;
+                if let Some(source_theory) = ctx.theories.get(source_theory_name) {
+                    // Find the sort ID in the source theory
+                    if let Some(source_sort_id) = source_theory.theory.signature.lookup_sort(source_sort_name) {
+                        // Import elements of this sort
+                        for (&slid, elem_name) in &source_entry.slid_to_name {
+                            let elem_sort_id = source_entry.structure.sorts[slid.index()];
+                            if elem_sort_id == source_sort_id {
+                                // Map to local sort (param_name is the local sort name, e.g., "X")
+                                let local_sort_id = theory
+                                    .theory
+                                    .signature
+                                    .lookup_sort(param_name)
+                                    .ok_or_else(|| ElabError::UnknownSort(param_name.clone()))?;
+
+                                // Get the Luid for this element
+                                let luid = source_entry.structure.get_luid(slid);
+
+                                // Add to local structure with the SAME Luid
+                                let local_slid = structure.add_element_with_luid(luid, local_sort_id);
+
+                                // Register names
+                                let qualified_source = format!("{}/{}", source_instance_name, elem_name);
+
+                                name_to_slid.insert(elem_name.clone(), local_slid);
+                                name_to_slid.insert(qualified_source.clone(), local_slid);
+                                slid_to_name.insert(local_slid, qualified_source.clone());
+
+                                // Record mapping for function value import
+                                param_slid_to_local.insert((source_instance_name.to_string(), slid), local_slid);
+                            }
+                        }
+                    }
                 }
             }
         }
