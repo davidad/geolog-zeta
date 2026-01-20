@@ -353,3 +353,66 @@ fn test_chase_preorder_reflexivity() {
     // Should complete in 2 iterations (one to add reflexive pairs, one to verify fixpoint)
     assert_eq!(iterations, 2, "Should reach fixpoint in 2 iterations");
 }
+
+#[test]
+fn test_chase_transitive_closure() {
+    // Test that chase correctly computes transitive closure when there are
+    // actual edges to close over (not just reflexive pairs)
+    let theory = preorder_theory();
+    let mut universe = Universe::new();
+    let mut structure = Structure::new(1);
+
+    // Add 3 elements: a < b < c (chain order)
+    let (a, _) = structure.add_element(&mut universe, 0);
+    let (b, _) = structure.add_element(&mut universe, 0);
+    let (c, _) = structure.add_element(&mut universe, 0);
+
+    // Initialize relation with arity 2
+    structure.init_relations(&[2]);
+
+    // Manually add initial ordering: a ≤ b and b ≤ c
+    structure.get_relation_mut(0).insert(vec![a, b]);
+    structure.get_relation_mut(0).insert(vec![b, c]);
+
+    // Compile axioms
+    let rules = compile_theory_axioms(&ElaboratedTheory {
+        theory: theory.clone(),
+        params: vec![],
+    })
+    .unwrap();
+
+    // Run chase
+    let _iterations = chase_fixpoint(&rules, &mut structure, &mut universe, &theory.signature, 100).unwrap();
+
+    // Expected tuples after chase:
+    // - Reflexive: (a,a), (b,b), (c,c) - from reflexivity axiom
+    // - Initial: (a,b), (b,c) - manually added
+    // - Transitive: (a,c) - from transitivity: (a,b) + (b,c) → (a,c)
+    // Total: 6 tuples
+    let relation = structure.get_relation(0);
+    assert_eq!(
+        relation.len(),
+        6,
+        "Should have 6 tuples: 3 reflexive + 2 initial + 1 transitive"
+    );
+
+    // Check reflexive pairs
+    assert!(structure.query_relation(0, &[a, a]), "Should have (a,a)");
+    assert!(structure.query_relation(0, &[b, b]), "Should have (b,b)");
+    assert!(structure.query_relation(0, &[c, c]), "Should have (c,c)");
+
+    // Check initial ordering
+    assert!(structure.query_relation(0, &[a, b]), "Should have (a,b)");
+    assert!(structure.query_relation(0, &[b, c]), "Should have (b,c)");
+
+    // Check transitive closure!
+    assert!(
+        structure.query_relation(0, &[a, c]),
+        "Should have (a,c) from transitive closure: (a,b) + (b,c) → (a,c)"
+    );
+
+    // Should NOT have backwards edges
+    assert!(!structure.query_relation(0, &[b, a]), "Should NOT have (b,a)");
+    assert!(!structure.query_relation(0, &[c, b]), "Should NOT have (c,b)");
+    assert!(!structure.query_relation(0, &[c, a]), "Should NOT have (c,a)");
+}

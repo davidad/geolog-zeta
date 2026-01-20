@@ -107,17 +107,35 @@ pub fn compile_axiom(
     sig: &Signature,
     name: String,
 ) -> Result<ChaseRule, ChaseError> {
-    // Build variable-to-column mapping from context
+    // Build variable-to-context-index mapping from context
     let mut var_indices: HashMap<String, usize> = HashMap::new();
     for (idx, (var_name, _sort)) in sequent.context.vars.iter().enumerate() {
         var_indices.insert(var_name.clone(), idx);
     }
 
-    // Compile premise to query
-    let query = compile_premise(&sequent.premise, &var_indices, &sequent.context, sig)?;
+    // Compile premise to query and get column mapping (output column → context var index)
+    let (query, column_mapping) = compile_premise_with_mapping(
+        &sequent.premise,
+        &var_indices,
+        &sequent.context,
+        sig,
+    )?;
 
-    // Compile conclusion to head
-    let head = compile_conclusion(&sequent.conclusion, &var_indices, sig)?;
+    // Build reverse mapping: context var index → output column index
+    // This is needed for the conclusion to know which column to read for each variable
+    let mut var_to_col: HashMap<String, usize> = HashMap::new();
+    for (col_idx, &var_idx) in column_mapping.iter().enumerate() {
+        // Find the variable name for this context index
+        for (var_name, &ctx_idx) in &var_indices {
+            if ctx_idx == var_idx && !var_to_col.contains_key(var_name) {
+                // Use the first column that maps to this variable
+                var_to_col.insert(var_name.clone(), col_idx);
+            }
+        }
+    }
+
+    // Compile conclusion to head using the column mapping
+    let head = compile_conclusion(&sequent.conclusion, &var_to_col, sig)?;
 
     Ok(ChaseRule {
         name,
@@ -275,17 +293,6 @@ fn extract_rel_column_mapping(
             ))
         }
     }
-}
-
-/// Compile a premise formula to a QueryOp (wrapper for compile_premise_with_mapping)
-fn compile_premise(
-    formula: &Formula,
-    var_indices: &HashMap<String, usize>,
-    context: &Context,
-    sig: &Signature,
-) -> Result<QueryOp, ChaseError> {
-    let (op, _mapping) = compile_premise_with_mapping(formula, var_indices, context, sig)?;
-    Ok(op)
 }
 
 /// Compile a conclusion formula to a ChaseHead
