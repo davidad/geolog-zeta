@@ -78,6 +78,13 @@ fn optimize_children(plan: &QueryOp) -> QueryOp {
             arg_col: *arg_col,
         },
 
+        QueryOp::ApplyField { input, func_idx, arg_col, field_name } => QueryOp::ApplyField {
+            input: Box::new(optimize(input)),
+            func_idx: *func_idx,
+            arg_col: *arg_col,
+            field_name: field_name.clone(),
+        },
+
         // DBSP temporal operators: optimize children, preserve state_id
         QueryOp::Delay { input, state_id } => QueryOp::Delay {
             input: Box::new(optimize(input)),

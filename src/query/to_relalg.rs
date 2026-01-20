@@ -774,6 +774,7 @@ fn compile_op(ctx: &mut CompileContext<'_>, op: &QueryOp) -> Result<Slid, String
         // Not yet implemented (require additional context)
         QueryOp::Constant { .. } => Err("ConstantOp compilation not yet implemented (needs Elem)".to_string()),
         QueryOp::Apply { .. } => Err("ApplyOp compilation not yet implemented (needs Func)".to_string()),
+        QueryOp::ApplyField { .. } => Err("ApplyFieldOp compilation not yet implemented".to_string()),
     }
 }
 

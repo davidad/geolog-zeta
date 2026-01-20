@@ -1,0 +1,23 @@
+// Test: Product codomain equality in premise (ax3 pattern)
+
+theory ProductCodomainEqTest {
+  A : Sort;
+  B : Sort;
+
+  W : Sort;
+  W/src : W -> [x: A, y: B];
+
+  // ax3 pattern: forall w1, w2 : W. w1 W/src = w2 W/src |- w1 = w2
+  // This should make W injective on src
+  ax_inj : forall w1 : W, w2 : W. w1 W/src = w2 W/src |- w1 = w2;
+}
+
+// Instance with two wires that have the same src - should be identified by chase
+instance Test : ProductCodomainEqTest = {
+  a1 : A;
+  b1 : B;
+  w1 : W;
+  w1 W/src = [x: a1, y: b1];
+  w2 : W;
+  w2 W/src = [x: a1, y: b1];
+}

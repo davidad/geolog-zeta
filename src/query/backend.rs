@@ -149,6 +149,16 @@ pub enum QueryOp {
         arg_col: usize,
     },
 
+    /// Apply a single field of a product codomain function
+    /// For `f: A -> [x: B, y: C]`, extends tuples with `f(arg_col).field_name`
+    /// `(t₁, ..., tₙ)` → `(t₁, ..., tₙ, f(t[arg_col]).field_name)`
+    ApplyField {
+        input: Box<QueryOp>,
+        func_idx: usize,
+        arg_col: usize,
+        field_name: String,
+    },
+
     // ========================================================================
     // DBSP Temporal Operators
     // ========================================================================
@@ -274,6 +284,10 @@ impl QueryOp {
             }
             QueryOp::Apply { input, func_idx, arg_col } => {
                 writeln!(f, "{}Apply(func={}, arg_col={})", pad, func_idx, arg_col)?;
+                input.fmt_indented(f, indent + 1)
+            }
+            QueryOp::ApplyField { input, func_idx, arg_col, field_name } => {
+                writeln!(f, "{}ApplyField(func={}, arg_col={}, field={})", pad, func_idx, arg_col, field_name)?;
                 input.fmt_indented(f, indent + 1)
             }
             QueryOp::Delay { input, state_id } => {
@@ -504,6 +518,26 @@ pub fn execute(plan: &QueryOp, structure: &Structure) -> Bag {
             result
         }
 
+        QueryOp::ApplyField { input, func_idx, arg_col, field_name } => {
+            let input_bag = execute(input, structure);
+            let mut result = Bag::new();
+            for (tuple, mult) in input_bag.iter() {
+                if let Some(&arg) = tuple.get(*arg_col) {
+                    let sort_slid = structure.sort_local_id(arg);
+                    // Get product codomain and look up specific field
+                    if let Some(fields) = structure.get_function_product_codomain(*func_idx, sort_slid) {
+                        if let Some((_, field_val)) = fields.iter().find(|(n, _)| n == field_name) {
+                            let mut extended = tuple.clone();
+                            extended.push(*field_val);
+                            result.insert(extended, *mult);
+                        }
+                    }
+                    // If field undefined, tuple is dropped
+                }
+            }
+            result
+        }
+
         // DBSP operators require StreamContext - use execute_stream() instead
         QueryOp::Delay { .. } | QueryOp::Diff { .. } | QueryOp::Integrate { .. } => {
             panic!("DBSP temporal operators require StreamContext - use execute_stream() instead")
@@ -544,7 +578,8 @@ pub fn execute_stream(plan: &QueryOp, structure: &Structure, ctx: &mut StreamCon
         | QueryOp::Negate { .. }
         | QueryOp::Constant { .. }
         | QueryOp::Empty
-        | QueryOp::Apply { .. } => {
+        | QueryOp::Apply { .. }
+        | QueryOp::ApplyField { .. } => {
             // For stateless operators that contain DBSP subexpressions,
             // we need to recursively handle them
             execute_stream_stateless(plan, structure, ctx)
@@ -686,6 +721,24 @@ fn execute_stream_stateless(plan: &QueryOp, structure: &Structure, ctx: &mut Str
                         let mut extended = tuple.clone();
                         extended.push(func_result);
                         result.insert(extended, *mult);
+                    }
+                }
+            }
+            result
+        }
+
+        QueryOp::ApplyField { input, func_idx, arg_col, field_name } => {
+            let input_bag = execute_stream(input, structure, ctx);
+            let mut result = Bag::new();
+            for (tuple, mult) in input_bag.iter() {
+                if let Some(&arg) = tuple.get(*arg_col) {
+                    let sort_slid = structure.sort_local_id(arg);
+                    if let Some(fields) = structure.get_function_product_codomain(*func_idx, sort_slid) {
+                        if let Some((_, field_val)) = fields.iter().find(|(n, _)| n == field_name) {
+                            let mut extended = tuple.clone();
+                            extended.push(*field_val);
+                            result.insert(extended, *mult);
+                        }
                     }
                 }
             }
@@ -911,6 +964,24 @@ pub fn execute_optimized(plan: &QueryOp, structure: &Structure) -> Bag {
                         let mut extended = tuple.clone();
                         extended.push(func_result);
                         result.insert(extended, *mult);
+                    }
+                }
+            }
+            result
+        }
+
+        QueryOp::ApplyField { input, func_idx, arg_col, field_name } => {
+            let input_bag = execute_optimized(input, structure);
+            let mut result = Bag::new();
+            for (tuple, mult) in input_bag.iter() {
+                if let Some(&arg) = tuple.get(*arg_col) {
+                    let sort_slid = structure.sort_local_id(arg);
+                    if let Some(fields) = structure.get_function_product_codomain(*func_idx, sort_slid) {
+                        if let Some((_, field_val)) = fields.iter().find(|(n, _)| n == field_name) {
+                            let mut extended = tuple.clone();
+                            extended.push(*field_val);
+                            result.insert(extended, *mult);
+                        }
                     }
                 }
             }

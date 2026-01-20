@@ -1,0 +1,27 @@
+// Test: Field projection in chase
+
+theory FieldProjectionChaseTest {
+  A : Sort;
+  B : Sort;
+
+  R : Sort;
+  R/data : R -> [x: A, y: B];
+
+  // Marker sort for elements whose x field matches a given a
+  XMatches : Sort;
+  XMatches/r : XMatches -> R;
+  XMatches/a : XMatches -> A;
+
+  // Axiom: if r's x field equals a, create an XMatches
+  ax1 : forall r : R, a : A, b : B. r R/data = [x: a, y: b] |- exists m : XMatches. m XMatches/r = r, m XMatches/a = a;
+}
+
+instance Test : FieldProjectionChaseTest = chase {
+  a1 : A;
+  a2 : A;
+  b1 : B;
+  r1 : R;
+  r1 R/data = [x: a1, y: b1];
+  r2 : R;
+  r2 R/data = [x: a2, y: b1];
+}

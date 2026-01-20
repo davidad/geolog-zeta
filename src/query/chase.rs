@@ -134,11 +134,26 @@ pub enum ChaseHead {
         arg_col: usize,
         result_col: usize,
     },
+    /// Set a function value with product codomain: f(arg) = [field1: v1, field2: v2, ...]
+    SetFunctionProductCodomain {
+        func_idx: usize,
+        arg_col: usize,
+        /// (field_name, column_index) pairs for each field in the product codomain
+        field_cols: Vec<(String, usize)>,
+    },
     /// Create a new element (existential) - old style, always creates
     CreateElement {
         sort_idx: usize,
         /// Bindings for functions on the new element: f(new_elem) = col
         function_bindings: Vec<(usize, usize)>, // (func_idx, result_col)
+    },
+    /// Create a new element with product codomain function bindings
+    CreateElementWithProductCodomain {
+        sort_idx: usize,
+        /// Standard function bindings: f(new_elem) = col
+        function_bindings: Vec<(usize, usize)>,
+        /// Product codomain bindings: f(new_elem) = [field1: col1, field2: col2, ...]
+        product_codomain_bindings: Vec<(usize, Vec<(String, usize)>)>, // (func_idx, field_cols)
     },
     /// Ensure a function value exists via skolemization.
     /// For axioms like "forall a. exists b. f(a) = b":
@@ -210,14 +225,46 @@ fn compile_premise_with_mapping(
 ) -> Result<(QueryOp, ColumnMapping), ChaseError> {
     match formula {
         Formula::True => {
-            // True premise: scan all elements of first variable's sort
+            // True premise: scan all elements of each variable's sort (cross product)
             if context.vars.is_empty() {
                 Ok((QueryOp::Empty, vec![]))
-            } else {
+            } else if context.vars.len() == 1 {
+                // Single variable: just scan its sort
                 let (_, sort) = &context.vars[0];
                 let sort_idx = resolve_sort_index(sort, sig)?;
-                // Output column 0 corresponds to context variable 0
                 Ok((QueryOp::Scan { sort_idx }, vec![0]))
+            } else {
+                // Multiple variables: cross-product all their sorts
+                // Build up via nested CrossProduct
+                let mut result_op: Option<QueryOp> = None;
+                let mut result_mapping: ColumnMapping = Vec::new();
+
+                for (var_idx, (_, sort)) in context.vars.iter().enumerate() {
+                    let sort_idx = resolve_sort_index(sort, sig)?;
+                    let scan = QueryOp::Scan { sort_idx };
+
+                    match result_op.take() {
+                        None => {
+                            // First variable: just the scan
+                            result_op = Some(scan);
+                            result_mapping.push(var_idx);
+                        }
+                        Some(left) => {
+                            // Subsequent variables: cross product via Join with Cross condition
+                            let left_width = result_mapping.len();
+                            result_op = Some(QueryOp::Join {
+                                left: Box::new(left),
+                                right: Box::new(scan),
+                                cond: crate::query::backend::JoinCond::Cross,
+                            });
+                            // New column at position left_width maps to var_idx
+                            result_mapping.push(var_idx);
+                            debug_assert_eq!(result_mapping.len(), left_width + 1);
+                        }
+                    }
+                }
+
+                Ok((result_op.unwrap(), result_mapping))
             }
         }
 
@@ -281,26 +328,48 @@ fn compile_premise_with_mapping(
         }
 
         Formula::Eq(left, right) => {
-            let left_col = term_to_column(left, var_indices)?;
-            let right_col = term_to_column(right, var_indices)?;
+            // Handle different equality patterns
+            match (left, right) {
+                // f(arg) = [field1: v1, field2: v2, ...] - product codomain equality
+                (Term::App(func_idx, arg), Term::Record(fields))
+                | (Term::Record(fields), Term::App(func_idx, arg)) => {
+                    compile_product_codomain_equality(
+                        *func_idx, arg, fields, var_indices, context, sig
+                    )
+                }
 
-            if context.vars.is_empty() {
-                return Err(ChaseError::UnsupportedPremise(
-                    "Equality without variables".to_string()
-                ));
+                // f(arg) = var or var = f(arg) - simple function equality
+                (Term::App(func_idx, arg), Term::Var(var_name, _))
+                | (Term::Var(var_name, _), Term::App(func_idx, arg)) => {
+                    compile_function_equality(
+                        *func_idx, arg, var_name, var_indices, context, sig
+                    )
+                }
+
+                // var1 = var2 - simple variable equality
+                _ => {
+                    let left_col = term_to_column(left, var_indices)?;
+                    let right_col = term_to_column(right, var_indices)?;
+
+                    if context.vars.is_empty() {
+                        return Err(ChaseError::UnsupportedPremise(
+                            "Equality without variables".to_string()
+                        ));
+                    }
+
+                    let (_, sort) = &context.vars[0];
+                    let sort_idx = resolve_sort_index(sort, sig)?;
+                    let scan = QueryOp::Scan { sort_idx };
+
+                    Ok((
+                        QueryOp::Filter {
+                            input: Box::new(scan),
+                            pred: Predicate::ColEqCol { left: left_col, right: right_col },
+                        },
+                        vec![0], // Single-element scan
+                    ))
+                }
             }
-
-            let (_, sort) = &context.vars[0];
-            let sort_idx = resolve_sort_index(sort, sig)?;
-            let scan = QueryOp::Scan { sort_idx };
-
-            Ok((
-                QueryOp::Filter {
-                    input: Box::new(scan),
-                    pred: Predicate::ColEqCol { left: left_col, right: right_col },
-                },
-                vec![0], // Single-element scan
-            ))
         }
 
         Formula::False => Ok((QueryOp::Empty, vec![])),
@@ -313,6 +382,146 @@ fn compile_premise_with_mapping(
             "Existential in premise not yet supported".to_string()
         )),
     }
+}
+
+/// Compile a product codomain equality: f(arg) = [field1: v1, field2: v2, ...]
+/// This creates a query that:
+/// 1. Scans all context variables (cross product)
+/// 2. For each field, applies ApplyField to get f(arg).field_name
+/// 3. Filters where each field value equals the expected variable
+fn compile_product_codomain_equality(
+    func_idx: usize,
+    arg: &Term,
+    fields: &[(String, Term)],
+    var_indices: &HashMap<String, usize>,
+    context: &Context,
+    sig: &Signature,
+) -> Result<(QueryOp, ColumnMapping), ChaseError> {
+    // Build cross-product scan of all context variables
+    let mut result_op: Option<QueryOp> = None;
+    let mut result_mapping: ColumnMapping = Vec::new();
+
+    for (var_idx, (_, sort)) in context.vars.iter().enumerate() {
+        let sort_idx = resolve_sort_index(sort, sig)?;
+        let scan = QueryOp::Scan { sort_idx };
+
+        match result_op.take() {
+            None => {
+                result_op = Some(scan);
+                result_mapping.push(var_idx);
+            }
+            Some(left) => {
+                result_op = Some(QueryOp::Join {
+                    left: Box::new(left),
+                    right: Box::new(scan),
+                    cond: crate::query::backend::JoinCond::Cross,
+                });
+                result_mapping.push(var_idx);
+            }
+        }
+    }
+
+    let mut plan = result_op.ok_or_else(|| {
+        ChaseError::UnsupportedPremise("Product codomain equality without variables".to_string())
+    })?;
+
+    // Get the column for the function argument
+    let arg_col = term_to_column(arg, var_indices)?;
+    // Map context var index to output column
+    let arg_output_col = result_mapping.iter().position(|&v| v == arg_col)
+        .ok_or_else(|| ChaseError::UnboundVariable("function argument".to_string()))?;
+
+    // For each field, apply ApplyField and filter
+    let mut current_cols = result_mapping.len();
+    for (field_name, field_term) in fields {
+        // Apply the field
+        plan = QueryOp::ApplyField {
+            input: Box::new(plan),
+            func_idx,
+            arg_col: arg_output_col,
+            field_name: field_name.clone(),
+        };
+        let field_col = current_cols;
+        current_cols += 1;
+
+        // Get the expected value column
+        let expected_var_idx = term_to_column(field_term, var_indices)?;
+        let expected_col = result_mapping.iter().position(|&v| v == expected_var_idx)
+            .ok_or_else(|| ChaseError::UnboundVariable("field value".to_string()))?;
+
+        // Filter where field value equals expected value
+        plan = QueryOp::Filter {
+            input: Box::new(plan),
+            pred: Predicate::ColEqCol { left: field_col, right: expected_col },
+        };
+    }
+
+    Ok((plan, result_mapping))
+}
+
+/// Compile a simple function equality: f(arg) = var
+fn compile_function_equality(
+    func_idx: usize,
+    arg: &Term,
+    var_name: &str,
+    var_indices: &HashMap<String, usize>,
+    context: &Context,
+    sig: &Signature,
+) -> Result<(QueryOp, ColumnMapping), ChaseError> {
+    // Build cross-product scan of all context variables
+    let mut result_op: Option<QueryOp> = None;
+    let mut result_mapping: ColumnMapping = Vec::new();
+
+    for (var_idx, (_, sort)) in context.vars.iter().enumerate() {
+        let sort_idx = resolve_sort_index(sort, sig)?;
+        let scan = QueryOp::Scan { sort_idx };
+
+        match result_op.take() {
+            None => {
+                result_op = Some(scan);
+                result_mapping.push(var_idx);
+            }
+            Some(left) => {
+                result_op = Some(QueryOp::Join {
+                    left: Box::new(left),
+                    right: Box::new(scan),
+                    cond: crate::query::backend::JoinCond::Cross,
+                });
+                result_mapping.push(var_idx);
+            }
+        }
+    }
+
+    let mut plan = result_op.ok_or_else(|| {
+        ChaseError::UnsupportedPremise("Function equality without variables".to_string())
+    })?;
+
+    // Get the column for the function argument
+    let arg_col = term_to_column(arg, var_indices)?;
+    let arg_output_col = result_mapping.iter().position(|&v| v == arg_col)
+        .ok_or_else(|| ChaseError::UnboundVariable("function argument".to_string()))?;
+
+    // Apply the function
+    plan = QueryOp::Apply {
+        input: Box::new(plan),
+        func_idx,
+        arg_col: arg_output_col,
+    };
+    let func_result_col = result_mapping.len();
+
+    // Get the expected value column
+    let expected_var_idx = var_indices.get(var_name).copied()
+        .ok_or_else(|| ChaseError::UnboundVariable(var_name.to_string()))?;
+    let expected_col = result_mapping.iter().position(|&v| v == expected_var_idx)
+        .ok_or_else(|| ChaseError::UnboundVariable(var_name.to_string()))?;
+
+    // Filter where function result equals expected value
+    plan = QueryOp::Filter {
+        input: Box::new(plan),
+        pred: Predicate::ColEqCol { left: func_result_col, right: expected_col },
+    };
+
+    Ok((plan, result_mapping))
 }
 
 /// Extract column-to-variable mapping from a relation argument term
@@ -382,8 +591,28 @@ fn compile_conclusion(
         }
 
         Formula::Eq(left, right) => {
-            // Function assignment: f(x) = y
+            // Function assignment: f(x) = y or f(x) = [field1: v1, ...]
             match (left, right) {
+                (Term::App(func_idx, arg), Term::Record(fields)) => {
+                    // Product codomain: f(x) = [field1: v1, field2: v2, ...]
+                    let arg_col = term_to_column(arg, var_indices)?;
+                    let field_cols = record_to_field_cols(fields, var_indices)?;
+                    Ok(ChaseHead::SetFunctionProductCodomain {
+                        func_idx: *func_idx,
+                        arg_col,
+                        field_cols,
+                    })
+                }
+                (Term::Record(fields), Term::App(func_idx, arg)) => {
+                    // Product codomain (reversed): [field1: v1, ...] = f(x)
+                    let arg_col = term_to_column(arg, var_indices)?;
+                    let field_cols = record_to_field_cols(fields, var_indices)?;
+                    Ok(ChaseHead::SetFunctionProductCodomain {
+                        func_idx: *func_idx,
+                        arg_col,
+                        field_cols,
+                    })
+                }
                 (Term::App(func_idx, arg), _) => {
                     let arg_col = term_to_column(arg, var_indices)?;
                     let result_col = term_to_column(right, var_indices)?;
@@ -429,15 +658,24 @@ fn compile_conclusion(
                 });
             }
 
-            // Fall back to the old CreateElement behavior for other patterns
+            // Fall back to CreateElement behavior for other patterns
             // e.g., ∃x:S. f(x) = y becomes CreateElement with f bound to y's column
-            let mut function_bindings = Vec::new();
-            extract_function_bindings(body, var_name, var_indices, &mut function_bindings)?;
+            // or ∃x:S. f(x) = [a: v1, b: v2] for product codomains
+            let bindings = extract_function_bindings(body, var_name, var_indices)?;
 
-            Ok(ChaseHead::CreateElement {
-                sort_idx,
-                function_bindings,
-            })
+            // If we have product codomain bindings, use CreateElementWithProductCodomain
+            if !bindings.product_codomain.is_empty() {
+                Ok(ChaseHead::CreateElementWithProductCodomain {
+                    sort_idx,
+                    function_bindings: bindings.standard,
+                    product_codomain_bindings: bindings.product_codomain,
+                })
+            } else {
+                Ok(ChaseHead::CreateElement {
+                    sort_idx,
+                    function_bindings: bindings.standard,
+                })
+            }
         }
 
         Formula::False => {
@@ -500,22 +738,55 @@ fn extract_ensure_function_pattern(
 }
 
 /// Extract function bindings from an existential body
+/// Extraction result for function bindings in existential bodies
+struct FunctionBindings {
+    /// Standard bindings: f(new_elem) = col
+    standard: Vec<(usize, usize)>,
+    /// Product codomain bindings: f(new_elem) = [field1: col1, ...]
+    product_codomain: Vec<(usize, Vec<(String, usize)>)>,
+}
+
 fn extract_function_bindings(
     formula: &Formula,
     new_var: &str,
     var_indices: &HashMap<String, usize>,
-    bindings: &mut Vec<(usize, usize)>,
+) -> Result<FunctionBindings, ChaseError> {
+    let mut result = FunctionBindings {
+        standard: Vec::new(),
+        product_codomain: Vec::new(),
+    };
+    extract_function_bindings_inner(formula, new_var, var_indices, &mut result)?;
+    Ok(result)
+}
+
+fn extract_function_bindings_inner(
+    formula: &Formula,
+    new_var: &str,
+    var_indices: &HashMap<String, usize>,
+    bindings: &mut FunctionBindings,
 ) -> Result<(), ChaseError> {
     match formula {
         Formula::Eq(left, right) => {
             match (left, right) {
+                // f(new_var) = [field1: v1, ...]
+                (Term::App(func_idx, arg), Term::Record(fields)) if is_var(arg, new_var) => {
+                    let field_cols = record_to_field_cols(fields, var_indices)?;
+                    bindings.product_codomain.push((*func_idx, field_cols));
+                }
+                // [field1: v1, ...] = f(new_var)
+                (Term::Record(fields), Term::App(func_idx, arg)) if is_var(arg, new_var) => {
+                    let field_cols = record_to_field_cols(fields, var_indices)?;
+                    bindings.product_codomain.push((*func_idx, field_cols));
+                }
+                // f(new_var) = result
                 (Term::App(func_idx, arg), result) if is_var(arg, new_var) => {
                     let result_col = term_to_column(result, var_indices)?;
-                    bindings.push((*func_idx, result_col));
+                    bindings.standard.push((*func_idx, result_col));
                 }
+                // result = f(new_var)
                 (result, Term::App(func_idx, arg)) if is_var(arg, new_var) => {
                     let result_col = term_to_column(result, var_indices)?;
-                    bindings.push((*func_idx, result_col));
+                    bindings.standard.push((*func_idx, result_col));
                 }
                 _ => {}
             }
@@ -523,7 +794,7 @@ fn extract_function_bindings(
         }
         Formula::Conj(fs) => {
             for f in fs {
-                extract_function_bindings(f, new_var, var_indices, bindings)?;
+                extract_function_bindings_inner(f, new_var, var_indices, bindings)?;
             }
             Ok(())
         }
@@ -568,6 +839,20 @@ fn term_to_columns(term: &Term, var_indices: &HashMap<String, usize>) -> Result<
             format!("Complex term {:?} in relation argument", term)
         )),
     }
+}
+
+/// Convert a Record term to (field_name, column_index) pairs for product codomains
+fn record_to_field_cols(
+    fields: &[(String, Term)],
+    var_indices: &HashMap<String, usize>,
+) -> Result<Vec<(String, usize)>, ChaseError> {
+    fields
+        .iter()
+        .map(|(name, term)| {
+            let col = term_to_column(term, var_indices)?;
+            Ok((name.clone(), col))
+        })
+        .collect()
 }
 
 /// Resolve a DerivedSort to a sort index
@@ -679,14 +964,126 @@ fn fire_head(
         }
 
         ChaseHead::CreateElement { sort_idx, function_bindings } => {
-            // Create a new element
+            // Standard chase: check if a witness already exists before creating
+
+            // First, collect all expected function values from the binding
+            let expected: Vec<(usize, Slid)> = function_bindings
+                .iter()
+                .map(|&(func_idx, result_col)| {
+                    let result = binding.get(result_col).copied()
+                        .ok_or_else(|| ChaseError::UnboundVariable("result column out of bounds".to_string()))?;
+                    Ok((func_idx, result))
+                })
+                .collect::<Result<Vec<_>, ChaseError>>()?;
+
+            // Search for an existing witness in the target sort
+            let carrier = &structure.carriers[*sort_idx];
+            let witness_exists = carrier.iter().any(|elem_u64| {
+                let elem_slid = Slid::from_usize(elem_u64 as usize);
+                let local_id = structure.sort_local_id(elem_slid);
+
+                // Check all function bindings: f(elem) = expected
+                expected.iter().all(|&(func_idx, expected_val)| {
+                    let func = &structure.functions[func_idx];
+                    crate::id::get_slid(func.get_local(local_id.index())) == Some(expected_val)
+                })
+            });
+
+            if witness_exists {
+                // Witness already exists - no change needed
+                return Ok(false);
+            }
+
+            // No witness exists - create a new element
             let (elem, _luid) = structure.add_element(universe, *sort_idx);
 
             // Set function values
-            for &(func_idx, result_col) in function_bindings {
-                let result = binding.get(result_col).copied()
-                    .ok_or_else(|| ChaseError::UnboundVariable("result column out of bounds".to_string()))?;
+            for (func_idx, result) in expected {
                 structure.define_function(func_idx, elem, result)
+                    .map_err(ChaseError::QueryFailed)?;
+            }
+
+            Ok(true)
+        }
+
+        ChaseHead::CreateElementWithProductCodomain { sort_idx, function_bindings, product_codomain_bindings } => {
+            // Standard chase: check if a witness already exists before creating
+
+            // First, collect all expected function values from the binding
+            let expected_standard: Vec<(usize, Slid)> = function_bindings
+                .iter()
+                .map(|&(func_idx, result_col)| {
+                    let result = binding.get(result_col).copied()
+                        .ok_or_else(|| ChaseError::UnboundVariable("result column out of bounds".to_string()))?;
+                    Ok((func_idx, result))
+                })
+                .collect::<Result<Vec<_>, ChaseError>>()?;
+
+            let expected_product: Vec<(usize, Vec<(String, Slid)>)> = product_codomain_bindings
+                .iter()
+                .map(|(func_idx, field_cols)| {
+                    let values: Vec<(String, Slid)> = field_cols
+                        .iter()
+                        .map(|(name, col)| {
+                            let slid = binding.get(*col).copied()
+                                .ok_or_else(|| ChaseError::UnboundVariable(format!("field '{}' column out of bounds", name)))?;
+                            Ok((name.clone(), slid))
+                        })
+                        .collect::<Result<Vec<_>, ChaseError>>()?;
+                    Ok((*func_idx, values))
+                })
+                .collect::<Result<Vec<_>, ChaseError>>()?;
+
+            // Search for an existing witness in the target sort
+            let carrier = &structure.carriers[*sort_idx];
+            let witness_exists = carrier.iter().any(|elem_u64| {
+                let elem_slid = Slid::from_usize(elem_u64 as usize);
+                let local_id = structure.sort_local_id(elem_slid);
+
+                // Check standard function bindings: f(elem) = expected
+                let standard_ok = expected_standard.iter().all(|&(func_idx, expected)| {
+                    let func = &structure.functions[func_idx];
+                    crate::id::get_slid(func.get_local(local_id.index())) == Some(expected)
+                });
+
+                if !standard_ok {
+                    return false;
+                }
+
+                // Check product codomain bindings: f(elem) = [field1: v1, ...]
+                expected_product.iter().all(|(func_idx, expected_fields)| {
+                    if let Some(actual) = structure.get_function_product_codomain(*func_idx, local_id) {
+                        // Check all expected fields match
+                        expected_fields.iter().all(|(name, expected_val)| {
+                            actual.iter().any(|(n, v)| n == name && *v == *expected_val)
+                        })
+                    } else {
+                        false
+                    }
+                })
+            });
+
+            if witness_exists {
+                // Witness already exists - no change needed
+                return Ok(false);
+            }
+
+            // No witness exists - create a new element
+            let (elem, _luid) = structure.add_element(universe, *sort_idx);
+
+            // Set standard function values
+            for (func_idx, result) in expected_standard {
+                structure.define_function(func_idx, elem, result)
+                    .map_err(ChaseError::QueryFailed)?;
+            }
+
+            // Set product codomain function values
+            for (func_idx, fields) in expected_product {
+                let codomain_values: Vec<(&str, Slid)> = fields
+                    .iter()
+                    .map(|(name, slid)| (name.as_str(), *slid))
+                    .collect();
+                structure.define_function_product_codomain(func_idx, elem, &codomain_values)
                     .map_err(ChaseError::QueryFailed)?;
             }
 
@@ -714,6 +1111,42 @@ fn fire_head(
             structure.define_function(*func_idx, arg, new_elem)
                 .map_err(ChaseError::QueryFailed)?;
 
+            Ok(true)
+        }
+
+        ChaseHead::SetFunctionProductCodomain { func_idx, arg_col, field_cols } => {
+            let arg = binding.get(*arg_col).copied()
+                .ok_or_else(|| ChaseError::UnboundVariable("arg column out of bounds".to_string()))?;
+
+            // Build the field values from the binding
+            let codomain_values: Vec<(&str, Slid)> = field_cols
+                .iter()
+                .map(|(name, col)| {
+                    let slid = binding.get(*col).copied()
+                        .ok_or_else(|| ChaseError::UnboundVariable(format!("field '{}' column out of bounds", name)))?;
+                    Ok((name.as_str(), slid))
+                })
+                .collect::<Result<Vec<_>, ChaseError>>()?;
+
+            // Check if already set by looking at the function column
+            if let Some(existing) = structure.get_function_product_codomain(*func_idx, structure.sort_local_id(arg)) {
+                // Check if all field values match
+                let all_match = field_cols.iter().all(|(name, col)| {
+                    let expected = binding.get(*col).copied();
+                    existing.iter().any(|(n, s)| n == name && Some(*s) == expected)
+                });
+                if all_match {
+                    return Ok(false); // Already set to same values
+                }
+                // Conflict - function already defined with different values
+                return Err(ChaseError::QueryFailed(
+                    format!("Function {} already defined at {:?} with different product codomain values", func_idx, arg)
+                ));
+            }
+
+            // Set the product codomain function value
+            structure.define_function_product_codomain(*func_idx, arg, &codomain_values)
+                .map_err(ChaseError::QueryFailed)?;
             Ok(true)
         }
 
