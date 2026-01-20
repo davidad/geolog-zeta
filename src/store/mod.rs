@@ -357,7 +357,7 @@ mod tests {
     #[test]
     fn test_create_theory() {
         let mut store = Store::new();
-        let theory = store.create_theory("TestTheory").unwrap();
+        let _theory = store.create_theory("TestTheory").unwrap();
         assert!(store.uncommitted.contains_key("TestTheory"));
     }
 
@@ -365,7 +365,7 @@ mod tests {
     fn test_create_instance() {
         let mut store = Store::new();
         let theory = store.create_theory("TestTheory").unwrap();
-        let instance = store.create_instance("TestInstance", theory).unwrap();
+        let _instance = store.create_instance("TestInstance", theory).unwrap();
         assert!(store.uncommitted.contains_key("TestInstance"));
     }
 

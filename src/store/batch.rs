@@ -308,7 +308,7 @@ mod tests {
         let sort_ds = store.make_base_dsort(sort).unwrap();
 
         // Create a function
-        let func = store.add_function(theory, "label", sort_ds, sort_ds).unwrap();
+        let _func = store.add_function(theory, "label", sort_ds, sort_ds).unwrap();
 
         // Create an instance
         let instance = store.create_instance("TestInstance", theory).unwrap();
