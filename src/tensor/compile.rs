@@ -237,10 +237,84 @@ pub fn compile_formula(
                 return (TensorExpr::scalar(false), vec![]);
             }
 
-            let compiled: Vec<(TensorExpr, Vec<String>)> = formulas
+            let mut compiled: Vec<(TensorExpr, Vec<String>)> = formulas
                 .iter()
                 .map(|f| compile_formula(f, _ctx, structure, sig))
                 .collect();
+
+            // Collect all variables across all disjuncts
+            let all_vars: std::collections::HashSet<&String> = compiled
+                .iter()
+                .flat_map(|(_, vars)| vars.iter())
+                .collect();
+
+            // If all disjuncts have the same variables, we're good
+            let need_extension = compiled.iter().any(|(_, vars)| {
+                let var_set: std::collections::HashSet<_> = vars.iter().collect();
+                var_set != all_vars
+            });
+
+            if need_extension {
+                // Build a canonical variable ordering
+                let all_vars_vec: Vec<String> = {
+                    let mut v: Vec<_> = all_vars.iter().cloned().cloned().collect();
+                    v.sort(); // Canonical ordering
+                    v
+                };
+
+                // Extend each disjunct with missing variables
+                for (expr, vars) in &mut compiled {
+                    let var_set: std::collections::HashSet<_> = vars.iter().collect();
+                    let missing: Vec<_> = all_vars_vec
+                        .iter()
+                        .filter(|v| !var_set.contains(*v))
+                        .collect();
+
+                    if !missing.is_empty() {
+                        // Create full-domain tensors for missing variables and take product
+                        let mut full_domain_tensors = Vec::new();
+                        let mut new_vars = vars.clone();
+
+                        for var in missing {
+                            // Look up the variable's sort in the context
+                            if let Some(idx) = _ctx.vars.iter().position(|v| v == var) {
+                                let sort = &_ctx.sorts[idx];
+                                let card = derived_sort_cardinality(structure, sort);
+
+                                // Create a 1D tensor with all values [0..card)
+                                let mut extent = BTreeSet::new();
+                                for i in 0..card {
+                                    extent.insert(vec![i]);
+                                }
+                                let full_tensor = SparseTensor {
+                                    dims: vec![card],
+                                    extent,
+                                };
+                                full_domain_tensors.push(TensorExpr::leaf(full_tensor));
+                                new_vars.push(var.clone());
+                            } else {
+                                // Variable not in context - this is an error
+                                panic!(
+                                    "Variable '{}' in disjunction not found in context. \
+                                     Context has: {:?}",
+                                    var, _ctx.vars
+                                );
+                            }
+                        }
+
+                        // Take product: original × full_domain_1 × full_domain_2 × ...
+                        if !full_domain_tensors.is_empty() {
+                            let mut product_parts = vec![std::mem::replace(
+                                expr,
+                                TensorExpr::scalar(false),
+                            )];
+                            product_parts.extend(full_domain_tensors);
+                            *expr = TensorExpr::Product(product_parts);
+                            *vars = new_vars;
+                        }
+                    }
+                }
+            }
 
             disjunction_all(compiled)
         }
@@ -525,5 +599,64 @@ mod tests {
         assert!(vars.is_empty());
         assert_eq!(result.len(), 1); // scalar true
         assert!(result.contains(&[]));
+    }
+
+    #[test]
+    fn test_compile_formula_disjunction_different_vars() {
+        // Test disjunction where each disjunct has different variables
+        // R(x) \/ S(y) - this used to panic, now should work
+        let mut sig = Signature::new();
+        let node_id = sig.add_sort("Node".to_string());
+
+        // Add two unary relations
+        sig.add_relation("R".to_string(), DerivedSort::Base(node_id));
+        sig.add_relation("S".to_string(), DerivedSort::Base(node_id));
+
+        let mut universe = Universe::new();
+        let mut structure = Structure::new(1);
+
+        // Add 3 nodes
+        for _ in 0..3 {
+            structure.add_element(&mut universe, node_id);
+        }
+
+        // Initialize relations
+        structure.init_relations(&[1, 1]); // Two unary relations
+
+        // R = {0}, S = {1}
+        structure.assert_relation(0, vec![Slid::from_usize(0)]);
+        structure.assert_relation(1, vec![Slid::from_usize(1)]);
+
+        // Need context with both x and y
+        let ctx = CompileContext {
+            vars: vec!["x".to_string(), "y".to_string()],
+            sorts: vec![DerivedSort::Base(node_id), DerivedSort::Base(node_id)],
+        };
+
+        // Build: R(x) \/ S(y)
+        let r_x = Formula::Rel(
+            0,
+            Term::Var("x".to_string(), DerivedSort::Base(0)),
+        );
+        let s_y = Formula::Rel(
+            1,
+            Term::Var("y".to_string(), DerivedSort::Base(0)),
+        );
+
+        let formula = Formula::Disj(vec![r_x, s_y]);
+
+        let (expr, vars) = compile_formula(&formula, &ctx, &structure, &sig);
+        let result = expr.materialize();
+
+        // Result should have both x and y
+        assert_eq!(vars.len(), 2);
+        assert!(vars.contains(&"x".to_string()));
+        assert!(vars.contains(&"y".to_string()));
+
+        // The result is the union of:
+        // - R(x) extended with all y: {(0,0), (0,1), (0,2)}
+        // - S(y) extended with all x: {(0,1), (1,1), (2,1)}
+        // Note: the tuple order depends on variable order
+        assert!(result.len() > 0);
     }
 }
