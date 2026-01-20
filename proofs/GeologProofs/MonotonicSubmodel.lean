@@ -302,12 +302,14 @@ def relMem {M : Structure S (Type u)} (R : S.Relations) {A : S.Sorts}
     (hdom : R.domain = DerivedSorts.inj A) (x : M.sorts A) : Prop :=
   subobjectMem (M.Relations R) (castRelDom hdom x)
 
-/-- A structure embedding that also preserves relations -/
+/-- A structure embedding that also preserves relations.
+    Relation preservation is stated for ALL derived sort domains, not just base sorts,
+    since geometric relations can have product domains (e.g., binary relations). -/
 structure RelPreservingEmbedding (M M' : Structure S (Type u)) extends StructureEmbedding M M' where
-  /-- Relations are preserved: if x ∈ R in M, then embed(x) ∈ R in M' -/
-  rel_preserve : ∀ (R : S.Relations) {A : S.Sorts}
-    (hdom : R.domain = DerivedSorts.inj A) (x : M.sorts A),
-    relMem (M := M) R hdom x → relMem (M := M') R hdom (embed A x)
+  /-- Relations are preserved: if x ∈ R in M, then liftSort'(x) ∈ R in M' -/
+  rel_preserve : ∀ (R : S.Relations) (x : R.domain.interpret M.sorts),
+    subobjectMem (M.Relations R) x →
+    subobjectMem (M'.Relations R) (liftSort' embed R.domain x)
 
 /-!
 ### Subset Selection with Relation Closure
@@ -336,7 +338,8 @@ theorem selection_pushforward_mem {M M' : Structure S (Type u)}
   simp only [SubsetSelection.pushforward, Set.mem_image]
   exact ⟨x, hsel, rfl⟩
 
-/-- Relation membership transfers across embeddings -/
+/-- Relation membership transfers across embeddings (base-sorted version).
+    This is a corollary of the general `rel_preserve` for relations with base sort domains. -/
 theorem rel_mem_transfer {M M' : Structure S (Type u)}
     (emb : RelPreservingEmbedding M M')
     (R : S.Relations)
@@ -344,8 +347,18 @@ theorem rel_mem_transfer {M M' : Structure S (Type u)}
     (hdom : R.domain = DerivedSorts.inj A)
     (x : M.sorts A)
     (hrel : relMem (M := M) R hdom x) :
-    relMem (M := M') R hdom (emb.embed A x) :=
-  emb.rel_preserve R hdom x hrel
+    relMem (M := M') R hdom (emb.embed A x) := by
+  simp only [relMem, castRelDom, subobjectMem] at hrel ⊢
+  -- Convert hrel to subobjectMem form for the general rel_preserve
+  let x' : R.domain.interpret M.sorts := cast (congrArg (DerivedSorts.interpret M.sorts) hdom).symm x
+  have hrel' : subobjectMem (M.Relations R) x' := by convert hrel
+  have h := emb.rel_preserve R x' hrel'
+  -- h : subobjectMem (M'.Relations R) (liftSort' emb.embed R.domain x')
+  -- Use liftSort'_inj_cast to handle the equation
+  rw [liftSort'_inj_cast emb.embed hdom] at h
+  simp only [cast_cast, cast_eq, x'] at h
+  convert h using 2
+  simp only [cast_cast, cast_eq]
 
 /-!
 ## Connection to Theory Satisfaction
@@ -439,24 +452,15 @@ noncomputable def liftEmbedContext {M M' : Structure S (Type u)}
 
 /-- Generalized relation preservation for arbitrary derived sort domains.
     This is the version needed for formula satisfaction monotonicity.
-
-    For base sort domains (.inj B), this follows directly from rel_preserve.
-    For product domains (.prod Aᵢ), it follows by structural induction. -/
+    Follows from RelPreservingEmbedding.rel_preserve via liftSort_eq_liftSort'. -/
 theorem rel_preserve_general {M M' : Structure S (Type u)}
     (emb : RelPreservingEmbedding M M')
     (R : S.Relations) (x : R.domain.interpret M.sorts) :
     subobjectMem (M.Relations R) x →
     subobjectMem (M'.Relations R) (liftSort emb.toStructureEmbedding R.domain x) := by
   intro hmem
-  -- The proof depends on R.domain structure.
-  -- For .inj B: liftSort emb (.inj B) = emb.embed B, so we use emb.rel_preserve directly.
-  -- For .prod Aᵢ: We need liftSort on products, but current RelPreservingEmbedding.rel_preserve
-  --               only handles base sort domains (requires hdom : R.domain = DerivedSorts.inj A).
-  -- DESIGN NOTE: To complete this proof, either:
-  --   1. Strengthen RelPreservingEmbedding to handle product domains, or
-  --   2. Prove all relations have base sort domains (signature restriction), or
-  --   3. Add a lemma showing product-domain relations reduce to base-sort cases.
-  sorry
+  rw [liftSort_eq_liftSort']
+  exact emb.rel_preserve R x hmem
 
 /-!
 ### Formula Monotonicity
