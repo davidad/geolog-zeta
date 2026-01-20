@@ -440,5 +440,68 @@ mod to_relalg_tests {
                 prop_assert!(!instance.names.is_empty(), "Instance should have named elements");
             }
         }
+
+        /// Compiling binary operations should work
+        #[test]
+        fn compile_binary_ops_no_panic(
+            left_sort in 0..5usize,
+            right_sort in 0..5usize,
+        ) {
+            let relalg_theory = load_relalg_theory();
+            let mut universe = Universe::new();
+
+            // Join (cross)
+            let join_plan = QueryOp::Join {
+                left: Box::new(QueryOp::Scan { sort_idx: left_sort }),
+                right: Box::new(QueryOp::Scan { sort_idx: right_sort }),
+                cond: geolog::query::JoinCond::Cross,
+            };
+            let _ = compile_to_relalg(&join_plan, &relalg_theory, &mut universe);
+
+            // Join (equi)
+            let equi_plan = QueryOp::Join {
+                left: Box::new(QueryOp::Scan { sort_idx: left_sort }),
+                right: Box::new(QueryOp::Scan { sort_idx: right_sort }),
+                cond: geolog::query::JoinCond::Equi { left_col: 0, right_col: 0 },
+            };
+            let _ = compile_to_relalg(&equi_plan, &relalg_theory, &mut universe);
+
+            // Union
+            let union_plan = QueryOp::Union {
+                left: Box::new(QueryOp::Scan { sort_idx: left_sort }),
+                right: Box::new(QueryOp::Scan { sort_idx: right_sort }),
+            };
+            let _ = compile_to_relalg(&union_plan, &relalg_theory, &mut universe);
+        }
+
+        /// Compiling DBSP operators should work
+        #[test]
+        fn compile_dbsp_ops_no_panic(sort_idx in 0..5usize, state_id in 0..3usize) {
+            let relalg_theory = load_relalg_theory();
+            let mut universe = Universe::new();
+
+            let scan = QueryOp::Scan { sort_idx };
+
+            // Delay
+            let delay_plan = QueryOp::Delay {
+                input: Box::new(scan.clone()),
+                state_id,
+            };
+            let _ = compile_to_relalg(&delay_plan, &relalg_theory, &mut universe);
+
+            // Diff
+            let diff_plan = QueryOp::Diff {
+                input: Box::new(scan.clone()),
+                state_id,
+            };
+            let _ = compile_to_relalg(&diff_plan, &relalg_theory, &mut universe);
+
+            // Integrate
+            let integrate_plan = QueryOp::Integrate {
+                input: Box::new(scan),
+                state_id,
+            };
+            let _ = compile_to_relalg(&integrate_plan, &relalg_theory, &mut universe);
+        }
     }
 }
