@@ -52,9 +52,34 @@ Geolog is a language for geometric logic with semantics in topoi. This document 
 ┌───────────────────────────────▼─────────────────────────────────────────────┐
 │                            STORAGE LAYER                                     │
 ├─────────────────────────────────────────────────────────────────────────────┤
-│  workspace.rs     Session management (theories + instances + naming)        │
+│  store/                                                                     │
+│    ├── mod.rs           Store struct: unified GeologMeta persistence        │
+│    ├── schema.rs        Schema ID caches (sort_ids, func_ids, etc.)         │
+│    ├── append.rs        Append-only element/function/relation creation      │
+│    ├── theory.rs        Theory → Store integration                          │
+│    ├── instance.rs      Instance → Store integration                        │
+│    ├── commit.rs        Git-like commit/version control                     │
+│    └── bootstrap_queries.rs  Hardcoded query patterns (being replaced)      │
+│                                                                             │
+│  workspace.rs     Legacy session management (deprecated, use Store)         │
 │  patch.rs         Patch-based structure modifications                       │
 │  version.rs       Git-like version control for structures                   │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                            QUERY LAYER                                       │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  query/                                                                     │
+│    ├── mod.rs         Re-exports and overview                               │
+│    ├── compile.rs     Query → QueryOp plan compilation                      │
+│    ├── backend.rs     Naive QueryOp executor (reference impl)               │
+│    ├── optimize.rs    Algebraic law rewriting (filter fusion, etc.)         │
+│    ├── pattern.rs     Legacy Pattern API (deprecated)                       │
+│    └── store_queries.rs  Store-level compiled query methods                 │
+│                                                                             │
+│  Relational query engine for GeologMeta and instance queries.               │
+│  Query API: Query::scan(sort).filter_eq(func, col, val).compile()           │
+│  Optimizer applies RelAlgIR laws: Filter(p, Filter(q, x)) → Filter(p∧q, x)  │
 └─────────────────────────────────────────────────────────────────────────────┘
 
 ┌─────────────────────────────────────────────────────────────────────────────┐
