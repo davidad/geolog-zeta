@@ -711,3 +711,122 @@ theory (M : B instance) C {
         panic!("expected theory");
     }
 }
+
+#[test]
+fn test_extends_with_naming_convention_slashes() {
+    // This test verifies the fix for the naming convention bug where
+    // function names like "Func/dom" (using "/" as DomainSort/descriptor)
+    // were incorrectly treated as grandparent-qualified names.
+    //
+    // The fix checks if the prefix before "/" is a sort in the parent theory.
+    // If so, it's a naming convention, not a grandparent qualifier.
+    let input = r#"
+theory Base {
+    Func : Sort;
+    Rel : Sort;
+    Func/dom : Func -> Rel;
+    Func/cod : Func -> Rel;
+    Rel/type : Rel -> Func;
+}
+
+theory Child extends Base {
+    Op : Sort;
+    Op/func : Op -> Base/Func;
+}
+"#;
+    let file = parse(input).expect("parse failed");
+    let mut env = Env::new();
+
+    // Elaborate Base
+    if let ast::Declaration::Theory(t) = &file.declarations[0].node {
+        let elab = elaborate_theory(&mut env, t).expect("Base elaboration failed");
+        // Base has 2 sorts (Func, Rel) and 3 functions (Func/dom, Func/cod, Rel/type)
+        assert_eq!(elab.theory.signature.sorts.len(), 2);
+        assert_eq!(elab.theory.signature.functions.len(), 3);
+        env.theories.insert(elab.theory.name.clone(), Rc::new(elab));
+    }
+
+    // Elaborate Child
+    if let ast::Declaration::Theory(t) = &file.declarations[1].node {
+        let elab = elaborate_theory(&mut env, t).expect("Child elaboration failed");
+        assert_eq!(elab.theory.name, "Child");
+
+        // Child should have: Base/Func, Base/Rel, Op
+        assert_eq!(elab.theory.signature.sorts.len(), 3);
+        assert!(
+            elab.theory.signature.lookup_sort("Base/Func").is_some(),
+            "should have Base/Func"
+        );
+        assert!(
+            elab.theory.signature.lookup_sort("Base/Rel").is_some(),
+            "should have Base/Rel"
+        );
+        assert!(
+            elab.theory.signature.lookup_sort("Op").is_some(),
+            "should have Op"
+        );
+
+        // Functions should be: Base/Func/dom, Base/Func/cod, Base/Rel/type, Op/func
+        // NOT: Func/dom (which would be wrong - missing Base/ prefix)
+        assert_eq!(elab.theory.signature.functions.len(), 4);
+        assert!(
+            elab.theory.signature.lookup_func("Base/Func/dom").is_some(),
+            "should have Base/Func/dom (naming convention slash preserved)"
+        );
+        assert!(
+            elab.theory.signature.lookup_func("Base/Func/cod").is_some(),
+            "should have Base/Func/cod"
+        );
+        assert!(
+            elab.theory.signature.lookup_func("Base/Rel/type").is_some(),
+            "should have Base/Rel/type"
+        );
+        assert!(
+            elab.theory.signature.lookup_func("Op/func").is_some(),
+            "should have Op/func"
+        );
+
+        // Should NOT have these wrong names (without Base/ prefix)
+        assert!(
+            elab.theory.signature.lookup_func("Func/dom").is_none(),
+            "should NOT have Func/dom (missing prefix)"
+        );
+        assert!(
+            elab.theory.signature.lookup_func("Rel/type").is_none(),
+            "should NOT have Rel/type (missing prefix)"
+        );
+
+        // Verify Base/Func/dom has correct domain/codomain
+        let func_dom_id = elab.theory.signature.lookup_func("Base/Func/dom").unwrap();
+        let func_dom_sym = &elab.theory.signature.functions[func_dom_id];
+        let base_func_id = elab.theory.signature.lookup_sort("Base/Func").unwrap();
+        let base_rel_id = elab.theory.signature.lookup_sort("Base/Rel").unwrap();
+        assert_eq!(
+            func_dom_sym.domain,
+            DerivedSort::Base(base_func_id),
+            "Base/Func/dom domain should be Base/Func"
+        );
+        assert_eq!(
+            func_dom_sym.codomain,
+            DerivedSort::Base(base_rel_id),
+            "Base/Func/dom codomain should be Base/Rel"
+        );
+
+        // Verify Op/func has correct domain/codomain
+        let op_func_id = elab.theory.signature.lookup_func("Op/func").unwrap();
+        let op_func_sym = &elab.theory.signature.functions[op_func_id];
+        let op_id = elab.theory.signature.lookup_sort("Op").unwrap();
+        assert_eq!(
+            op_func_sym.domain,
+            DerivedSort::Base(op_id),
+            "Op/func domain should be Op"
+        );
+        assert_eq!(
+            op_func_sym.codomain,
+            DerivedSort::Base(base_func_id),
+            "Op/func codomain should be Base/Func"
+        );
+    } else {
+        panic!("expected theory");
+    }
+}
