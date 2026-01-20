@@ -19,11 +19,98 @@ cargo run -- examples/geolog/graph.geolog
 
 - **Theories**: Define sorts (types), functions, relations, and axioms
 - **Instances**: Create concrete models of theories
+- **Parameterized Theories**: Theories can depend on instances of other theories
+- **Nested Instances**: Inline instance definitions within instances
 - **Relations**: Binary and n-ary predicates with product domains
-- **Axioms**: Horn clauses with disjunctions in conclusions
+- **Axioms**: Horn clauses with existentials and disjunctions in conclusions
 - **Chase Algorithm**: Automatic inference of derived facts
 - **Interactive REPL**: Explore and modify instances dynamically
 - **Version Control**: Commit and track changes to instances
+
+---
+
+## Showcase: Petri Net Reachability
+
+This example demonstrates geolog's power: parameterized theories, the chase algorithm computing transitive closure, and formal specification of Petri net semantics.
+
+### The Theory
+
+```geolog
+// Petri net reachability at the place level
+theory PlaceReachability {
+  P : Sort;  // Places
+  T : Sort;  // Transitions
+
+  // Firing relation: which transitions connect which places
+  Fires : [trans: T, from: P, to: P] -> Prop;
+
+  // Reachability: transitive closure of firing
+  CanReach : [from: P, to: P] -> Prop;
+
+  // Reflexivity
+  ax/refl : forall p : P. |- [from: p, to: p] CanReach;
+
+  // Direct firing implies reachability
+  ax/fire : forall t : T, x : P, y : P.
+    [trans: t, from: x, to: y] Fires |- [from: x, to: y] CanReach;
+
+  // Transitivity
+  ax/trans : forall x : P, y : P, z : P.
+    [from: x, to: y] CanReach, [from: y, to: z] CanReach
+      |- [from: x, to: z] CanReach;
+}
+```
+
+### Example Instance
+
+```geolog
+// Network:  A <--> B --> C
+instance SimpleNet : PlaceReachability = {
+  A : P;  B : P;  C : P;
+  ab : T;  ba : T;  bc : T;
+
+  [trans: ab, from: A, to: B] Fires;
+  [trans: ba, from: B, to: A] Fires;
+  [trans: bc, from: B, to: C] Fires;
+}
+```
+
+### REPL Session
+
+```
+geolog> :load examples/geolog/petri_reachability.geolog
+Defined theory PlaceReachability (2 sorts, 2 relations, 3 axioms)
+
+geolog> :inspect SimpleNet
+instance SimpleNet : PlaceReachability = {
+  // P (3):
+  A : P;  B : P;  C : P;
+  // T (3):
+  ab : T;  ba : T;  bc : T;
+  // Fires (3 tuples):
+  [ab, A, B] Fires;
+  [ba, B, A] Fires;
+  [bc, B, C] Fires;
+}
+
+geolog> :chase SimpleNet
+✓ Chase completed in 2 iterations
+
+geolog> :inspect SimpleNet
+instance SimpleNet : PlaceReachability = {
+  ...
+  // CanReach (7 tuples) - computed by chase:
+  [A, A] CanReach;
+  [B, B] CanReach;
+  [C, C] CanReach;
+  [A, B] CanReach;  // A -> B (direct)
+  [B, A] CanReach;  // B -> A (direct)
+  [B, C] CanReach;  // B -> C (direct)
+  [A, C] CanReach;  // A -> C (transitive: A -> B -> C)
+}
+```
+
+The chase algorithm automatically computed the full reachability relation, including the transitive closure A → C!
 
 ---
 
