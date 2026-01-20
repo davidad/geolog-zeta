@@ -614,6 +614,43 @@ impl ReplState {
 
         result
     }
+
+    /// Execute a query on an instance.
+    ///
+    /// Returns all elements of the given sort in the instance.
+    pub fn query_sort(&self, instance_name: &str, sort_name: &str) -> Result<Vec<String>, String> {
+        // Get the instance
+        let entry = self.instances.get(instance_name)
+            .ok_or_else(|| format!("Instance '{}' not found", instance_name))?;
+
+        // Get the theory
+        let theory = self.theories.get(&entry.theory_name)
+            .ok_or_else(|| format!("Theory '{}' not found", entry.theory_name))?;
+
+        // Find the sort index
+        let sort_idx = theory.theory.signature.sorts
+            .iter()
+            .position(|s| s == sort_name)
+            .ok_or_else(|| format!("Sort '{}' not found in theory '{}'", sort_name, entry.theory_name))?;
+
+        // Use the query backend to scan all elements
+        use crate::query::{QueryOp, execute};
+
+        let plan = QueryOp::Scan { sort_idx };
+        let result = execute(&plan, &entry.structure);
+
+        // Convert results to element names
+        let elements: Vec<String> = result.iter()
+            .filter_map(|(tuple, _)| tuple.first())
+            .map(|&slid| {
+                entry.get_name(slid)
+                    .map(|s| s.to_string())
+                    .unwrap_or_else(|| format!("#{}", slid))
+            })
+            .collect();
+
+        Ok(elements)
+    }
 }
 
 /// Helper to extract theory name from a type expression
@@ -794,6 +831,8 @@ pub enum MetaCommand {
     Assert { instance: String, relation: String, args: Vec<String> },
     /// Retract element from instance: :retract <instance> <element>
     Retract { instance: String, element: String },
+    /// Query instance: :query <instance> <sort> [filter conditions]
+    Query { instance: String, sort: String },
     Unknown(String),
 }
 
@@ -880,6 +919,17 @@ impl MetaCommand {
                     }
                 } else {
                     MetaCommand::Unknown(":retract requires <instance> <element>".to_string())
+                }
+            }
+            "query" => {
+                let args: Vec<&str> = std::iter::once(arg).flatten().chain(parts).collect();
+                if args.len() >= 2 {
+                    MetaCommand::Query {
+                        instance: args[0].to_string(),
+                        sort: args[1].to_string(),
+                    }
+                } else {
+                    MetaCommand::Unknown(":query requires <instance> <sort>".to_string())
                 }
             }
             other => MetaCommand::Unknown(format!("Unknown command: :{}", other)),

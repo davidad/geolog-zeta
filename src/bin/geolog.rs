@@ -166,6 +166,9 @@ fn handle_command(state: &mut ReplState, cmd: MetaCommand) -> bool {
         MetaCommand::Retract { instance, element } => {
             handle_retract(state, &instance, &element);
         }
+        MetaCommand::Query { instance, sort } => {
+            handle_query(state, &instance, &sort);
+        }
         MetaCommand::Unknown(msg) => {
             eprintln!("Error: {}", msg);
             eprintln!("Type :help for available commands");
@@ -237,6 +240,9 @@ fn print_help(topic: Option<&str>) {
             println!("  :add <inst> <elem> <sort>   Add element to instance");
             println!("  :assert <inst> <rel> [args] Assert relation tuple");
             println!("  :retract <inst> <elem>      Retract element from instance");
+            println!();
+            println!("Query:");
+            println!("  :query <inst> <sort>        List all elements of a sort");
             println!();
             println!("Enter geolog definitions directly (theories, instances).");
             println!("Multi-line input is supported - brackets are matched automatically.");
@@ -502,6 +508,25 @@ fn handle_retract(state: &mut ReplState, instance_name: &str, element_name: &str
         }
         Err(e) => {
             eprintln!("Failed to retract element: {}", e);
+        }
+    }
+}
+
+/// Handle :query command
+fn handle_query(state: &ReplState, instance_name: &str, sort_name: &str) {
+    match state.query_sort(instance_name, sort_name) {
+        Ok(elements) => {
+            if elements.is_empty() {
+                println!("No elements of sort '{}' in instance '{}'", sort_name, instance_name);
+            } else {
+                println!("Elements of {} in {}:", sort_name, instance_name);
+                for elem in elements {
+                    println!("  {}", elem);
+                }
+            }
+        }
+        Err(e) => {
+            eprintln!("Query error: {}", e);
         }
     }
 }
