@@ -255,7 +255,13 @@ pub(crate) fn remap_derived_sort(
             // Look up the sort name in the source signature
             let sort_name = &source_sig.sorts[*source_id];
             // Find the corresponding qualified name in target signature
-            let qualified_name = format!("{}/{}", param_name, sort_name);
+            // If the sort is already qualified (contains '/'), use it as-is (from grandparent)
+            // Otherwise, prefix with param_name (parent's own sort)
+            let qualified_name = if sort_name.contains('/') {
+                sort_name.clone()
+            } else {
+                format!("{}/{}", param_name, sort_name)
+            };
             let target_id = target_sig
                 .lookup_sort(&qualified_name)
                 .expect("qualified sort should have been added");

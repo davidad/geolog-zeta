@@ -20,47 +20,75 @@ pub fn elaborate_theory(env: &mut Env, theory: &ast::TheoryDecl) -> ElabResult<E
     // This is like a parameter, but:
     // 1. Uses the parent theory name as the qualifier (e.g., GeologMeta/Srt)
     // 2. Establishes an "is-a" relationship with transitive closure
+    //
+    // For transitive extends (A extends B extends C), we use "requalified" semantics:
+    // - Sorts/funcs already qualified (from grandparents) keep their original qualifier
+    // - Only unqualified items (parent's own) get the parent prefix
+    // This gives A: { C/X, C/Y, B/Foo } rather than { B/C/X, B/C/Y, B/Foo }
     if let Some(ref parent_path) = theory.extends {
         let parent_name = parent_path.segments.join("/");
         if let Some(parent_theory) = env.theories.get(&parent_name) {
             // Record the extends relationship (including transitive parents)
             extends_chain.push(parent_name.clone());
-            // TODO: if parent_theory has its own extends, add those transitively
 
-            // Copy all sorts with qualified names (ParentTheory/SortName)
+            // Helper: qualify a name - only prefix if not already qualified
+            let qualify = |name: &str| -> String {
+                if name.contains('/') {
+                    // Already qualified from grandparent - keep as-is
+                    name.to_string()
+                } else {
+                    // Parent's own item - add parent prefix
+                    format!("{}/{}", parent_name, name)
+                }
+            };
+
+            // Copy all sorts with requalified names
             for sort_name in &parent_theory.theory.signature.sorts {
-                let qualified_name = format!("{}/{}", parent_name, sort_name);
+                let qualified_name = qualify(sort_name);
                 local_env.signature.add_sort(qualified_name);
             }
 
-            // Copy all functions with qualified names
+            // Copy all functions with requalified names
             for func in &parent_theory.theory.signature.functions {
-                let qualified_name = format!("{}/{}", parent_name, func.name);
+                let qualified_name = qualify(&func.name);
+                // For domain/codomain remapping, we need the prefix that was actually used
+                // for the sort in the local signature
+                let prefix = if func.name.contains('/') {
+                    // Function from grandparent - extract the grandparent prefix
+                    func.name.rsplit_once('/').map(|(p, _)| p).unwrap_or(&parent_name)
+                } else {
+                    &parent_name
+                };
                 let domain = remap_derived_sort(
                     &func.domain,
                     &parent_theory.theory.signature,
                     &local_env.signature,
-                    &parent_name,
+                    prefix,
                 );
                 let codomain = remap_derived_sort(
                     &func.codomain,
                     &parent_theory.theory.signature,
                     &local_env.signature,
-                    &parent_name,
+                    prefix,
                 );
                 local_env
                     .signature
                     .add_function(qualified_name, domain, codomain);
             }
 
-            // Copy all relations with qualified names
+            // Copy all relations with requalified names
             for rel in &parent_theory.theory.signature.relations {
-                let qualified_name = format!("{}/{}", parent_name, rel.name);
+                let qualified_name = qualify(&rel.name);
+                let prefix = if rel.name.contains('/') {
+                    rel.name.rsplit_once('/').map(|(p, _)| p).unwrap_or(&parent_name)
+                } else {
+                    &parent_name
+                };
                 let domain = remap_derived_sort(
                     &rel.domain,
                     &parent_theory.theory.signature,
                     &local_env.signature,
-                    &parent_name,
+                    prefix,
                 );
                 local_env.signature.add_relation(qualified_name, domain);
             }
