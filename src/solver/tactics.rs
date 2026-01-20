@@ -348,92 +348,45 @@ impl Tactic for ForwardChainingTactic {
                         return TacticResult::Unsat(None);
                     }
 
-                    Formula::Rel(rel_id, term) => {
-                        // Assert the relation tuple
-                        // Evaluate term first, then mutate tree
-                        let tuple = tree.get(node).and_then(|n| {
-                            eval_term_to_tuple(term, &assignment, &n.structure)
-                        });
-                        if let Some(tuple) = tuple {
-                            if let Err(e) = tree.assert_relation(node, *rel_id, tuple) {
-                                return TacticResult::Error(format!("Failed to assert relation: {}", e));
-                            }
-                            steps += 1;
-                        }
-                    }
-
-                    Formula::Eq(t1, t2) => {
-                        // Add equation to congruence closure if not already equal
-                        // Step 1: Evaluate both terms (immutable borrow)
-                        let eq_slids = tree.get(node).and_then(|n| {
-                            let lhs = eval_term_to_slid(t1, &assignment, &n.structure)?;
-                            let rhs = eval_term_to_slid(t2, &assignment, &n.structure)?;
-                            Some((lhs, rhs))
-                        });
-                        // Step 2: Check CC and add equation (mutable borrow)
-                        if let Some((lhs, rhs)) = eq_slids {
-                            let search_node = tree.get_mut(node).unwrap();
-                            // Skip if already equal in CC
-                            if !search_node.cc.are_equal(lhs, rhs) {
-                                search_node.cc.add_equation(
-                                    lhs,
-                                    rhs,
-                                    super::types::EquationReason::AxiomConsequent { axiom_idx },
-                                );
-                                steps += 1;
-                            }
-                        }
-                    }
-
                     Formula::Disj(disjuncts) if !disjuncts.is_empty() => {
-                        // Create a branch for each disjunct
-                        for (i, _disjunct) in disjuncts.iter().enumerate() {
+                        // Create a branch for each disjunct and process in that branch
+                        for (i, disjunct) in disjuncts.iter().enumerate() {
                             let child = tree.branch(
                                 node,
                                 Some(format!("axiom{}:disj{}", axiom_idx, i)),
                             );
                             branches += 1;
-                            // TODO: In each branch, we would process the disjunct
-                            // For now, just create the branches
-                            let _ = child; // suppress unused warning
-                        }
-                        steps += 1;
-                    }
-
-                    Formula::Exists(var_name, sort, _body) => {
-                        // Add a fresh witness element
-                        // Get sort ID from DerivedSort
-                        if let crate::core::DerivedSort::Base(sort_id) = sort {
-                            match tree.add_element(node, *sort_id) {
-                                Ok((slid, _luid)) => {
-                                    // TODO: We should substitute the witness into body
-                                    // and continue processing. For now, just note that
-                                    // we added an element.
-                                    let _ = (var_name, slid); // suppress unused warnings
-                                    steps += 1;
-                                }
-                                Err(e) => {
-                                    return TacticResult::Error(format!("Failed to add witness: {}", e));
-                                }
+                            // Process the disjunct in the child branch
+                            let mut processor = FormulaProcessor::new(
+                                tree,
+                                child,
+                                assignment.clone(),
+                                axiom_idx,
+                            );
+                            if let Err(e) = processor.process(disjunct) {
+                                return TacticResult::Error(e);
                             }
-                        } else {
-                            // Product sort witness - more complex
-                            // TODO: Handle product domain existentials
+                            steps += processor.steps;
                         }
-                    }
-
-                    Formula::True => {
-                        // Should not be a violation
-                    }
-
-                    Formula::Conj(conjuncts) => {
-                        // Process each conjunct
-                        // For now, we'd need recursive handling
-                        let _ = conjuncts;
                     }
 
                     Formula::Disj(_) => {
-                        // Empty disjunction - should be false
+                        // Empty disjunction - should be handled as False
+                        // For now, skip (shouldn't happen in well-formed theories)
+                    }
+
+                    // For Rel, Eq, Exists, Conj, True - use recursive processor
+                    other_formula => {
+                        let mut processor = FormulaProcessor::new(
+                            tree,
+                            node,
+                            assignment.clone(),
+                            axiom_idx,
+                        );
+                        if let Err(e) = processor.process(other_formula) {
+                            return TacticResult::Error(e);
+                        }
+                        steps += processor.steps;
                     }
                 }
             }
@@ -658,6 +611,119 @@ impl Tactic for AutoTactic {
 
     fn name(&self) -> &str {
         "auto"
+    }
+}
+
+/// Recursive formula processor for forward chaining.
+///
+/// Processes a positive geometric formula by:
+/// - Asserting relation tuples
+/// - Adding pending equations
+/// - Adding witness elements for existentials (and recursively processing bodies)
+/// - Processing conjuncts
+/// - NOT handling disjunctions (those need branching at a higher level)
+struct FormulaProcessor<'a> {
+    tree: &'a mut SearchTree,
+    node: NodeId,
+    assignment: std::collections::HashMap<String, usize>,
+    axiom_idx: usize,
+    steps: usize,
+}
+
+impl<'a> FormulaProcessor<'a> {
+    fn new(
+        tree: &'a mut SearchTree,
+        node: NodeId,
+        assignment: std::collections::HashMap<String, usize>,
+        axiom_idx: usize,
+    ) -> Self {
+        Self {
+            tree,
+            node,
+            assignment,
+            axiom_idx,
+            steps: 0,
+        }
+    }
+
+    /// Process a formula, accumulating steps. Returns Err on failure.
+    fn process(&mut self, formula: &crate::core::Formula) -> Result<(), String> {
+        use crate::core::Formula;
+
+        match formula {
+            Formula::True => {
+                // Nothing to do
+                Ok(())
+            }
+
+            Formula::Rel(rel_id, term) => {
+                // Assert relation tuple
+                let tuple = self.tree.get(self.node).and_then(|n| {
+                    eval_term_to_tuple(term, &self.assignment, &n.structure)
+                });
+                if let Some(tuple) = tuple {
+                    self.tree.assert_relation(self.node, *rel_id, tuple)?;
+                    self.steps += 1;
+                }
+                Ok(())
+            }
+
+            Formula::Eq(t1, t2) => {
+                // Add equation to congruence closure if not already equal
+                let eq_slids = self.tree.get(self.node).and_then(|n| {
+                    let lhs = eval_term_to_slid(t1, &self.assignment, &n.structure)?;
+                    let rhs = eval_term_to_slid(t2, &self.assignment, &n.structure)?;
+                    Some((lhs, rhs))
+                });
+                if let Some((lhs, rhs)) = eq_slids {
+                    let search_node = self.tree.get_mut(self.node).ok_or("Invalid node")?;
+                    if !search_node.cc.are_equal(lhs, rhs) {
+                        search_node.cc.add_equation(
+                            lhs,
+                            rhs,
+                            super::types::EquationReason::AxiomConsequent {
+                                axiom_idx: self.axiom_idx,
+                            },
+                        );
+                        self.steps += 1;
+                    }
+                }
+                Ok(())
+            }
+
+            Formula::Conj(conjuncts) => {
+                // Process each conjunct recursively
+                for conjunct in conjuncts {
+                    self.process(conjunct)?;
+                }
+                Ok(())
+            }
+
+            Formula::Exists(var_name, sort, body) => {
+                // Add fresh witness and recursively process body
+                if let crate::core::DerivedSort::Base(sort_id) = sort {
+                    match self.tree.add_element(self.node, *sort_id) {
+                        Ok((slid, _luid)) => {
+                            // Add witness to assignment
+                            self.assignment.insert(var_name.clone(), slid.index());
+                            self.steps += 1;
+                            // Recursively process body with updated assignment
+                            self.process(body)
+                        }
+                        Err(e) => Err(format!("Failed to add witness: {}", e)),
+                    }
+                } else {
+                    // Product sort witness - not yet implemented
+                    Ok(())
+                }
+            }
+
+            Formula::False | Formula::Disj(_) => {
+                // These should be handled at a higher level
+                // False triggers unsat, Disj triggers branching
+                Ok(())
+            }
+        }
     }
 }
 
@@ -1082,5 +1148,145 @@ mod tests {
         assert!(node.cc.are_equal(a, b), "a and b should be equal");
         assert!(node.cc.are_equal(b, c), "b and c should be equal");
         assert!(node.cc.are_equal(a, c), "a and c should be equal (transitively)");
+    }
+
+    #[test]
+    fn test_existential_body_processing() {
+        use crate::core::{Context, Formula, RelationStorage, Sequent, Term};
+
+        // Create a theory with:
+        // - Sort: Node
+        // - Relation: R : Node -> Prop
+        // - Axiom: True |- ∃x:Node. R(x)
+        // This should add a witness and assert R(witness)
+
+        let mut sig = Signature::new();
+        sig.add_sort("Node".to_string());
+        sig.add_relation("R".to_string(), DerivedSort::Base(0));
+
+        let axiom = Sequent {
+            context: Context::new(),
+            premise: Formula::True,
+            conclusion: Formula::Exists(
+                "x".to_string(),
+                DerivedSort::Base(0),
+                Box::new(Formula::Rel(
+                    0, // R
+                    Term::Var("x".to_string(), DerivedSort::Base(0)),
+                )),
+            ),
+        };
+
+        let theory = Rc::new(ElaboratedTheory {
+            params: vec![],
+            theory: Theory {
+                name: "ExistsR".to_string(),
+                signature: sig,
+                axioms: vec![axiom],
+            },
+        });
+
+        let mut tree = SearchTree::new(theory);
+        tree.init_relations(0, &[1]).unwrap(); // R has arity 1
+
+        // Initially no elements
+        assert_eq!(tree.get(0).unwrap().structure.carrier_size(0), 0);
+
+        // Run forward chaining
+        let result = ForwardChainingTactic.run(&mut tree, 0, &Budget::quick());
+
+        match result {
+            TacticResult::Progress { steps_taken, .. } => {
+                assert!(steps_taken >= 2, "Should have added witness AND asserted R");
+            }
+            other => panic!("Expected Progress, got {:?}", other),
+        }
+
+        // Should now have one element (the witness)
+        let node = tree.get(0).unwrap();
+        assert_eq!(node.structure.carrier_size(0), 1, "Should have one witness");
+
+        // R(witness) should be asserted
+        let witness = Slid::from_usize(0);
+        assert!(
+            node.structure.relations[0].contains(&[witness]),
+            "R(witness) should be asserted"
+        );
+    }
+
+    #[test]
+    fn test_nested_existential_body() {
+        use crate::core::{Context, Formula, RelationStorage, Sequent, Term};
+
+        // Create a theory with:
+        // - Sort: Node
+        // - Relation: E : Node × Node -> Prop
+        // - Axiom: True |- ∃x:Node. ∃y:Node. E(x, y)
+        // This should add two witnesses and assert E(w1, w2)
+
+        let mut sig = Signature::new();
+        sig.add_sort("Node".to_string());
+        // E : Node × Node -> Prop (binary relation as product domain)
+        sig.add_relation(
+            "E".to_string(),
+            DerivedSort::Product(vec![
+                ("0".to_string(), DerivedSort::Base(0)),
+                ("1".to_string(), DerivedSort::Base(0)),
+            ]),
+        );
+
+        let axiom = Sequent {
+            context: Context::new(),
+            premise: Formula::True,
+            conclusion: Formula::Exists(
+                "x".to_string(),
+                DerivedSort::Base(0),
+                Box::new(Formula::Exists(
+                    "y".to_string(),
+                    DerivedSort::Base(0),
+                    Box::new(Formula::Rel(
+                        0, // E
+                        Term::Record(vec![
+                            ("0".to_string(), Term::Var("x".to_string(), DerivedSort::Base(0))),
+                            ("1".to_string(), Term::Var("y".to_string(), DerivedSort::Base(0))),
+                        ]),
+                    )),
+                )),
+            ),
+        };
+
+        let theory = Rc::new(ElaboratedTheory {
+            params: vec![],
+            theory: Theory {
+                name: "ExistsEdge".to_string(),
+                signature: sig,
+                axioms: vec![axiom],
+            },
+        });
+
+        let mut tree = SearchTree::new(theory);
+        tree.init_relations(0, &[2]).unwrap(); // E has arity 2
+
+        // Run forward chaining
+        let result = ForwardChainingTactic.run(&mut tree, 0, &Budget::quick());
+
+        match result {
+            TacticResult::Progress { steps_taken, .. } => {
+                assert!(steps_taken >= 3, "Should have added 2 witnesses AND asserted E");
+            }
+            other => panic!("Expected Progress, got {:?}", other),
+        }
+
+        // Should have two elements
+        let node = tree.get(0).unwrap();
+        assert_eq!(node.structure.carrier_size(0), 2, "Should have two witnesses");
+
+        // E(w1, w2) should be asserted
+        let w1 = Slid::from_usize(0);
+        let w2 = Slid::from_usize(1);
+        assert!(
+            node.structure.relations[0].contains(&[w1, w2]),
+            "E(w1, w2) should be asserted"
+        );
     }
 }
