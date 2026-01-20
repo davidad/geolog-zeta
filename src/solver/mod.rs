@@ -60,8 +60,6 @@ mod types;
 
 // Re-export main types
 pub use tactics::{AutoTactic, Budget, CheckTactic, EnumerateFunctionTactic, ForwardChainingTactic, PropagateEquationsTactic, Tactic, TacticResult};
-#[allow(deprecated)]
-pub use tactics::PropagationTactic;
 pub use tree::SearchTree;
 pub use types::{
     AxiomCheckResult, ConflictClause, CongruenceClosure, EquationReason, NodeDetail, NodeId,

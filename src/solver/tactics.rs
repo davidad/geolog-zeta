@@ -154,10 +154,6 @@ impl Tactic for CheckTactic {
     }
 }
 
-/// Legacy alias for CheckTactic
-#[deprecated(note = "Use CheckTactic instead - violations are obligations, not unsat")]
-pub type PropagationTactic = CheckTactic;
-
 /// Enumeration tactic: try all values for an undefined function
 pub struct EnumerateFunctionTactic {
     pub func_id: usize,
@@ -458,9 +454,9 @@ impl Tactic for PropagateEquationsTactic {
 
                 // Check for function conflicts
                 // For each function f, if f(a) and f(b) are both defined and a = b,
-                // then we need f(a) = f(b)
+                // then we need f(a) = f(b) (congruence)
                 let sig = tree.signature().clone();
-                let conflicts: Vec<(Slid, Slid)> = {
+                let conflicts: Vec<(Slid, Slid, usize)> = {
                     let node = tree.get(node).unwrap();
                     let mut conflicts = Vec::new();
 
@@ -480,20 +476,20 @@ impl Tactic for PropagateEquationsTactic {
                             && lv != rv
                         {
                             // Function conflict: f(a) = lv and f(b) = rv, but a = b
-                            // Add equation lv = rv
-                            conflicts.push((lv, rv));
+                            // Add equation lv = rv with func_id for debugging
+                            conflicts.push((lv, rv, func_id));
                         }
                     }
                     conflicts
                 };
 
                 // Add conflict-induced equations
-                for (lv, rv) in conflicts {
+                for (lv, rv, func_id) in conflicts {
                     tree.add_pending_equation(
                         node,
                         lv,
                         rv,
-                        super::types::EquationReason::Congruence { func_id: 0 }, // TODO: track actual func_id
+                        super::types::EquationReason::Congruence { func_id },
                     );
                     new_equations += 1;
                 }
