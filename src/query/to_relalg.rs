@@ -17,6 +17,42 @@
 //! The resulting Structure includes:
 //! - GeologMeta elements representing the source signature (Srt, Func)
 //! - RelAlgIR elements representing the query plan (Wire, Op, Schema)
+//!
+//! # Supported Operators
+//!
+//! The following QueryOp variants are compiled:
+//!
+//! | QueryOp          | RelAlgIR Sort    | Notes                        |
+//! |------------------|------------------|------------------------------|
+//! | `Scan`           | `ScanOp`         | Emits elements of a sort     |
+//! | `Filter`         | `FilterOp`       | With predicate compilation   |
+//! | `Distinct`       | `DistinctOp`     | Deduplication                |
+//! | `Join (Cross)`   | `JoinOp`         | Cartesian product            |
+//! | `Join (Equi)`    | `JoinOp`         | Hash join on key columns     |
+//! | `Union`          | `UnionOp`        | Bag union                    |
+//! | `Project`        | `ProjectOp`      | Column selection/reordering  |
+//! | `Negate`         | `NegateOp`       | Flip multiplicities          |
+//! | `Empty`          | `EmptyOp`        | Identity for Union           |
+//! | `Delay`          | `DelayOp`        | DBSP: previous timestep      |
+//! | `Diff`           | `DiffOp`         | DBSP: change since last      |
+//! | `Integrate`      | `IntegrateOp`    | DBSP: accumulate             |
+//!
+//! Not yet supported: `Constant` (needs Elem), `Apply` (needs Func).
+//!
+//! # Example
+//!
+//! ```ignore
+//! use geolog::query::{QueryOp, to_relalg::compile_to_relalg};
+//!
+//! let plan = QueryOp::Filter {
+//!     input: Box::new(QueryOp::Scan { sort_idx: 0 }),
+//!     pred: Predicate::True,
+//! };
+//!
+//! let instance = compile_to_relalg(&plan, &relalg_theory, &mut universe)?;
+//! // instance.structure contains RelAlgIR elements
+//! // instance.output_wire is the final Wire element
+//! ```
 
 use std::collections::HashMap;
 use std::rc::Rc;
