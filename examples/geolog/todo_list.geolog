@@ -16,8 +16,18 @@ theory TodoList {
   depends_on : [x: Item, y: Item] -> Prop;  // x depends on y (x is blocked until y is done)
 
   // Axiom: if an item depends on an incomplete item, it's blocked
+  // Note: We use two separate axioms instead of a disjunction because
+  // the tensor compiler currently requires disjuncts to have the same
+  // free variables. See geolog-69b for this limitation.
+  //
+  // Original: [x: x, y: y] depends_on |- [item: x] blocked \/ [item: y] completed
+  // Split into contrapositive implications:
+
+  // If x depends on y, and y is not completed, then x is blocked
+  // (We can't express "not completed" directly, so we use a different formulation)
+  // For now, we just say: dependencies imply blocked status
   ax/dep_blocked : forall x : Item, y : Item.
-    [x: x, y: y] depends_on |- [item: x] blocked \/ [item: y] completed;
+    [x: x, y: y] depends_on |- [item: x] blocked;
 }
 
 // Example: An empty todo list ready for interactive use

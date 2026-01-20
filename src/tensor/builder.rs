@@ -118,10 +118,23 @@ pub fn disjunction(
         // For disjunction, variables must match. If they don't, we need to
         // align them by extending each tensor with the missing variables
         // (treating them as "any value" via Product with full domain).
-        // For now, we require exact match since this is the geometric logic case.
+        // TODO(geolog-69b): Implement variable extension for disjunctions.
+        // This requires carrier sizes to create full-domain tensors.
+        // For now, we require exact match.
+        //
+        // Workaround: Rewrite axiom to use same variables in both disjuncts.
+        // E.g., instead of `P(x) |- A(x) \/ B(y)`,
+        // use `P(x), Q(y) |- A(x) \/ B(y)` where Q is the domain of y.
+        let only_in_1: Vec<_> = set1.difference(&set2).collect();
+        let only_in_2: Vec<_> = set2.difference(&set1).collect();
         panic!(
-            "disjunction requires same variables; got {:?} vs {:?}",
-            vars1, vars2
+            "disjunction requires same free variables in both disjuncts.\n\
+             Left disjunct has: {:?}\n\
+             Right disjunct has: {:?}\n\
+             Only in left: {:?}\n\
+             Only in right: {:?}\n\
+             See TODO(geolog-69b) for tracking this limitation.",
+            vars1, vars2, only_in_1, only_in_2
         );
     }
 
