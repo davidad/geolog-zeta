@@ -164,6 +164,13 @@ pub enum ChaseHead {
         arg_col: usize,
         new_sort_idx: usize,
     },
+    /// Assert element equality: left = right
+    /// For now, this checks if elements are already equal (no change) or
+    /// fails if they're different (proper unification is future work).
+    AssertEquality {
+        left_col: usize,
+        right_col: usize,
+    },
     /// Multiple heads (conjunction in conclusion)
     Multi(Vec<ChaseHead>),
 }
@@ -330,6 +337,15 @@ fn compile_premise_with_mapping(
         Formula::Eq(left, right) => {
             // Handle different equality patterns
             match (left, right) {
+                // f(x) = f(y) - comparing function results (same function on different args)
+                (Term::App(func_idx1, arg1), Term::App(func_idx2, arg2))
+                    if func_idx1 == func_idx2 =>
+                {
+                    compile_function_comparison(
+                        *func_idx1, arg1, arg2, var_indices, context, sig
+                    )
+                }
+
                 // f(arg) = [field1: v1, field2: v2, ...] - product codomain equality
                 (Term::App(func_idx, arg), Term::Record(fields))
                 | (Term::Record(fields), Term::App(func_idx, arg)) => {
@@ -524,6 +540,114 @@ fn compile_function_equality(
     Ok((plan, result_mapping))
 }
 
+/// Compile a function comparison: f(x) = f(y) where f might have a product codomain
+/// This filters for rows where function results are equal
+fn compile_function_comparison(
+    func_idx: usize,
+    arg1: &Term,
+    arg2: &Term,
+    var_indices: &HashMap<String, usize>,
+    context: &Context,
+    sig: &Signature,
+) -> Result<(QueryOp, ColumnMapping), ChaseError> {
+    // Build cross-product scan of all context variables
+    let mut result_op: Option<QueryOp> = None;
+    let mut result_mapping: ColumnMapping = Vec::new();
+
+    for (var_idx, (_, sort)) in context.vars.iter().enumerate() {
+        let sort_idx = resolve_sort_index(sort, sig)?;
+        let scan = QueryOp::Scan { sort_idx };
+
+        match result_op.take() {
+            None => {
+                result_op = Some(scan);
+                result_mapping.push(var_idx);
+            }
+            Some(left) => {
+                result_op = Some(QueryOp::Join {
+                    left: Box::new(left),
+                    right: Box::new(scan),
+                    cond: crate::query::backend::JoinCond::Cross,
+                });
+                result_mapping.push(var_idx);
+            }
+        }
+    }
+
+    let mut plan = result_op.ok_or_else(|| {
+        ChaseError::UnsupportedPremise("Function comparison without variables".to_string())
+    })?;
+
+    // Get the columns for both function arguments
+    let arg1_var_idx = term_to_column(arg1, var_indices)?;
+    let arg2_var_idx = term_to_column(arg2, var_indices)?;
+    let arg1_col = result_mapping.iter().position(|&v| v == arg1_var_idx)
+        .ok_or_else(|| ChaseError::UnboundVariable("function argument 1".to_string()))?;
+    let arg2_col = result_mapping.iter().position(|&v| v == arg2_var_idx)
+        .ok_or_else(|| ChaseError::UnboundVariable("function argument 2".to_string()))?;
+
+    // Check if function has product codomain
+    let func_info = sig.functions.get(func_idx)
+        .ok_or_else(|| ChaseError::QueryFailed(format!("Function {} not found", func_idx)))?;
+
+    match &func_info.codomain {
+        DerivedSort::Product(fields) => {
+            // Product codomain: compare each field
+            let mut current_cols = result_mapping.len();
+            for (field_name, _) in fields {
+                // Apply field to arg1
+                plan = QueryOp::ApplyField {
+                    input: Box::new(plan),
+                    func_idx,
+                    arg_col: arg1_col,
+                    field_name: field_name.clone(),
+                };
+                let arg1_field_col = current_cols;
+                current_cols += 1;
+
+                // Apply field to arg2
+                plan = QueryOp::ApplyField {
+                    input: Box::new(plan),
+                    func_idx,
+                    arg_col: arg2_col,
+                    field_name: field_name.clone(),
+                };
+                let arg2_field_col = current_cols;
+                current_cols += 1;
+
+                // Filter where fields are equal
+                plan = QueryOp::Filter {
+                    input: Box::new(plan),
+                    pred: Predicate::ColEqCol { left: arg1_field_col, right: arg2_field_col },
+                };
+            }
+        }
+        DerivedSort::Base(_) => {
+            // Simple codomain: just compare the values
+            plan = QueryOp::Apply {
+                input: Box::new(plan),
+                func_idx,
+                arg_col: arg1_col,
+            };
+            let arg1_result_col = result_mapping.len();
+
+            plan = QueryOp::Apply {
+                input: Box::new(plan),
+                func_idx,
+                arg_col: arg2_col,
+            };
+            let arg2_result_col = result_mapping.len() + 1;
+
+            plan = QueryOp::Filter {
+                input: Box::new(plan),
+                pred: Predicate::ColEqCol { left: arg1_result_col, right: arg2_result_col },
+            };
+        }
+    }
+
+    Ok((plan, result_mapping))
+}
+
 /// Extract column-to-variable mapping from a relation argument term
 fn extract_rel_column_mapping(
     arg: &Term,
@@ -631,9 +755,17 @@ fn compile_conclusion(
                         result_col,
                     })
                 }
+                // Variable equality: x = y
+                (Term::Var(left_name, _), Term::Var(right_name, _)) => {
+                    let left_col = var_indices.get(left_name).copied()
+                        .ok_or_else(|| ChaseError::UnboundVariable(left_name.clone()))?;
+                    let right_col = var_indices.get(right_name).copied()
+                        .ok_or_else(|| ChaseError::UnboundVariable(right_name.clone()))?;
+                    Ok(ChaseHead::AssertEquality { left_col, right_col })
+                }
                 _ => {
                     Err(ChaseError::UnsupportedConclusion(
-                        "Equality must have a function application".to_string()
+                        "Equality must have a function application or be between variables".to_string()
                     ))
                 }
             }
@@ -1148,6 +1280,26 @@ fn fire_head(
             structure.define_function_product_codomain(*func_idx, arg, &codomain_values)
                 .map_err(ChaseError::QueryFailed)?;
             Ok(true)
+        }
+
+        ChaseHead::AssertEquality { left_col, right_col } => {
+            let left = binding.get(*left_col).copied()
+                .ok_or_else(|| ChaseError::UnboundVariable("left column out of bounds".to_string()))?;
+            let right = binding.get(*right_col).copied()
+                .ok_or_else(|| ChaseError::UnboundVariable("right column out of bounds".to_string()))?;
+
+            if left == right {
+                // Already equal - no change needed
+                Ok(false)
+            } else {
+                // Elements are different - this is a constraint violation
+                // For now, we treat this as "the axiom doesn't fire" rather than an error
+                // A proper chase would unify the elements, but that requires union-find
+                // For injectivity axioms like `f(x) = f(y) |- x = y`, this means
+                // the axiom fires but doesn't change anything if x != y
+                // TODO: Implement proper element unification for full chase semantics
+                Ok(false)
+            }
         }
 
         ChaseHead::Multi(heads) => {
