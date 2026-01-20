@@ -636,11 +636,22 @@ fn elaborate_instance_ctx_inner(
             // 2. Resolve the theory type with parameter substitution
             // The theory_type string is like "N Marking"
             // We need to substitute parameter names with actual instance names
-            let mut resolved_theory_type = instance_field.theory_type.clone();
-            for (param_name, actual_instance_name) in &resolved.arguments {
-                // Simple substitution: replace param name at word boundaries
-                resolved_theory_type = resolved_theory_type.replace(param_name, actual_instance_name);
-            }
+            // Use word-boundary aware replacement to avoid replacing "T" in "Token"
+            let resolved_theory_type = {
+                let mut parts: Vec<String> = instance_field
+                    .theory_type
+                    .split_whitespace()
+                    .map(|s| s.to_string())
+                    .collect();
+                for (param_name, actual_instance_name) in &resolved.arguments {
+                    for part in &mut parts {
+                        if part == param_name {
+                            *part = actual_instance_name.clone();
+                        }
+                    }
+                }
+                parts.join(" ")
+            };
 
             // 3. Find the resolved theory
             // Parse the resolved type string to get the theory name
