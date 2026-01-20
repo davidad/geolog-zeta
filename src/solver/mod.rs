@@ -53,6 +53,23 @@
 //! plus geometric theory axioms, where the goal is to either:
 //! 1. Find a complete model satisfying all axioms, or
 //! 2. Derive `⊢ False` proving no such model exists
+//!
+//! # Unified Model Enumeration API
+//!
+//! The high-level API unifies `:solve` and `:query` under a common abstraction:
+//! finding maximal elements of the posetal reflection of the category of models.
+//!
+//! - [`solve`]: Find models from scratch (base = empty structure)
+//! - [`query`]: Find extensions of an existing model to a larger theory
+//! - [`enumerate_models`]: Core unified function (both above are wrappers)
+//!
+//! ```ignore
+//! // Find any model of a theory
+//! let result = solve(theory, Budget::quick());
+//!
+//! // Extend an existing model to satisfy additional axioms
+//! let result = query(base_structure, universe, extended_theory, budget);
+//! ```
 
 mod tactics;
 mod tree;
