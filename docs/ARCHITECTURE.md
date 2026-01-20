@@ -86,16 +86,19 @@ Geolog is a language for geometric logic with semantics in topoi. This document 
 │                         SOLVING LAYER (frontier)                             │
 ├─────────────────────────────────────────────────────────────────────────────┤
 │  solver/                                                                    │
-│    ├── mod.rs     Re-exports and overview                                   │
+│    ├── mod.rs     Unified model enumeration API + re-exports                │
+│    │              - enumerate_models(): core unified function               │
+│    │              - solve(): find models from scratch                       │
+│    │              - query(): extend existing models                         │
 │    ├── types.rs   SearchNode, Obligation, NodeStatus, CongruenceClosure     │
-│    ├── tree.rs    Explicit search tree for model finding                    │
+│    ├── tree.rs    Explicit search tree with from_base() for extensions      │
 │    └── tactics.rs Automated search tactics:                                 │
 │                   - CheckTactic: axiom checking, obligation reporting       │
 │                   - ForwardChainingTactic: Datalog-style forward chaining   │
 │                   - PropagateEquationsTactic: congruence closure propagation│
 │                   - AutoTactic: composite fixpoint solver                   │
 │                                                                             │
-│  Interactive solver via `:solve <theory>` REPL command.                     │
+│  REPL commands: `:solve <theory>`, `:extend <instance> <theory>`            │
 │  See examples/geolog/solver_demo.geolog for annotated examples.             │
 │                                                                             │
 │  tensor/                                                                    │
