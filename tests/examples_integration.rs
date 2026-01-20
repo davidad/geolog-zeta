@@ -310,9 +310,73 @@ fn test_relalg_ir_loads() {
 }
 
 // ============================================================================
+// RelAlgIR query plan examples
+// ============================================================================
+
+/// Test that RelAlgIR instances can be created and represent query plans
+#[test]
+fn test_relalg_simple_examples() {
+    // Load theories first
+    let meta_content = fs::read_to_string("theories/GeologMeta.geolog")
+        .expect("Failed to read GeologMeta.geolog");
+    let ir_content = fs::read_to_string("theories/RelAlgIR.geolog")
+        .expect("Failed to read RelAlgIR.geolog");
+    let examples_content = fs::read_to_string("examples/geolog/relalg_simple.geolog")
+        .expect("Failed to read relalg_simple.geolog");
+
+    let mut state = ReplState::new();
+
+    state.execute_geolog(&meta_content)
+        .expect("GeologMeta should load");
+    state.execute_geolog(&ir_content)
+        .expect("RelAlgIR should load");
+    state.execute_geolog(&examples_content)
+        .expect("relalg_simple.geolog should load");
+
+    // Check ScanV instance
+    let scan_v = state.instances.get("ScanV")
+        .expect("ScanV instance should exist");
+    assert_eq!(scan_v.structure.len(), 7, "ScanV should have 7 elements");
+
+    // Check FilterScan instance
+    let filter_scan = state.instances.get("FilterScan")
+        .expect("FilterScan instance should exist");
+    assert_eq!(filter_scan.structure.len(), 18, "FilterScan should have 18 elements");
+
+    // Verify FilterScan has the expected sorts populated
+    // Get RelAlgIR theory for sort lookups
+    let ir = state.theories.get("RelAlgIR").expect("RelAlgIR should exist");
+
+    // Check Wire sort has 2 elements (w1, w2)
+    let wire_sort = ir.theory.signature.lookup_sort("Wire").expect("Wire sort");
+    assert_eq!(
+        filter_scan.structure.carrier_size(wire_sort), 2,
+        "FilterScan should have 2 Wire elements"
+    );
+
+    // Check FilterOp sort has 1 element
+    let filter_sort = ir.theory.signature.lookup_sort("FilterOp").expect("FilterOp sort");
+    assert_eq!(
+        filter_scan.structure.carrier_size(filter_sort), 1,
+        "FilterScan should have 1 FilterOp element"
+    );
+
+    // Check ScanOp sort has 1 element
+    let scan_sort = ir.theory.signature.lookup_sort("ScanOp").expect("ScanOp sort");
+    assert_eq!(
+        filter_scan.structure.carrier_size(scan_sort), 1,
+        "FilterScan should have 1 ScanOp element"
+    );
+}
+
+// ============================================================================
 // Meta-test: all examples should parse
 // ============================================================================
 
+/// Tests that all standalone .geolog example files parse and elaborate.
+///
+/// Note: Some examples require loading theories first (e.g., relalg_simple.geolog
+/// requires GeologMeta and RelAlgIR). These are tested separately.
 #[test]
 fn test_all_examples_parse() {
     let examples_dir = Path::new("examples/geolog");
@@ -321,11 +385,21 @@ fn test_all_examples_parse() {
         panic!("examples/geolog directory does not exist");
     }
 
+    // Examples that require loading theories first (tested separately)
+    let requires_theories = ["relalg_simple.geolog"];
+
     let mut failures = Vec::new();
 
     for entry in fs::read_dir(examples_dir).unwrap() {
         let entry = entry.unwrap();
         let path = entry.path();
+
+        // Skip files that require loading theories first
+        if let Some(file_name) = path.file_name().and_then(|f| f.to_str()) {
+            if requires_theories.contains(&file_name) {
+                continue;
+            }
+        }
 
         if path.extension().is_some_and(|ext| ext == "geolog")
             && let Err(e) = load_geolog_file(&path) {
