@@ -322,4 +322,64 @@ mod unified_api_tests {
             ),
         }
     }
+
+    #[test]
+    fn test_solve_unsat_theory() {
+        // Theory that derives False: forall a:A. |- false
+        let mut sig = Signature::new();
+        let _sort_a = sig.add_sort("A".to_string());
+
+        // Axiom: forall a:A. |- false
+        let axiom = Sequent {
+            context: Context::new(),
+            premise: Formula::True,
+            conclusion: Formula::False,
+        };
+
+        let theory = Rc::new(ElaboratedTheory {
+            params: vec![],
+            theory: Theory {
+                name: "Inconsistent".to_string(),
+                signature: sig,
+                axioms: vec![axiom],
+            },
+        });
+
+        let result = solve(theory, Budget::quick());
+
+        match result {
+            EnumerationResult::Unsat { .. } => {
+                // Correctly detected UNSAT
+            }
+            other => panic!("Expected Unsat, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_solve_trivial_theory() {
+        // Theory with no axioms - should be trivially satisfied by empty structure
+        let mut sig = Signature::new();
+        sig.add_sort("A".to_string());
+        sig.add_sort("B".to_string());
+
+        let theory = Rc::new(ElaboratedTheory {
+            params: vec![],
+            theory: Theory {
+                name: "Trivial".to_string(),
+                signature: sig,
+                axioms: vec![], // No axioms!
+            },
+        });
+
+        let result = solve(theory, Budget::quick());
+
+        match result {
+            EnumerationResult::Found { model, .. } => {
+                // Empty structure is a valid model
+                assert_eq!(model.carrier_size(0), 0);
+                assert_eq!(model.carrier_size(1), 0);
+            }
+            other => panic!("Expected Found with empty model, got {:?}", other),
+        }
+    }
 }
