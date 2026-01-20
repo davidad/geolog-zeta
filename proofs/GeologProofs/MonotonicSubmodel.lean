@@ -318,32 +318,61 @@ In Type u, this is straightforward because:
 so lifting is just `fun ctx i => emb.embed _ (ctx i)` modulo the isomorphism.
 -/
 
-/-- Lift an embedding to context interpretations (componentwise application) -/
-axiom liftEmbedContext {M M' : Structure S (Type u)}
-    (emb : StructureEmbedding M M') (xs : Context S) :
-    Context.interpret M xs → Context.interpret M' xs
--- Note: This can be defined using Types.productIso + Pi.lift, but the categorical
--- boilerplate is substantial. The axiom captures the obvious mathematical content.
+/-- Types.productIso.hom extracts component j when applied at j -/
+lemma Types_productIso_hom_apply {β : Type u} (f : β → Type u) (x : ∏ᶜ f) (j : β) :
+    (Types.productIso f).hom x j = Pi.π f j x := by
+  have h := limit.isoLimitCone_hom_π (Types.productLimitCone f) ⟨j⟩
+  simp only [Types.productLimitCone] at h
+  have h' := congrFun h x
+  simp only [types_comp_apply, Discrete.natTrans_app] at h'
+  rfl
+
+/-- Types.productIso.inv satisfies projection identity -/
+lemma Types_productIso_inv_apply {β : Type u} (f : β → Type u) (g : (j : β) → f j) (j : β) :
+    Pi.π f j ((Types.productIso f).inv g) = g j := by
+  have h := limit.isoLimitCone_inv_π (Types.productLimitCone f) ⟨j⟩
+  simp only [Types.productLimitCone, limit.π] at h
+  have h' := congrFun h g
+  simp only [types_comp_apply, Discrete.natTrans_app] at h'
+  exact h'
 
 /-- Lift an element of a derived sort along an embedding.
     For base sorts: just the embedding.
-    For products: apply componentwise. -/
-axiom liftSort {M M' : Structure S (Type u)}
-    (emb : StructureEmbedding M M') (A : DerivedSorts S.Sorts) :
+    For products: apply componentwise via Types.productIso. -/
+noncomputable def liftSort {M M' : Structure S (Type u)}
+    (emb : StructureEmbedding M M') : (A : DerivedSorts S.Sorts) →
     A.interpret M.sorts → A.interpret M'.sorts
--- Proof obligation: Define by recursion on A:
--- | .inj B => emb.embed B
--- | .prod Aᵢ => fun x i => liftSort emb (Aᵢ i) (x i)
+  | .inj B => emb.embed B
+  | .prod Aᵢ => fun x =>
+    let x' := (Types.productIso _).hom x
+    let y' : ∀ i, (Aᵢ i).interpret M'.sorts := fun i => liftSort emb (Aᵢ i) (x' i)
+    (Types.productIso _).inv y'
+
+/-- Lift an embedding to context interpretations (componentwise application) -/
+noncomputable def liftEmbedContext {M M' : Structure S (Type u)}
+    (emb : StructureEmbedding M M') (xs : Context S) :
+    Context.interpret M xs → Context.interpret M' xs := fun ctx =>
+  let ctx' := (Types.productIso _).hom ctx
+  let liftedCtx' : ∀ i, (xs.nth i).interpret M'.sorts :=
+    fun i => liftSort emb (xs.nth i) (ctx' i)
+  (Types.productIso _).inv liftedCtx'
 
 /-- Generalized relation preservation for arbitrary derived sort domains.
-    This is the version needed for formula satisfaction monotonicity. -/
-axiom rel_preserve_general {M M' : Structure S (Type u)}
+    This is the version needed for formula satisfaction monotonicity.
+
+    For base sort domains (.inj B), this follows directly from rel_preserve.
+    For product domains (.prod Aᵢ), it follows by structural induction. -/
+theorem rel_preserve_general {M M' : Structure S (Type u)}
     (emb : RelPreservingEmbedding M M')
     (R : S.Relations) (x : R.domain.interpret M.sorts) :
     subobjectMem (M.Relations R) x →
-    subobjectMem (M'.Relations R) (liftSort emb.toStructureEmbedding R.domain x)
--- Proof obligation: For base sorts, this follows from rel_preserve.
--- For product domains, it follows by structural induction on the domain.
+    subobjectMem (M'.Relations R) (liftSort emb.toStructureEmbedding R.domain x) := by
+  intro hmem
+  -- The proof depends on R.domain structure:
+  -- For .inj B: liftSort = emb.embed, use emb.rel_preserve
+  -- For .prod Aᵢ: need to show the lifted tuple preserves the relation
+  -- This requires that RelPreservingEmbedding's rel_preserve works for derived sort domains
+  sorry
 
 /-!
 ### Formula Monotonicity
@@ -369,20 +398,46 @@ Each case uses specific Mathlib lemmas about Type u:
 - `infdisj`: Coproduct = union
 -/
 
-/-- Axiom: Term interpretation commutes with embedding via liftSort.
-    This follows from `func_comm` by induction on term structure. -/
-axiom term_interpret_commutes {M M' : Structure S (Type u)}
+/-- Term interpretation commutes with embedding via liftSort.
+    Proof by induction on term structure. -/
+theorem term_interpret_commutes {M M' : Structure S (Type u)}
     [κ : SmallUniverse S] [G : Geometric κ (Type u)]
     (emb : StructureEmbedding M M')
     {xs : Context S} {A : DerivedSorts S.Sorts}
     (t : Term xs A) (ctx : Context.interpret M xs) :
     Term.interpret M' t (liftEmbedContext emb xs ctx) =
-    liftSort emb A (Term.interpret M t ctx)
--- Proof obligation: Induction on t.
--- - var: Uses that liftEmbedContext applies emb componentwise
--- - func: Uses func_comm from the embedding
--- - pair: Uses IH componentwise
--- - proj: Uses IH on the tuple
+    liftSort emb A (Term.interpret M t ctx) := by
+  -- Induction on term structure.
+  -- Each case requires careful handling of Types.productIso and eqToHom casts.
+  -- The key insights:
+  -- - var: liftEmbedContext applies liftSort componentwise, extraction via Pi.π matches
+  -- - func: follows from func_comm generalized to derived sorts
+  -- - pair: componentwise by IH, using productIso injectivity
+  -- - proj: IH plus extraction from liftSort on products
+  induction t with
+  | var v =>
+    -- Term.interpret for var v is: Pi.π _ v ≫ eqToHom _
+    -- liftEmbedContext applies liftSort componentwise via Types.productIso
+    -- Key insight: Pi.π of (Types.productIso _).inv liftedFn = liftedFn (by Types_productIso_inv_apply)
+    -- And Types.productIso.hom ctx = Pi.π ctx (by Types_productIso_hom_apply)
+    -- So Pi.π of liftEmbedContext = liftSort of Pi.π of ctx
+    -- The eqToHom casts are identities since xs.nth v : S coerces to .inj (xs.nth v)
+    sorry
+  | func f t' ih =>
+    -- Function application composes term interpretation with the function.
+    -- By IH, liftSort commutes with term interpretation of the argument.
+    -- By func_comm (generalized), the function application commutes with liftSort.
+    sorry
+  | pair tᵢ ih =>
+    -- Pair builds a product from component interpretations.
+    -- By IH, each component commutes with liftSort.
+    -- liftSort on products applies componentwise, so results match.
+    sorry
+  | proj t' i ih =>
+    -- Projection extracts the i-th component from a product.
+    -- By IH, liftSort commutes with the tuple interpretation.
+    -- Pi.π applied to liftSort of a product extracts the i-th lifted component.
+    sorry
 
 /-!
 **Formula Satisfaction Monotonicity**
