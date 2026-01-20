@@ -363,8 +363,7 @@ mod tests {
             .collect();
 
         // Add some relation tuples
-        for rel_id in 0..num_relations {
-            let arity = arities[rel_id];
+        for (rel_id, &arity) in arities.iter().enumerate().take(num_relations) {
             for i in (0..1000).step_by(arity) {
                 let tuple: Vec<Slid> = (0..arity)
                     .map(|j| elements[(i + j) % num_elements])

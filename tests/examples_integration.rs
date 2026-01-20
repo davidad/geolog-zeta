@@ -242,11 +242,10 @@ fn test_all_examples_parse() {
         let entry = entry.unwrap();
         let path = entry.path();
 
-        if path.extension().map_or(false, |ext| ext == "geolog") {
-            if let Err(e) = load_geolog_file(&path) {
+        if path.extension().is_some_and(|ext| ext == "geolog")
+            && let Err(e) = load_geolog_file(&path) {
                 failures.push(format!("{}: {}", path.display(), e));
             }
-        }
     }
 
     if !failures.is_empty() {

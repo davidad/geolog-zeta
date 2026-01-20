@@ -35,6 +35,6 @@ mod store_queries;
 
 pub use pattern::{Pattern, Constraint, Projection};
 pub use exec::{QueryResult, execute_pattern};
-pub use backend::{Bag, QueryOp, Predicate, JoinCond, execute, StreamContext, execute_stream};
+pub use backend::{Bag, QueryOp, Predicate, JoinCond, execute, execute_optimized, StreamContext, execute_stream};
 pub use optimize::optimize;
 pub use compile::{Query, QueryBuilder, compile_simple_filter, compile_filter_project};

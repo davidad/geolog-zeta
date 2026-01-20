@@ -628,6 +628,159 @@ fn eval_join_cond(cond: &JoinCond, left: &Tuple, right: &Tuple) -> bool {
     }
 }
 
+// ============================================================================
+// Optimized Backend with Hash Joins
+// ============================================================================
+
+/// Execute a query plan with optimizations (hash joins for equijoins).
+///
+/// This produces the same results as `execute()` but with better asymptotic
+/// complexity for equijoins: O(n+m) instead of O(n*m).
+///
+/// Use `execute()` as the reference implementation for testing correctness.
+pub fn execute_optimized(plan: &QueryOp, structure: &Structure) -> Bag {
+    match plan {
+        QueryOp::Join { left, right, cond: JoinCond::Equi { left_col, right_col } } => {
+            // Hash join: O(n + m) instead of O(n * m)
+            let left_bag = execute_optimized(left, structure);
+            let right_bag = execute_optimized(right, structure);
+
+            // Build phase: hash the smaller relation
+            let (build_bag, probe_bag, build_col, probe_col, is_left_build) =
+                if left_bag.len() <= right_bag.len() {
+                    (&left_bag, &right_bag, *left_col, *right_col, true)
+                } else {
+                    (&right_bag, &left_bag, *right_col, *left_col, false)
+                };
+
+            // Build hash table: key -> Vec<(tuple, multiplicity)>
+            let mut hash_table: HashMap<Slid, Vec<(&Tuple, i64)>> = HashMap::new();
+            for (tuple, mult) in build_bag.iter() {
+                if let Some(&key) = tuple.get(build_col) {
+                    hash_table.entry(key).or_default().push((tuple, *mult));
+                }
+            }
+
+            // Probe phase
+            let mut result = Bag::new();
+            for (probe_tuple, probe_mult) in probe_bag.iter() {
+                if let Some(&key) = probe_tuple.get(probe_col)
+                    && let Some(matches) = hash_table.get(&key) {
+                        for (build_tuple, build_mult) in matches {
+                            // Reconstruct in correct order (left, right)
+                            let combined = if is_left_build {
+                                let mut c = (*build_tuple).clone();
+                                c.extend(probe_tuple.iter().cloned());
+                                c
+                            } else {
+                                let mut c = probe_tuple.clone();
+                                c.extend((*build_tuple).iter().cloned());
+                                c
+                            };
+
+                            let mult = if is_left_build {
+                                build_mult * probe_mult
+                            } else {
+                                probe_mult * build_mult
+                            };
+                            result.insert(combined, mult);
+                        }
+                    }
+            }
+            result
+        }
+
+        // For other operators, delegate to naive implementation but recurse optimized
+        QueryOp::Scan { sort_idx } => {
+            let mut result = Bag::new();
+            if let Some(carrier) = structure.carriers.get(*sort_idx) {
+                for elem in carrier.iter() {
+                    result.insert(vec![Slid::from_usize(elem as usize)], 1);
+                }
+            }
+            result
+        }
+
+        QueryOp::Filter { input, pred } => {
+            let input_bag = execute_optimized(input, structure);
+            let mut result = Bag::new();
+            for (tuple, mult) in input_bag.iter() {
+                if eval_predicate(pred, tuple, structure) {
+                    result.insert(tuple.clone(), *mult);
+                }
+            }
+            result
+        }
+
+        QueryOp::Project { input, columns } => {
+            let input_bag = execute_optimized(input, structure);
+            let mut result = Bag::new();
+            for (tuple, mult) in input_bag.iter() {
+                let projected: Tuple = columns.iter().map(|&c| tuple[c]).collect();
+                result.insert(projected, *mult);
+            }
+            result
+        }
+
+        QueryOp::Join { left, right, cond: JoinCond::Cross } => {
+            // Cross join: still O(n*m), no optimization possible
+            let left_bag = execute_optimized(left, structure);
+            let right_bag = execute_optimized(right, structure);
+            let mut result = Bag::new();
+
+            for (l_tuple, l_mult) in left_bag.iter() {
+                for (r_tuple, r_mult) in right_bag.iter() {
+                    let mut combined = l_tuple.clone();
+                    combined.extend(r_tuple.iter().cloned());
+                    result.insert(combined, l_mult * r_mult);
+                }
+            }
+            result
+        }
+
+        QueryOp::Union { left, right } => {
+            let left_bag = execute_optimized(left, structure);
+            let right_bag = execute_optimized(right, structure);
+            left_bag.union(&right_bag)
+        }
+
+        QueryOp::Distinct { input } => {
+            let input_bag = execute_optimized(input, structure);
+            input_bag.distinct()
+        }
+
+        QueryOp::Negate { input } => {
+            let input_bag = execute_optimized(input, structure);
+            input_bag.negate()
+        }
+
+        QueryOp::Constant { tuple } => Bag::singleton(tuple.clone()),
+
+        QueryOp::Empty => Bag::new(),
+
+        QueryOp::Apply { input, func_idx, arg_col } => {
+            let input_bag = execute_optimized(input, structure);
+            let mut result = Bag::new();
+            for (tuple, mult) in input_bag.iter() {
+                if let Some(&arg) = tuple.get(*arg_col) {
+                    let sort_slid = structure.sort_local_id(arg);
+                    if let Some(func_result) = structure.get_function(*func_idx, sort_slid) {
+                        let mut extended = tuple.clone();
+                        extended.push(func_result);
+                        result.insert(extended, *mult);
+                    }
+                }
+            }
+            result
+        }
+
+        // DBSP operators not supported in optimized path yet
+        QueryOp::Delay { .. } | QueryOp::Diff { .. } | QueryOp::Integrate { .. } => {
+            panic!("DBSP temporal operators require StreamContext - use execute_stream() instead")
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -959,5 +1112,202 @@ mod tests {
         // Second step with no changes: delta should be empty
         let delta = execute_stream(&diff_only, &structure, &mut fresh_ctx);
         assert!(delta.is_empty(), "no changes, delta should be empty");
+    }
+
+    // ========================================================================
+    // Hash Join Tests (execute_optimized)
+    // ========================================================================
+
+    #[test]
+    fn test_hash_join_basic() {
+        // Test that hash join produces same results as nested loop join
+        let mut structure = Structure::new(2);
+        // Sort 0: {0, 1, 2}
+        structure.carriers[0].insert(0);
+        structure.carriers[0].insert(1);
+        structure.carriers[0].insert(2);
+        // Sort 1: {0, 1, 2} (some overlap for equijoin)
+        structure.carriers[1].insert(0);
+        structure.carriers[1].insert(1);
+        structure.carriers[1].insert(2);
+
+        let left = QueryOp::Scan { sort_idx: 0 };
+        let right = QueryOp::Scan { sort_idx: 1 };
+        let join = QueryOp::Join {
+            left: Box::new(left),
+            right: Box::new(right),
+            cond: JoinCond::Equi { left_col: 0, right_col: 0 },
+        };
+
+        let naive_result = execute(&join, &structure);
+        let optimized_result = super::execute_optimized(&join, &structure);
+
+        // Results should be identical
+        assert_eq!(naive_result.len(), optimized_result.len());
+        for (tuple, mult) in naive_result.iter() {
+            assert_eq!(
+                optimized_result.tuples.get(tuple),
+                Some(mult),
+                "tuple {:?} has different multiplicity",
+                tuple
+            );
+        }
+    }
+
+    #[test]
+    fn test_hash_join_no_matches() {
+        // Test equijoin with no matching keys
+        let mut structure = Structure::new(2);
+        // Sort 0: {0, 1}
+        structure.carriers[0].insert(0);
+        structure.carriers[0].insert(1);
+        // Sort 1: {10, 11} (no overlap)
+        structure.carriers[1].insert(10);
+        structure.carriers[1].insert(11);
+
+        let join = QueryOp::Join {
+            left: Box::new(QueryOp::Scan { sort_idx: 0 }),
+            right: Box::new(QueryOp::Scan { sort_idx: 1 }),
+            cond: JoinCond::Equi { left_col: 0, right_col: 0 },
+        };
+
+        let naive_result = execute(&join, &structure);
+        let optimized_result = super::execute_optimized(&join, &structure);
+
+        assert!(naive_result.is_empty());
+        assert!(optimized_result.is_empty());
+    }
+
+    #[test]
+    fn test_hash_join_asymmetric() {
+        // Test that join order is preserved when left is larger than right
+        let mut structure = Structure::new(2);
+        // Sort 0: {0, 1, 2, 3, 4} (larger)
+        for i in 0..5 {
+            structure.carriers[0].insert(i);
+        }
+        // Sort 1: {2, 3} (smaller, will be build side)
+        structure.carriers[1].insert(2);
+        structure.carriers[1].insert(3);
+
+        let join = QueryOp::Join {
+            left: Box::new(QueryOp::Scan { sort_idx: 0 }),
+            right: Box::new(QueryOp::Scan { sort_idx: 1 }),
+            cond: JoinCond::Equi { left_col: 0, right_col: 0 },
+        };
+
+        let naive_result = execute(&join, &structure);
+        let optimized_result = super::execute_optimized(&join, &structure);
+
+        // Should have matches for 2 and 3
+        assert_eq!(naive_result.len(), 2);
+        assert_eq!(optimized_result.len(), 2);
+
+        // Verify tuple order is (left_val, right_val)
+        assert!(optimized_result.tuples.contains_key(&vec![
+            Slid::from_usize(2),
+            Slid::from_usize(2)
+        ]));
+        assert!(optimized_result.tuples.contains_key(&vec![
+            Slid::from_usize(3),
+            Slid::from_usize(3)
+        ]));
+    }
+
+    #[test]
+    fn test_hash_join_with_duplicates() {
+        // Test hash join correctly handles multiplicities
+        let mut structure = Structure::new(2);
+        // Both sides have element 1
+        structure.carriers[0].insert(1);
+        structure.carriers[1].insert(1);
+
+        // Join constant bags with multiplicities
+        let left = QueryOp::Union {
+            left: Box::new(QueryOp::Constant { tuple: vec![Slid::from_usize(1)] }),
+            right: Box::new(QueryOp::Constant { tuple: vec![Slid::from_usize(1)] }),
+        };
+        let right = QueryOp::Union {
+            left: Box::new(QueryOp::Constant { tuple: vec![Slid::from_usize(1)] }),
+            right: Box::new(QueryOp::Union {
+                left: Box::new(QueryOp::Constant { tuple: vec![Slid::from_usize(1)] }),
+                right: Box::new(QueryOp::Constant { tuple: vec![Slid::from_usize(1)] }),
+            }),
+        };
+
+        let join = QueryOp::Join {
+            left: Box::new(left),
+            right: Box::new(right),
+            cond: JoinCond::Equi { left_col: 0, right_col: 0 },
+        };
+
+        let naive_result = execute(&join, &structure);
+        let optimized_result = super::execute_optimized(&join, &structure);
+
+        // 2 * 3 = 6 (multiplicity multiplication)
+        let tuple = vec![Slid::from_usize(1), Slid::from_usize(1)];
+        assert_eq!(naive_result.tuples.get(&tuple), Some(&6));
+        assert_eq!(optimized_result.tuples.get(&tuple), Some(&6));
+    }
+
+    #[test]
+    fn test_optimized_matches_naive_cross_join() {
+        // Cross join should work the same in optimized backend
+        let mut structure = Structure::new(2);
+        structure.carriers[0].insert(0);
+        structure.carriers[0].insert(1);
+        structure.carriers[1].insert(10);
+        structure.carriers[1].insert(11);
+
+        let join = QueryOp::Join {
+            left: Box::new(QueryOp::Scan { sort_idx: 0 }),
+            right: Box::new(QueryOp::Scan { sort_idx: 1 }),
+            cond: JoinCond::Cross,
+        };
+
+        let naive_result = execute(&join, &structure);
+        let optimized_result = super::execute_optimized(&join, &structure);
+
+        assert_eq!(naive_result.len(), 4); // 2 * 2 = 4
+        assert_eq!(optimized_result.len(), 4);
+
+        for (tuple, mult) in naive_result.iter() {
+            assert_eq!(
+                optimized_result.tuples.get(tuple),
+                Some(mult),
+                "tuple {:?} mismatch",
+                tuple
+            );
+        }
+    }
+
+    #[test]
+    fn test_optimized_nested_joins() {
+        // Test optimized backend with nested joins
+        let mut structure = Structure::new(3);
+        structure.carriers[0].insert(1);
+        structure.carriers[1].insert(1);
+        structure.carriers[2].insert(1);
+
+        // (A ⋈ B) ⋈ C
+        let join_ab = QueryOp::Join {
+            left: Box::new(QueryOp::Scan { sort_idx: 0 }),
+            right: Box::new(QueryOp::Scan { sort_idx: 1 }),
+            cond: JoinCond::Equi { left_col: 0, right_col: 0 },
+        };
+
+        let join_abc = QueryOp::Join {
+            left: Box::new(join_ab),
+            right: Box::new(QueryOp::Scan { sort_idx: 2 }),
+            cond: JoinCond::Equi { left_col: 0, right_col: 0 },
+        };
+
+        let naive_result = execute(&join_abc, &structure);
+        let optimized_result = super::execute_optimized(&join_abc, &structure);
+
+        assert_eq!(naive_result.len(), optimized_result.len());
+        // Result should be (1, 1, 1)
+        let expected = vec![Slid::from_usize(1), Slid::from_usize(1), Slid::from_usize(1)];
+        assert!(optimized_result.tuples.contains_key(&expected));
     }
 }
