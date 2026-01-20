@@ -257,6 +257,7 @@ fn print_help(topic: Option<&str>) {
             println!("Query:");
             println!("  :query <inst> <sort>        List all elements of a sort");
             println!("  :explain <inst> <sort>      Show query execution plan");
+            println!("  :compile <inst> <sort>      Show RelAlgIR compilation");
             println!();
             println!("Solver:");
             println!("  :solve <theory> [budget_ms]          Find model of theory from scratch");
