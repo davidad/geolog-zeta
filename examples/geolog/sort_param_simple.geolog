@@ -1,0 +1,31 @@
+// Simpler sort parameter test
+
+theory (X : Sort) Container {
+  elem : X;  // not a Sort, but an element of X
+}
+
+// Hmm, this doesn't quite work...
+// Let me try the actual vision pattern
+
+theory Base {
+  A : Sort;
+  B : Sort;
+}
+
+instance MyBase : Base = {
+  a1 : A;
+  a2 : A;
+  b1 : B;
+  b2 : B;
+}
+
+// Now try a theory parameterized by an instance
+theory (Inst : Base instance) Map {
+  map : Inst/A -> Inst/B;
+}
+
+// Instance of Map parameterized by MyBase
+instance MyMap : MyBase Map = {
+  a1 map = MyBase/b1;
+  a2 map = MyBase/b2;
+}

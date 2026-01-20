@@ -116,156 +116,153 @@ pub fn elaborate_theory(env: &mut Env, theory: &ast::TheoryDecl) -> ElabResult<E
     // This ensures all sort/func IDs are in a single namespace.
     let mut params = Vec::new();
     for param in &theory.params {
-        match &param.ty {
-            // "T instance" parameters — the theory depends on an instance of another theory
-            ast::TypeExpr::Instance(inner) => {
-                // Handle both simple (PetriNet instance) and parameterized (N ReachabilityProblem instance) cases
-                let theory_name = extract_theory_name(inner)?;
-                if let Some(base_theory) = env.theories.get(&theory_name) {
-                    // Build mapping from base_theory's instance params to our type args
-                    // For `RP : N ReachabilityProblem instance`:
-                    // - type args = ["N", "ReachabilityProblem"] (collect all, drop last for theory name)
-                    // - base_theory params = [("N", "PetriNet")]
-                    // - mapping = {"N" -> "N"}
-                    let mut type_args = Vec::new();
-                    collect_type_args(inner, &mut type_args);
-                    // Drop the last one (theory name)
-                    if !type_args.is_empty() {
-                        type_args.pop();
-                    }
+        // "T instance" parameters — the theory depends on an instance of another theory
+        if param.ty.is_instance() {
+            let inner = param.ty.instance_inner().unwrap();
+            // Handle both simple (PetriNet instance) and parameterized (N ReachabilityProblem instance) cases
+            let theory_name = extract_theory_name(&inner)?;
+            if let Some(base_theory) = env.theories.get(&theory_name) {
+                // Build mapping from base_theory's instance params to our type args
+                // For `RP : N ReachabilityProblem instance`:
+                // - type args = ["N", "ReachabilityProblem"] (collect all, drop last for theory name)
+                // - base_theory params = [("N", "PetriNet")]
+                // - mapping = {"N" -> "N"}
+                let mut type_args = Vec::new();
+                collect_type_args(&inner, &mut type_args);
+                // Drop the last one (theory name)
+                if !type_args.is_empty() {
+                    type_args.pop();
+                }
 
-                    // Build param substitution map: base_theory param name -> our type arg value
-                    let mut param_subst: HashMap<String, String> = HashMap::new();
-                    for (bp, arg) in base_theory.params.iter().zip(type_args.iter()) {
-                        if bp.theory_name != "Sort" {
-                            // Instance param - map its name to the type arg
-                            param_subst.insert(bp.name.clone(), arg.clone());
-                        }
+                // Build param substitution map: base_theory param name -> our type arg value
+                let mut param_subst: HashMap<String, String> = HashMap::new();
+                for (bp, arg) in base_theory.params.iter().zip(type_args.iter()) {
+                    if bp.theory_name != "Sort" {
+                        // Instance param - map its name to the type arg
+                        param_subst.insert(bp.name.clone(), arg.clone());
                     }
+                }
 
-                    // Copy all sorts from param theory into local signature
-                    // But for sorts that come from a param that we're binding to an outer param,
-                    // reuse the outer param's sort instead of creating a duplicate.
-                    for sort_name in &base_theory.theory.signature.sorts {
-                        // Check if this sort starts with a param name that we're substituting
-                        let qualified_name = if let Some((prefix, suffix)) = sort_name.split_once('/') {
-                            if let Some(subst) = param_subst.get(prefix) {
-                                // This sort is from a param we're binding - use the substituted prefix
-                                let substituted_name = format!("{}/{}", subst, suffix);
-                                // If this sort already exists (from an outer param), don't add it again
-                                if local_env.signature.lookup_sort(&substituted_name).is_some() {
-                                    continue;
-                                }
-                                substituted_name
-                            } else {
-                                // Not from a substituted param - prefix with our param name
-                                format!("{}/{}", param.name, sort_name)
+                // Copy all sorts from param theory into local signature
+                // But for sorts that come from a param that we're binding to an outer param,
+                // reuse the outer param's sort instead of creating a duplicate.
+                for sort_name in &base_theory.theory.signature.sorts {
+                    // Check if this sort starts with a param name that we're substituting
+                    let qualified_name = if let Some((prefix, suffix)) = sort_name.split_once('/') {
+                        if let Some(subst) = param_subst.get(prefix) {
+                            // This sort is from a param we're binding - use the substituted prefix
+                            let substituted_name = format!("{}/{}", subst, suffix);
+                            // If this sort already exists (from an outer param), don't add it again
+                            if local_env.signature.lookup_sort(&substituted_name).is_some() {
+                                continue;
                             }
+                            substituted_name
                         } else {
-                            // Unqualified sort (the theory's own sort) - prefix with our param name
+                            // Not from a substituted param - prefix with our param name
                             format!("{}/{}", param.name, sort_name)
-                        };
-                        local_env.signature.add_sort(qualified_name);
-                    }
+                        }
+                    } else {
+                        // Unqualified sort (the theory's own sort) - prefix with our param name
+                        format!("{}/{}", param.name, sort_name)
+                    };
+                    local_env.signature.add_sort(qualified_name);
+                }
 
-                    // Copy all functions from param theory with qualified names
-                    for func in &base_theory.theory.signature.functions {
-                        // Check if this function starts with a param name that we're substituting
-                        let qualified_name = if let Some((prefix, suffix)) = func.name.split_once('/') {
-                            if let Some(subst) = param_subst.get(prefix) {
-                                // This func is from a param we're binding - use the substituted prefix
-                                let substituted_name = format!("{}/{}", subst, suffix);
-                                // If this function already exists (from an outer param), don't add it again
-                                if local_env.signature.lookup_func(&substituted_name).is_some() {
-                                    continue;
-                                }
-                                substituted_name
-                            } else {
-                                // Not from a substituted param - prefix with our param name
-                                format!("{}/{}", param.name, func.name)
+                // Copy all functions from param theory with qualified names
+                for func in &base_theory.theory.signature.functions {
+                    // Check if this function starts with a param name that we're substituting
+                    let qualified_name = if let Some((prefix, suffix)) = func.name.split_once('/') {
+                        if let Some(subst) = param_subst.get(prefix) {
+                            // This func is from a param we're binding - use the substituted prefix
+                            let substituted_name = format!("{}/{}", subst, suffix);
+                            // If this function already exists (from an outer param), don't add it again
+                            if local_env.signature.lookup_func(&substituted_name).is_some() {
+                                continue;
                             }
+                            substituted_name
                         } else {
-                            // Unqualified func - prefix with our param name
+                            // Not from a substituted param - prefix with our param name
                             format!("{}/{}", param.name, func.name)
-                        };
-                        // Remap domain and codomain to use local signature's sort IDs
-                        // We need to handle substitution for sorts too
-                        let domain = remap_derived_sort_with_subst(
-                            &func.domain,
-                            &base_theory.theory.signature,
-                            &local_env.signature,
-                            &param.name,
-                            &param_subst,
-                        );
-                        let codomain = remap_derived_sort_with_subst(
-                            &func.codomain,
-                            &base_theory.theory.signature,
-                            &local_env.signature,
-                            &param.name,
-                            &param_subst,
-                        );
-                        local_env
-                            .signature
-                            .add_function(qualified_name, domain, codomain);
-                    }
+                        }
+                    } else {
+                        // Unqualified func - prefix with our param name
+                        format!("{}/{}", param.name, func.name)
+                    };
+                    // Remap domain and codomain to use local signature's sort IDs
+                    // We need to handle substitution for sorts too
+                    let domain = remap_derived_sort_with_subst(
+                        &func.domain,
+                        &base_theory.theory.signature,
+                        &local_env.signature,
+                        &param.name,
+                        &param_subst,
+                    );
+                    let codomain = remap_derived_sort_with_subst(
+                        &func.codomain,
+                        &base_theory.theory.signature,
+                        &local_env.signature,
+                        &param.name,
+                        &param_subst,
+                    );
+                    local_env
+                        .signature
+                        .add_function(qualified_name, domain, codomain);
+                }
 
-                    // Copy all relations from param theory with qualified names
-                    for rel in &base_theory.theory.signature.relations {
-                        // Check if this relation starts with a param name that we're substituting
-                        let qualified_name = if let Some((prefix, suffix)) = rel.name.split_once('/') {
-                            if let Some(subst) = param_subst.get(prefix) {
-                                let substituted_name = format!("{}/{}", subst, suffix);
-                                if local_env.signature.lookup_rel(&substituted_name).is_some() {
-                                    continue;
-                                }
-                                substituted_name
-                            } else {
-                                format!("{}/{}", param.name, rel.name)
+                // Copy all relations from param theory with qualified names
+                for rel in &base_theory.theory.signature.relations {
+                    // Check if this relation starts with a param name that we're substituting
+                    let qualified_name = if let Some((prefix, suffix)) = rel.name.split_once('/') {
+                        if let Some(subst) = param_subst.get(prefix) {
+                            let substituted_name = format!("{}/{}", subst, suffix);
+                            if local_env.signature.lookup_rel(&substituted_name).is_some() {
+                                continue;
                             }
+                            substituted_name
                         } else {
                             format!("{}/{}", param.name, rel.name)
-                        };
-                        let domain = remap_derived_sort_with_subst(
-                            &rel.domain,
-                            &base_theory.theory.signature,
-                            &local_env.signature,
-                            &param.name,
-                            &param_subst,
-                        );
-                        local_env.signature.add_relation(qualified_name, domain);
-                    }
-
-                    // NOTE: Instance field content (sorts/functions) is already included in
-                    // base_theory.theory.signature because it was added when that theory
-                    // was elaborated. We don't need to process instance fields again here.
-
-                    params.push(TheoryParam {
-                        name: param.name.clone(),
-                        theory_name: theory_name.clone(),
-                    });
-                    local_env
-                        .params
-                        .push((param.name.clone(), base_theory.clone()));
-                } else {
-                    return Err(ElabError::UnknownTheory(theory_name));
+                        }
+                    } else {
+                        format!("{}/{}", param.name, rel.name)
+                    };
+                    let domain = remap_derived_sort_with_subst(
+                        &rel.domain,
+                        &base_theory.theory.signature,
+                        &local_env.signature,
+                        &param.name,
+                        &param_subst,
+                    );
+                    local_env.signature.add_relation(qualified_name, domain);
                 }
-            }
-            // "Sort" parameters — the theory is parameterized over a sort
-            ast::TypeExpr::Sort => {
-                // Add the parameter as a sort in the local signature
-                local_env.signature.add_sort(param.name.clone());
-                // Also record it as a "sort parameter" for the theory
+
+                // NOTE: Instance field content (sorts/functions) is already included in
+                // base_theory.theory.signature because it was added when that theory
+                // was elaborated. We don't need to process instance fields again here.
+
                 params.push(TheoryParam {
                     name: param.name.clone(),
-                    theory_name: "Sort".to_string(), // Special marker
+                    theory_name: theory_name.clone(),
                 });
+                local_env
+                    .params
+                    .push((param.name.clone(), base_theory.clone()));
+            } else {
+                return Err(ElabError::UnknownTheory(theory_name));
             }
-            _ => {
-                return Err(ElabError::UnsupportedFeature(format!(
-                    "parameter type {:?}",
-                    param.ty
-                )));
-            }
+        } else if param.ty.is_sort() {
+            // "Sort" parameters — the theory is parameterized over a sort
+            // Add the parameter as a sort in the local signature
+            local_env.signature.add_sort(param.name.clone());
+            // Also record it as a "sort parameter" for the theory
+            params.push(TheoryParam {
+                name: param.name.clone(),
+                theory_name: "Sort".to_string(), // Special marker
+            });
+        } else {
+            return Err(ElabError::UnsupportedFeature(format!(
+                "parameter type {:?}",
+                param.ty
+            )));
         }
     }
 
@@ -281,7 +278,7 @@ pub fn elaborate_theory(env: &mut Env, theory: &ast::TheoryDecl) -> ElabResult<E
         match &item.node {
             ast::TheoryItem::Function(f) => {
                 // Check if codomain is Prop — if so, this is a relation declaration
-                if matches!(f.codomain, ast::TypeExpr::Prop) {
+                if f.codomain.is_prop() {
                     let domain = elaborate_type(&local_env, &f.domain)?;
                     local_env
                         .signature
@@ -296,22 +293,23 @@ pub fn elaborate_theory(env: &mut Env, theory: &ast::TheoryDecl) -> ElabResult<E
             }
             // Legacy: A Field with a Record type is a relation declaration
             // (kept for backwards compatibility, may remove later)
-            ast::TheoryItem::Field(name, ty @ ast::TypeExpr::Record(_)) => {
+            ast::TheoryItem::Field(name, ty) if ty.as_record().is_some() => {
                 let domain = elaborate_type(&local_env, ty)?;
                 local_env.signature.add_relation(name.clone(), domain);
             }
             // Instance-typed field declarations (nested instances)
             // e.g., `initial_marking : N Marking instance;`
-            ast::TheoryItem::Field(name, ast::TypeExpr::Instance(inner)) => {
+            ast::TheoryItem::Field(name, ty) if ty.is_instance() => {
+                let inner = ty.instance_inner().unwrap();
                 // Store the theory type expression as a string
-                let theory_type_str = format_type_expr(inner);
+                let theory_type_str = format_type_expr(&inner);
                 local_env
                     .signature
                     .add_instance_field(name.clone(), theory_type_str.clone());
 
                 // Also add the content (sorts, functions) from the field's theory
                 // This enables accessing things like iso/fwd when we have `iso : X Y Iso instance`
-                if let Ok(field_theory_name) = extract_theory_name(inner) {
+                if let Ok(field_theory_name) = extract_theory_name(&inner) {
                     if let Some(field_theory) = env.theories.get(&field_theory_name) {
                         let field_prefix = name.clone();
 
@@ -319,7 +317,7 @@ pub fn elaborate_theory(env: &mut Env, theory: &ast::TheoryDecl) -> ElabResult<E
                         // - Sort parameters get substituted from type expression args
                         // - Instance param sorts (e.g., "N/P") map to local sorts with same name
                         // - Local sorts (e.g., "Token") get prefixed with field name
-                        let sort_param_map = collect_sort_params(inner, field_theory);
+                        let sort_param_map = collect_sort_params(&inner, field_theory);
 
                         // First, add any non-param sorts from the field's theory with prefix
                         for sort_name in &field_theory.theory.signature.sorts {
@@ -493,68 +491,25 @@ fn collect_sort_params(
 
 /// Recursively collect type arguments from an App chain.
 /// For `A B C Foo`, this returns ["A", "B", "C"] (Foo is the theory name).
+///
+/// With concatenative parsing, tokens are in order: [arg1, arg2, ..., theory_name]
+/// All path tokens except the last one are type arguments.
 pub fn collect_type_args(ty: &ast::TypeExpr, args: &mut Vec<String>) {
-    match ty {
-        ast::TypeExpr::App(base, arg) => {
-            // For App(base, arg):
-            // - If base is also an App, recurse to get its args first
-            // - Then add the current arg
-            // But wait - the rightmost is always the theory, not an arg!
-            // So for `A B C Foo`: App(App(App(A, B), C), Foo)
-            // We want [A, B, C], not [B, C, Foo]
-            //
-            // Actually, let's trace: App(App(App(Path("A"), Path("B")), Path("C")), Path("Foo"))
-            // - base = App(App(Path("A"), Path("B")), Path("C"))
-            // - arg = Path("Foo")
-            // Recursing:
-            // - base = App(Path("A"), Path("B"))
-            // - arg = Path("C")
-            // And so on...
-            //
-            // The pattern is: the FINAL arg (after all Apps) is the theory name.
-            // All intermediate args are the type arguments.
-            //
-            // So for A B Foo:
-            // - App(App(Path("A"), Path("B")), Path("Foo"))
-            // - First iteration: base = App(Path("A"), Path("B")), arg = Path("Foo")
-            //   - We DON'T add "Foo" because it's the theory name
-            //   - Recurse on base
-            // - Second iteration: base = Path("A"), arg = Path("B")
-            //   - Add "B"
-            //   - Recurse on base
-            // - Third iteration: base = Path("A")
-            //   - Add "A"
-            //
-            // Hmm, this gives us ["B", "A"], reversed!
-            // And we're missing the logic to NOT add the theory name.
-            //
-            // Let me rethink: For `X Y Iso`:
-            // - App(App(Path("X"), Path("Y")), Path("Iso"))
-            // We want args = ["X", "Y"]
-            //
-            // The recursive structure is:
-            // - base = App(Path("X"), Path("Y"))
-            // - arg = Path("Iso")
-            //
-            // At the top level, arg IS the theory name.
-            // At nested levels, arg is a type argument AND we need to prepend the base args.
-            //
-            // Actually, we can just process left-to-right:
-            // - In App(base, arg), base contains all previous args + theory
-            // - arg at this level is always a type argument (except at the outermost level)
-            //
-            // Wait no - at the outermost level, arg is the theory name.
-            // At inner levels, arg is a type argument.
-            //
-            // Let me use a different approach: collect ALL args first, then drop the last one (theory name).
-            collect_type_args(base, args);
-            args.push(format_type_expr(arg));
-        }
-        ast::TypeExpr::Path(path) => {
-            // This is the leftmost element - it's a type argument
-            args.push(path.to_string());
-        }
-        _ => {}
+    use crate::ast::TypeToken;
+
+    // Collect all path tokens
+    let paths: Vec<String> = ty
+        .tokens
+        .iter()
+        .filter_map(|t| match t {
+            TypeToken::Path(p) => Some(p.to_string()),
+            _ => None,
+        })
+        .collect();
+
+    // All but the last one are type arguments
+    if paths.len() > 1 {
+        args.extend(paths[..paths.len() - 1].iter().cloned());
     }
 }
 
@@ -665,22 +620,23 @@ fn remap_derived_sort_with_subst(
 }
 
 /// Extract the base theory name from a type expression.
-/// - `Path("PetriNet")` → "PetriNet"
-/// - `App(Path("N"), Path("ReachabilityProblem"))` → "ReachabilityProblem"
-/// - `App(App(...), Path("Foo"))` → "Foo" (rightmost path)
+///
+/// With concatenative parsing, tokens are in order: [arg1, arg2, ..., theory_name]
+/// The last path token is the theory name.
 fn extract_theory_name(ty: &ast::TypeExpr) -> ElabResult<String> {
-    match ty {
-        ast::TypeExpr::Path(path) => Ok(path.to_string()),
-        ast::TypeExpr::App(_, arg) => {
-            // For App(base, arg), the rightmost arg is the theory name
-            // e.g., "N ReachabilityProblem" → App(Path("N"), Path("ReachabilityProblem"))
-            extract_theory_name(arg)
+    use crate::ast::TypeToken;
+
+    // Find the last path token - that's the theory name
+    for token in ty.tokens.iter().rev() {
+        if let TypeToken::Path(path) = token {
+            return Ok(path.to_string());
         }
-        _ => Err(ElabError::UnsupportedFeature(format!(
-            "cannot extract theory name from {:?}",
-            ty
-        ))),
     }
+
+    Err(ElabError::TypeExprError(format!(
+        "cannot extract theory name from {:?}",
+        ty
+    )))
 }
 
 /// Collect type arguments from a theory type string like "ExampleNet ReachabilityProblem".
@@ -767,25 +723,26 @@ pub fn remap_sort_for_param_import(
 
 /// Format a type expression as a string (for storing instance field types)
 fn format_type_expr(ty: &ast::TypeExpr) -> String {
-    match ty {
-        ast::TypeExpr::Path(path) => path.to_string(),
-        ast::TypeExpr::App(base, arg) => {
-            format!("{} {}", format_type_expr(base), format_type_expr(arg))
-        }
-        ast::TypeExpr::Instance(inner) => {
-            format!("{} instance", format_type_expr(inner))
-        }
-        ast::TypeExpr::Sort => "Sort".to_string(),
-        ast::TypeExpr::Prop => "Prop".to_string(),
-        ast::TypeExpr::Record(fields) => {
-            let field_strs: Vec<String> = fields
-                .iter()
-                .map(|(name, ty)| format!("{}: {}", name, format_type_expr(ty)))
-                .collect();
-            format!("[{}]", field_strs.join(", "))
-        }
-        ast::TypeExpr::Arrow(from, to) => {
-            format!("{} -> {}", format_type_expr(from), format_type_expr(to))
+    use crate::ast::TypeToken;
+
+    let mut parts = Vec::new();
+
+    for token in &ty.tokens {
+        match token {
+            TypeToken::Path(path) => parts.push(path.to_string()),
+            TypeToken::Sort => parts.push("Sort".to_string()),
+            TypeToken::Prop => parts.push("Prop".to_string()),
+            TypeToken::Instance => parts.push("instance".to_string()),
+            TypeToken::Arrow => parts.push("->".to_string()),
+            TypeToken::Record(fields) => {
+                let field_strs: Vec<String> = fields
+                    .iter()
+                    .map(|(name, field_ty)| format!("{}: {}", name, format_type_expr(field_ty)))
+                    .collect();
+                parts.push(format!("[{}]", field_strs.join(", ")));
+            }
         }
     }
+
+    parts.join(" ")
 }

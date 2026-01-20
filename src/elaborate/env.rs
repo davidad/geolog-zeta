@@ -54,46 +54,13 @@ impl Env {
 }
 
 /// Elaborate a type expression into a DerivedSort
+///
+/// Uses the concatenative stack-based type evaluator.
 pub fn elaborate_type(env: &Env, ty: &ast::TypeExpr) -> ElabResult<DerivedSort> {
-    match ty {
-        ast::TypeExpr::Sort => {
-            // "Sort" is the kind of sorts, not a sort itself
-            Err(ElabError::NotASort(
-                "Sort is a kind, not a type".to_string(),
-            ))
-        }
-        ast::TypeExpr::Prop => {
-            // "Prop" is the kind for relation codomains, not a sort itself
-            Err(ElabError::NotASort(
-                "Prop is a kind, not a type".to_string(),
-            ))
-        }
-        ast::TypeExpr::Path(path) => env.resolve_sort_path(path),
-        ast::TypeExpr::Record(fields) => {
-            let elab_fields: Result<Vec<_>, _> = fields
-                .iter()
-                .map(|(name, ty)| elaborate_type(env, ty).map(|s| (name.clone(), s)))
-                .collect();
-            Ok(DerivedSort::Product(elab_fields?))
-        }
-        ast::TypeExpr::App(_, _) => {
-            // Type application — for things like "N Marking"
-            // This is used for parameterized types, which we'll handle later
-            Err(ElabError::UnsupportedFeature(
-                "type application".to_string(),
-            ))
-        }
-        ast::TypeExpr::Arrow(_, _) => {
-            // Function types aren't sorts in this sense
-            Err(ElabError::NotASort("arrow types are not sorts".to_string()))
-        }
-        ast::TypeExpr::Instance(_) => {
-            // "T instance" is the type of instances of theory T
-            Err(ElabError::UnsupportedFeature(
-                "instance types in sort position".to_string(),
-            ))
-        }
-    }
+    use super::types::eval_type_expr;
+
+    let val = eval_type_expr(ty, env)?;
+    val.as_derived_sort(env)
 }
 
 /// Elaborate a term in a given context

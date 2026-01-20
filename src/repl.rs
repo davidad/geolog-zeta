@@ -369,14 +369,15 @@ impl ReplState {
 
         let start = std::time::Instant::now();
 
-        // The goal should be an Instance type: `Instance(App(..., TheoryName))`
-        let inner_type = match &q.goal {
-            ast::TypeExpr::Instance(inner) => inner.as_ref(),
-            _ => return Err("Query goal must be an instance type (e.g., `T instance`)".to_string()),
-        };
+        // The goal should be an Instance type: tokens ending with `instance`
+        if !q.goal.is_instance() {
+            return Err("Query goal must be an instance type (e.g., `T instance`)".to_string());
+        }
+        let inner_type = q.goal.instance_inner()
+            .ok_or_else(|| "Failed to extract inner type from instance".to_string())?;
 
         // Resolve the instance type to get theory name and arguments
-        let resolved = self.resolve_query_type(inner_type)?;
+        let resolved = self.resolve_query_type(&inner_type)?;
         let theory = self.theories.get(&resolved.theory_name)
             .ok_or_else(|| format!("Unknown theory: {}", resolved.theory_name))?
             .clone();
@@ -413,65 +414,53 @@ impl ReplState {
 
     /// Resolve a query goal type expression to get theory name and param bindings.
     fn resolve_query_type(&self, ty: &ast::TypeExpr) -> Result<ResolvedQueryType, String> {
-        match ty {
-            ast::TypeExpr::Path(path) => {
-                // Simple theory name, no parameters
-                Ok(ResolvedQueryType {
-                    theory_name: path.to_string(),
-                    arguments: vec![],
-                })
-            }
-            ast::TypeExpr::App(_base, _arg) => {
-                // Theory application: `arg1 arg2 ... theory`
-                let mut all_paths = vec![];
-                let mut current = ty;
+        use crate::ast::TypeToken;
 
-                // Walk down the App chain collecting paths
-                while let ast::TypeExpr::App(inner_base, inner_arg) = current {
-                    if let ast::TypeExpr::Path(arg_path) = inner_arg.as_ref() {
-                        all_paths.push(arg_path.to_string());
-                    } else {
-                        return Err("Complex query type arguments not supported".to_string());
-                    }
-                    current = inner_base;
-                }
+        // Collect all path tokens from the type expression
+        let all_paths: Vec<String> = ty.tokens.iter()
+            .filter_map(|t| match t {
+                TypeToken::Path(p) => Some(p.to_string()),
+                _ => None,
+            })
+            .collect();
 
-                // Leftmost should be a path
-                if let ast::TypeExpr::Path(first_path) = current {
-                    all_paths.push(first_path.to_string());
-                } else {
-                    return Err("Complex query type base not supported".to_string());
-                }
-
-                // Reverse to get [leftmost, ..., rightmost]
-                all_paths.reverse();
-                let theory_name = all_paths.pop().expect("at least one path");
-                let args = all_paths;
-
-                // Look up theory to match params
-                let theory = self.theories.get(&theory_name)
-                    .ok_or_else(|| format!("Unknown theory: {}", theory_name))?;
-
-                if args.len() != theory.params.len() {
-                    return Err(format!(
-                        "Theory {} expects {} parameters, got {}",
-                        theory_name, theory.params.len(), args.len()
-                    ));
-                }
-
-                let arguments: Vec<(String, String)> = theory.params
-                    .iter()
-                    .zip(args.iter())
-                    .map(|(param, arg)| (param.name.clone(), arg.clone()))
-                    .collect();
-
-                Ok(ResolvedQueryType {
-                    theory_name,
-                    arguments,
-                })
-            }
-            _ => Err(format!("Unsupported query type: {:?}", ty)),
+        if all_paths.is_empty() {
+            return Err("Query type has no path components".to_string());
         }
+
+        // Simple case: just one path
+        if all_paths.len() == 1 {
+            return Ok(ResolvedQueryType {
+                theory_name: all_paths[0].clone(),
+                arguments: vec![],
+            });
+        }
+
+        // Multiple paths: rightmost is theory name, rest are args
+        let theory_name = all_paths.last().unwrap().clone();
+        let args: Vec<String> = all_paths[..all_paths.len() - 1].to_vec();
+
+        // Look up theory to match params
+        let theory = self.theories.get(&theory_name)
+            .ok_or_else(|| format!("Unknown theory: {}", theory_name))?;
+
+        if args.len() != theory.params.len() {
+            return Err(format!(
+                "Theory {} expects {} parameters, got {}",
+                theory_name, theory.params.len(), args.len()
+            ));
+        }
+
+        let arguments: Vec<(String, String)> = theory.params
+            .iter()
+            .zip(args.iter())
+            .map(|(param, arg)| (param.name.clone(), arg.clone()))
+            .collect();
+
+        Ok(ResolvedQueryType {
+            theory_name,
+            arguments,
+        })
     }
 
     /// Build a base structure for a query by importing elements from param instances.
@@ -1025,51 +1014,66 @@ impl ReplState {
 /// Helper to extract theory name from a type expression
 ///
 /// For parameterized types like `ExampleNet Trace`, the theory is the rightmost
-/// element (Trace), not the first argument (ExampleNet).
+/// path element, not the first argument.
 fn type_expr_to_theory_name(type_expr: &ast::TypeExpr) -> String {
-    match type_expr {
-        ast::TypeExpr::Sort => "Sort".to_string(),
-        ast::TypeExpr::Prop => "Prop".to_string(),
-        ast::TypeExpr::Path(path) => path
-            .segments
-            .join("/"),
-        ast::TypeExpr::App(_base, arg) => {
-            // For App(base, arg), the arg is the theory, base contains earlier arguments
-            // E.g., App(ExampleNet, Trace) -> Trace
-            type_expr_to_theory_name(arg)
-        }
-        ast::TypeExpr::Arrow(_, _) => "Arrow".to_string(),
-        ast::TypeExpr::Record(_) => "Record".to_string(),
-        ast::TypeExpr::Instance(inner) => type_expr_to_theory_name(inner),
+    use crate::ast::TypeToken;
+
+    // Handle special cases first
+    if type_expr.is_sort() {
+        return "Sort".to_string();
     }
+    if type_expr.is_prop() {
+        return "Prop".to_string();
+    }
+
+    // For instance types, recurse on the inner type
+    if let Some(inner) = type_expr.instance_inner() {
+        return type_expr_to_theory_name(&inner);
+    }
+
+    // Find the last path token - that's the theory name
+    for token in type_expr.tokens.iter().rev() {
+        if let TypeToken::Path(path) = token {
+            return path.segments.join("/");
+        }
+    }
+
+    // Fallback for arrows, records, etc.
+    if type_expr.tokens.iter().any(|t| matches!(t, TypeToken::Arrow)) {
+        return "Arrow".to_string();
+    }
+    if type_expr.as_record().is_some() {
+        return "Record".to_string();
+    }
+
+    "Unknown".to_string()
 }
 
 /// Convert a type expression to its full string representation.
-/// E.g., `App(App(ExampleNet, problem0), Solution)` -> "ExampleNet problem0 Solution"
+/// E.g., tokens [Path(ExampleNet), Path(problem0), Path(Solution)] -> "ExampleNet problem0 Solution"
 fn type_expr_to_full_string(type_expr: &ast::TypeExpr) -> String {
-    match type_expr {
-        ast::TypeExpr::Sort => "Sort".to_string(),
-        ast::TypeExpr::Prop => "Prop".to_string(),
-        ast::TypeExpr::Path(path) => path.segments.join("/"),
-        ast::TypeExpr::App(base, arg) => {
-            let base_str = type_expr_to_full_string(base);
-            let arg_str = type_expr_to_full_string(arg);
-            format!("{} {}", base_str, arg_str)
-        }
-        ast::TypeExpr::Arrow(from, to) => {
-            format!("{} -> {}", type_expr_to_full_string(from), type_expr_to_full_string(to))
-        }
-        ast::TypeExpr::Record(fields) => {
-            let field_strs: Vec<String> = fields
-                .iter()
-                .map(|(name, ty)| format!("{}: {}", name, type_expr_to_full_string(ty)))
-                .collect();
-            format!("[{}]", field_strs.join(", "))
-        }
-        ast::TypeExpr::Instance(inner) => {
-            format!("{} instance", type_expr_to_full_string(inner))
+    use crate::ast::TypeToken;
+
+    let mut parts: Vec<String> = vec![];
+
+    for token in &type_expr.tokens {
+        match token {
+            TypeToken::Sort => parts.push("Sort".to_string()),
+            TypeToken::Prop => parts.push("Prop".to_string()),
+            TypeToken::Path(path) => parts.push(path.segments.join("/")),
+            TypeToken::Arrow => parts.push("->".to_string()),
+            TypeToken::Instance => parts.push("instance".to_string()),
+            TypeToken::Record(fields) => {
+                let field_strs: Vec<String> = fields
+                    .iter()
+                    .map(|(name, ty)| format!("{}: {}", name, type_expr_to_full_string(ty)))
+                    .collect();
+                parts.push(format!("[{}]", field_strs.join(", ")));
+            }
         }
     }
+
+    parts.join(" ")
 }
 
 /// Format a DerivedSort as a string using sort names from the signature

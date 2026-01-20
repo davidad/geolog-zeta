@@ -50,6 +50,16 @@ pub enum ElabError {
     },
     /// Chase algorithm failed (e.g., didn't converge)
     ChaseFailed(String),
+
+    /// Not enough arguments for a parameterized theory
+    NotEnoughArgs {
+        name: String,
+        expected: usize,
+        got: usize,
+    },
+
+    /// Type expression evaluation error
+    TypeExprError(String),
 }
 
 impl std::fmt::Display for ElabError {
@@ -126,6 +136,18 @@ impl std::fmt::Display for ElabError {
                 }
             }
             ElabError::ChaseFailed(msg) => write!(f, "chase failed: {}", msg),
+            ElabError::NotEnoughArgs {
+                name,
+                expected,
+                got,
+            } => {
+                write!(
+                    f,
+                    "'{}' expects {} argument(s), but only {} provided",
+                    name, expected, got
+                )
+            }
+            ElabError::TypeExprError(msg) => write!(f, "type expression error: {}", msg),
         }
     }
 }

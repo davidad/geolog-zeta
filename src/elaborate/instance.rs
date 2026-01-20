@@ -755,101 +755,84 @@ struct ResolvedInstanceType {
 /// - Single param: `ExampleNet Marking` -> ("Marking", [("N", "ExampleNet")])
 /// - Multiple params: `ExampleNet problem0 ReachabilityProblem/Solution` -> ("ReachabilityProblem/Solution", [("N", "ExampleNet"), ("RP", "problem0")])
 ///
-/// AST structure for `A B C`:
-/// - App(App(A, B), C) where C is the "function" being applied
-/// - So we need to collect: theory=C, args=[A, B]
+/// With concatenative parsing, tokens are in order: [arg1, arg2, ..., theory_name]
+/// The last path token is the theory name, earlier ones are arguments.
 fn resolve_instance_type(env: &Env, ty: &ast::TypeExpr) -> ElabResult<ResolvedInstanceType> {
-    match ty {
-        ast::TypeExpr::Path(path) => {
-            // Simple theory name
-            Ok(ResolvedInstanceType {
-                theory_name: path.to_string(),
-                arguments: vec![],
-            })
-        }
-        ast::TypeExpr::App(_base, _arg) => {
-            // Theory application: `arg1 arg2 ... theory`
-            // In AST: App(App(...App(arg1, arg2)..., argN), theory)
-            //
-            // The rightmost is the theory, everything else are arguments.
-            // We walk down collecting all paths, then the last one is the theory.
-            let mut all_paths = vec![];
-            let mut current = ty;
+    use crate::ast::TypeToken;
 
-            // Walk down the App chain
-            while let ast::TypeExpr::App(inner_base, inner_arg) = current {
-                // The inner_arg should be a Path
-                if let ast::TypeExpr::Path(arg_path) = inner_arg.as_ref() {
-                    all_paths.push(arg_path.to_string());
-                } else {
-                    return Err(ElabError::UnsupportedFeature(
-                        "complex theory application argument".to_string(),
-                    ));
-                }
-                current = inner_base;
-            }
+    // Collect all path tokens (the theory and its arguments)
+    let paths: Vec<String> = ty
+        .tokens
+        .iter()
+        .filter_map(|t| match t {
+            TypeToken::Path(p) => Some(p.to_string()),
+            _ => None,
+        })
+        .collect();
 
-            // After unwinding, `current` should be the leftmost path (first argument)
-            if let ast::TypeExpr::Path(first_path) = current {
-                all_paths.push(first_path.to_string());
-            } else {
-                return Err(ElabError::UnsupportedFeature(
-                    "complex theory application base".to_string(),
-                ));
-            }
-
-            // Now all_paths contains [rightmost, ..., leftmost]
-            // We want: theory = rightmost, args = [leftmost, ..., second-to-rightmost]
-            // So reverse to get [leftmost, ..., rightmost], then pop the theory
-            all_paths.reverse();
-            let theory_name = all_paths.pop().expect("at least one path");
-            let args = all_paths; // [leftmost, ..., second-to-rightmost] = arguments in order
-
-            // Look up the theory to get parameter names
-            let theory = env
-                .theories
-                .get(&theory_name)
-                .ok_or_else(|| ElabError::UnknownTheory(theory_name.clone()))?;
-
-            // Match up arguments with parameters
-            if args.len() != theory.params.len() {
-                return Err(ElabError::UnsupportedFeature(format!(
-                    "theory {} expects {} parameters, got {}",
-                    theory_name,
-                    theory.params.len(),
-                    args.len()
-                )));
-            }
-
-            let arguments: Vec<(String, String)> = theory
-                .params
-                .iter()
-                .zip(args.iter())
-                .map(|(param, arg)| (param.name.clone(), arg.clone()))
-                .collect();
-
-            Ok(ResolvedInstanceType {
-                theory_name,
-                arguments,
-            })
-        }
-        _ => Err(ElabError::NotASort(format!("{:?}", ty))),
+    if paths.is_empty() {
+        return Err(ElabError::TypeExprError(
+            "no theory name in type expression".to_string(),
+        ));
     }
+
+    // Last path is the theory name
+    let theory_name = paths.last().unwrap().clone();
+
+    // Earlier paths are arguments (in order)
+    let args: Vec<String> = paths[..paths.len() - 1].to_vec();
+
+    // Look up the theory to get parameter names
+    let theory = env
+        .theories
+        .get(&theory_name)
+        .ok_or_else(|| ElabError::UnknownTheory(theory_name.clone()))?;
+
+    // Match up arguments with parameters
+    if args.len() != theory.params.len() {
+        return Err(ElabError::NotEnoughArgs {
+            name: theory_name,
+            expected: theory.params.len(),
+            got: args.len(),
+        });
+    }
+
+    let arguments: Vec<(String, String)> = theory
+        .params
+        .iter()
+        .zip(args.iter())
+        .map(|(param, arg)| (param.name.clone(), arg.clone()))
+        .collect();
+
+    Ok(ResolvedInstanceType {
+        theory_name,
+        arguments,
+    })
 }
 
 /// Resolve a sort expression within an instance (using the theory's signature)
 fn resolve_instance_sort(sig: &Signature, sort_expr: &ast::TypeExpr) -> ElabResult<SortId> {
-    match sort_expr {
-        ast::TypeExpr::Path(path) => {
-            // Join path segments with "/" to handle qualified names like "Base/X"
-            let name = path.segments.join("/");
-            sig.lookup_sort(&name)
-                .ok_or(ElabError::UnknownSort(name))
+    use crate::ast::TypeToken;
+
+    // For sort expressions, we expect a single path token
+    if let Some(path) = sort_expr.as_single_path() {
+        let name = path.to_string();
+        sig.lookup_sort(&name)
+            .ok_or(ElabError::UnknownSort(name))
+    } else {
+        // Check if there's any path token at all
+        for token in &sort_expr.tokens {
+            if let TypeToken::Path(path) = token {
+                let name = path.to_string();
+                return sig
+                    .lookup_sort(&name)
+                    .ok_or(ElabError::UnknownSort(name));
+            }
         }
-        _ => Err(ElabError::UnsupportedFeature(format!(
-            "complex sort: {:?}",
+        Err(ElabError::TypeExprError(format!(
+            "no path in sort expression: {:?}",
             sort_expr
-        ))),
+        )))
     }
 }
 
@@ -1117,34 +1100,23 @@ fn cartesian_product(sets: &[Vec<Slid>]) -> Vec<Vec<Slid>> {
 
 /// Parse a simple type expression from a string like "ExampleNet Marking"
 ///
-/// This handles:
-/// - Simple paths: "PetriNet" -> Path(["PetriNet"])
-/// - Applied types: "ExampleNet Marking" -> App(Path(["ExampleNet"]), Path(["Marking"]))
+/// With concatenative parsing, this just creates a flat list of path tokens.
 fn parse_type_expr_from_string(s: &str) -> ElabResult<ast::TypeExpr> {
+    use crate::ast::TypeToken;
+
     let tokens: Vec<&str> = s.split_whitespace().collect();
 
     if tokens.is_empty() {
-        return Err(ElabError::UnsupportedFeature(
+        return Err(ElabError::TypeExprError(
             "empty type expression".to_string(),
         ));
     }
 
-    if tokens.len() == 1 {
-        // Simple path
-        Ok(ast::TypeExpr::Path(ast::Path::single(
-            tokens[0].to_string(),
-        )))
-    } else {
-        // Applied type: "A B C" -> App(App(A, B), C)
-        // Actually in our AST, App(base, arg) so "A B C" parses as App(App(A, B), C)
-        // meaning C is applied to (A applied to B)
-        let mut result = ast::TypeExpr::Path(ast::Path::single(tokens[0].to_string()));
-        for &token in &tokens[1..] {
-            result = ast::TypeExpr::App(
-                Box::new(result),
-                Box::new(ast::TypeExpr::Path(ast::Path::single(token.to_string()))),
-            );
-        }
-        Ok(result)
-    }
+    // Simply create a TypeToken::Path for each token
+    let type_tokens: Vec<TypeToken> = tokens
+        .iter()
+        .map(|&t| TypeToken::Path(ast::Path::single(t.to_string())))
+        .collect();
+
+    Ok(ast::TypeExpr { tokens: type_tokens })
 }

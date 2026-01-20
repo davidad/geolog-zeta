@@ -122,14 +122,9 @@ instance ExampleNet : PetriNet = {
             }
             geolog::Declaration::Instance(i) => {
                 // Extract theory name from the type expression
-                let theory_name = match &i.theory {
-                    geolog::TypeExpr::Path(p) => p
-                        .segments
-                        .first()
-                        .cloned()
-                        .unwrap_or_else(|| "?".to_string()),
-                    _ => "?".to_string(),
-                };
+                let theory_name = i.theory.as_single_path()
+                    .and_then(|p| p.segments.first().cloned())
+                    .unwrap_or_else(|| "?".to_string());
                 print!("Elaborating instance {}... ", i.name);
                 let instances: HashMap<String, InstanceEntry> = HashMap::new();
                 let mut ctx = ElaborationContext {
