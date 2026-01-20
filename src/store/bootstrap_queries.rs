@@ -1,10 +1,10 @@
 //! Bootstrap query methods for GeologMeta.
 //!
-//! These are temporary hardcoded query implementations that will be replaced
-//! by the proper query engine (geolog-7tt). They exist to allow eliminating
-//! ElaboratedTheory from the codebase before the query engine is ready.
+//! These methods provide typed query APIs for GeologMeta. They now delegate
+//! to the compiled query engine (see query/store_queries.rs) for the core
+//! scan+filter operations, with additional lookups for complex fields.
 //!
-//! TODO(geolog-ubi): Replace these with proper query engine calls.
+//! TODO(geolog-ubi): Further integrate with the full query engine.
 
 use std::collections::HashMap;
 
@@ -74,106 +74,28 @@ impl Store {
     /// Query all sorts belonging to a theory.
     ///
     /// Returns (name, slid) for each Srt where Srt/theory == theory_slid.
+    /// Delegates to the compiled query engine.
     pub fn query_theory_sorts(&self, theory_slid: Slid) -> Vec<SortInfo> {
-        let Some(srt_sort) = self.sort_ids.srt else {
-            return vec![];
-        };
-        let Some(theory_func) = self.func_ids.srt_theory else {
-            return vec![];
-        };
-
-        let mut result = Vec::new();
-        for srt_slid in self.elements_of_sort(srt_sort) {
-            if self.get_func(theory_func, srt_slid) == Some(theory_slid) {
-                let name = self.get_element_name(srt_slid);
-                // Extract just the sort name (last component of qualified name)
-                let short_name = name.rsplit('/').next().unwrap_or(&name).to_string();
-                result.push(SortInfo {
-                    name: short_name,
-                    slid: srt_slid,
-                });
-            }
-        }
-        result
+        // Delegate to compiled query engine
+        self.query_theory_sorts_compiled(theory_slid)
     }
 
     /// Query all functions belonging to a theory.
     ///
     /// Returns FuncInfo for each Func where Func/theory == theory_slid.
+    /// Delegates to the compiled query engine.
     pub fn query_theory_funcs(&self, theory_slid: Slid) -> Vec<FuncInfo> {
-        let Some(func_sort) = self.sort_ids.func else {
-            return vec![];
-        };
-        let Some(theory_func) = self.func_ids.func_theory else {
-            return vec![];
-        };
-        let Some(dom_func) = self.func_ids.func_dom else {
-            return vec![];
-        };
-        let Some(cod_func) = self.func_ids.func_cod else {
-            return vec![];
-        };
-
-        let mut result = Vec::new();
-        for func_slid in self.elements_of_sort(func_sort) {
-            if self.get_func(theory_func, func_slid) == Some(theory_slid) {
-                let name = self.get_element_name(func_slid);
-                let short_name = name.rsplit('/').next().unwrap_or(&name).to_string();
-
-                // Get domain and codomain DSorts
-                let domain = self
-                    .get_func(dom_func, func_slid)
-                    .map(|ds| self.resolve_dsort(ds))
-                    .unwrap_or(DerivedSort::Product(vec![]));
-                let codomain = self
-                    .get_func(cod_func, func_slid)
-                    .map(|ds| self.resolve_dsort(ds))
-                    .unwrap_or(DerivedSort::Product(vec![]));
-
-                result.push(FuncInfo {
-                    name: short_name,
-                    slid: func_slid,
-                    domain,
-                    codomain,
-                });
-            }
-        }
-        result
+        // Delegate to compiled query engine
+        self.query_theory_funcs_compiled(theory_slid)
     }
 
     /// Query all relations belonging to a theory.
     ///
     /// Returns RelInfo for each Rel where Rel/theory == theory_slid.
+    /// Delegates to the compiled query engine.
     pub fn query_theory_rels(&self, theory_slid: Slid) -> Vec<RelInfo> {
-        let Some(rel_sort) = self.sort_ids.rel else {
-            return vec![];
-        };
-        let Some(theory_func) = self.func_ids.rel_theory else {
-            return vec![];
-        };
-        let Some(dom_func) = self.func_ids.rel_dom else {
-            return vec![];
-        };
-
-        let mut result = Vec::new();
-        for rel_slid in self.elements_of_sort(rel_sort) {
-            if self.get_func(theory_func, rel_slid) == Some(theory_slid) {
-                let name = self.get_element_name(rel_slid);
-                let short_name = name.rsplit('/').next().unwrap_or(&name).to_string();
-
-                let domain = self
-                    .get_func(dom_func, rel_slid)
-                    .map(|ds| self.resolve_dsort(ds))
-                    .unwrap_or(DerivedSort::Product(vec![]));
-
-                result.push(RelInfo {
-                    name: short_name,
-                    slid: rel_slid,
-                    domain,
-                });
-            }
-        }
-        result
+        // Delegate to compiled query engine
+        self.query_theory_rels_compiled(theory_slid)
     }
 
     /// Look up a sort by name within a theory.
@@ -409,92 +331,24 @@ impl Store {
     // ========================================================================
 
     /// Query all elements belonging to an instance.
+    /// Delegates to the compiled query engine.
     pub fn query_instance_elems(&self, instance_slid: Slid) -> Vec<ElemInfo> {
-        let Some(elem_sort) = self.sort_ids.elem else {
-            return vec![];
-        };
-        let Some(instance_func) = self.func_ids.elem_instance else {
-            return vec![];
-        };
-        let Some(sort_func) = self.func_ids.elem_sort else {
-            return vec![];
-        };
-
-        let mut result = Vec::new();
-        for elem_slid in self.elements_of_sort(elem_sort) {
-            if self.get_func(instance_func, elem_slid) == Some(instance_slid) {
-                let name = self.get_element_name(elem_slid);
-                let short_name = name.rsplit('/').next().unwrap_or(&name).to_string();
-                let srt_slid = self.get_func(sort_func, elem_slid);
-
-                result.push(ElemInfo {
-                    name: short_name,
-                    slid: elem_slid,
-                    srt_slid,
-                });
-            }
-        }
-        result
+        // Delegate to compiled query engine
+        self.query_instance_elems_compiled(instance_slid)
     }
 
     /// Query all function values in an instance.
+    /// Delegates to the compiled query engine.
     pub fn query_instance_func_vals(&self, instance_slid: Slid) -> Vec<FuncValInfo> {
-        let Some(fv_sort) = self.sort_ids.func_val else {
-            return vec![];
-        };
-        let Some(instance_func) = self.func_ids.func_val_instance else {
-            return vec![];
-        };
-        let Some(func_func) = self.func_ids.func_val_func else {
-            return vec![];
-        };
-        let Some(arg_func) = self.func_ids.func_val_arg else {
-            return vec![];
-        };
-        let Some(result_func) = self.func_ids.func_val_result else {
-            return vec![];
-        };
-
-        let mut result = Vec::new();
-        for fv_slid in self.elements_of_sort(fv_sort) {
-            if self.get_func(instance_func, fv_slid) == Some(instance_slid) {
-                result.push(FuncValInfo {
-                    slid: fv_slid,
-                    func_slid: self.get_func(func_func, fv_slid),
-                    arg_slid: self.get_func(arg_func, fv_slid),
-                    result_slid: self.get_func(result_func, fv_slid),
-                });
-            }
-        }
-        result
+        // Delegate to compiled query engine
+        self.query_instance_func_vals_compiled(instance_slid)
     }
 
     /// Query all relation tuples in an instance.
+    /// Delegates to the compiled query engine.
     pub fn query_instance_rel_tuples(&self, instance_slid: Slid) -> Vec<RelTupleInfo> {
-        let Some(rt_sort) = self.sort_ids.rel_tuple else {
-            return vec![];
-        };
-        let Some(instance_func) = self.func_ids.rel_tuple_instance else {
-            return vec![];
-        };
-        let Some(rel_func) = self.func_ids.rel_tuple_rel else {
-            return vec![];
-        };
-        let Some(arg_func) = self.func_ids.rel_tuple_arg else {
-            return vec![];
-        };
-
-        let mut result = Vec::new();
-        for rt_slid in self.elements_of_sort(rt_sort) {
-            if self.get_func(instance_func, rt_slid) == Some(instance_slid) {
-                result.push(RelTupleInfo {
-                    slid: rt_slid,
-                    rel_slid: self.get_func(rel_func, rt_slid),
-                    arg_slid: self.get_func(arg_func, rt_slid),
-                });
-            }
-        }
-        result
+        // Delegate to compiled query engine
+        self.query_instance_rel_tuples_compiled(instance_slid)
     }
 
     /// Reconstruct an instance (Structure + metadata) from persisted GeologMeta data.
