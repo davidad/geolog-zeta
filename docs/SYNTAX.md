@@ -278,3 +278,31 @@ formula := term '=' term | term ident | 'exists' qvars '.' formula | formula '\/
 path := ident ('/' ident)*
 ident := [a-zA-Z_][a-zA-Z0-9_]*
 ```
+
+## Example Files
+
+The `examples/geolog/` directory contains working examples:
+
+| File | Description |
+|------|-------------|
+| `graph.geolog` | Simple directed graph theory with vertices and edges |
+| `preorder.geolog` | Preorder (reflexive, transitive relation) with discrete/chain instances |
+| `transitive_closure.geolog` | **Demonstrates chase algorithm** - computes reachability |
+| `monoid.geolog` | Algebraic monoid theory with associativity axiom |
+| `petri_net.geolog` | Petri net formalization with places, transitions, marking |
+| `todo_list.geolog` | Task management example with dependencies |
+| `solver_demo.geolog` | Solver demonstration with reachability queries |
+| `relalg_simple.geolog` | Simple RelAlgIR query plan examples |
+
+### Running Examples
+
+```bash
+# Start REPL with an example
+cargo run -- examples/geolog/graph.geolog
+
+# Or load interactively
+cargo run
+:source examples/geolog/transitive_closure.geolog
+:inspect Chain
+:chase Chain   # Computes transitive closure!
+```
