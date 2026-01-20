@@ -363,21 +363,25 @@ impl Tactic for ForwardChainingTactic {
                     }
 
                     Formula::Eq(t1, t2) => {
-                        // Add equation to congruence closure
-                        // Evaluate both terms first, then add equation
+                        // Add equation to congruence closure if not already equal
+                        // Step 1: Evaluate both terms (immutable borrow)
                         let eq_slids = tree.get(node).and_then(|n| {
                             let lhs = eval_term_to_slid(t1, &assignment, &n.structure)?;
                             let rhs = eval_term_to_slid(t2, &assignment, &n.structure)?;
                             Some((lhs, rhs))
                         });
+                        // Step 2: Check CC and add equation (mutable borrow)
                         if let Some((lhs, rhs)) = eq_slids {
-                            tree.add_pending_equation(
-                                node,
-                                lhs,
-                                rhs,
-                                super::types::EquationReason::AxiomConsequent { axiom_idx },
-                            );
-                            steps += 1;
+                            let search_node = tree.get_mut(node).unwrap();
+                            // Skip if already equal in CC
+                            if !search_node.cc.are_equal(lhs, rhs) {
+                                search_node.cc.add_equation(
+                                    lhs,
+                                    rhs,
+                                    super::types::EquationReason::AxiomConsequent { axiom_idx },
+                                );
+                                steps += 1;
+                            }
                         }
                     }
 
@@ -519,12 +523,12 @@ impl Tactic for PropagateEquationsTactic {
                         let lhs_val = node.structure.get_function(func_id, lhs_sort_slid);
                         let rhs_val = node.structure.get_function(func_id, rhs_sort_slid);
 
-                        if let (Some(lv), Some(rv)) = (lhs_val, rhs_val) {
-                            if lv != rv {
-                                // Function conflict: f(a) = lv and f(b) = rv, but a = b
-                                // Add equation lv = rv
-                                conflicts.push((lv, rv));
-                            }
+                        if let (Some(lv), Some(rv)) = (lhs_val, rhs_val)
+                            && lv != rv
+                        {
+                            // Function conflict: f(a) = lv and f(b) = rv, but a = b
+                            // Add equation lv = rv
+                            conflicts.push((lv, rv));
                         }
                     }
                     conflicts
@@ -556,6 +560,104 @@ impl Tactic for PropagateEquationsTactic {
 
     fn name(&self) -> &str {
         "propagate_equations"
+    }
+}
+
+/// Automatic solving tactic: runs forward chaining and equation propagation to fixpoint.
+///
+/// This composite tactic:
+/// 1. Runs ForwardChainingTactic until no progress
+/// 2. Runs PropagateEquationsTactic until no progress
+/// 3. Repeats until fixpoint (no more progress from either)
+///
+/// This is the main "auto-solve" tactic for geometric logic.
+pub struct AutoTactic;
+
+impl Tactic for AutoTactic {
+    fn run(&mut self, tree: &mut SearchTree, node: NodeId, budget: &Budget) -> TacticResult {
+        let start = std::time::Instant::now();
+        let mut total_steps = 0;
+        let mut total_branches = 0;
+        let mut iterations = 0;
+
+        loop {
+            if start.elapsed().as_millis() as u64 > budget.time_ms {
+                return TacticResult::Timeout { steps_taken: total_steps };
+            }
+
+            iterations += 1;
+            let mut made_progress = false;
+
+            // Run forward chaining
+            let remaining_budget = Budget {
+                time_ms: budget.time_ms.saturating_sub(start.elapsed().as_millis() as u64),
+                steps: budget.steps.saturating_sub(total_steps),
+            };
+
+            match ForwardChainingTactic.run(tree, node, &remaining_budget) {
+                TacticResult::Progress { steps_taken, branches_created } => {
+                    total_steps += steps_taken;
+                    total_branches += branches_created;
+                    if steps_taken > 0 || branches_created > 0 {
+                        made_progress = true;
+                    }
+                }
+                TacticResult::Solved => return TacticResult::Solved,
+                TacticResult::Unsat(clause) => return TacticResult::Unsat(clause),
+                TacticResult::Timeout { steps_taken } => {
+                    total_steps += steps_taken;
+                    return TacticResult::Timeout { steps_taken: total_steps };
+                }
+                TacticResult::Error(e) => return TacticResult::Error(e),
+                TacticResult::HasObligations(_) => {
+                    // Has obligations but made no progress - continue to propagation
+                }
+            }
+
+            // Run equation propagation
+            let remaining_budget = Budget {
+                time_ms: budget.time_ms.saturating_sub(start.elapsed().as_millis() as u64),
+                steps: budget.steps.saturating_sub(total_steps),
+            };
+
+            match PropagateEquationsTactic.run(tree, node, &remaining_budget) {
+                TacticResult::Progress { steps_taken, .. } => {
+                    total_steps += steps_taken;
+                    if steps_taken > 0 {
+                        made_progress = true;
+                    }
+                }
+                TacticResult::Solved => return TacticResult::Solved,
+                TacticResult::Unsat(clause) => return TacticResult::Unsat(clause),
+                TacticResult::Timeout { steps_taken } => {
+                    total_steps += steps_taken;
+                    return TacticResult::Timeout { steps_taken: total_steps };
+                }
+                TacticResult::Error(e) => return TacticResult::Error(e),
+                TacticResult::HasObligations(_) => {
+                    // Has obligations but made no progress - continue to next iteration
+                }
+            }
+
+            // Check for fixpoint
+            if !made_progress {
+                break;
+            }
+
+            // Safety limit on iterations
+            if iterations > 1000 {
+                return TacticResult::Error("AutoTactic exceeded iteration limit".to_string());
+            }
+        }
+
+        TacticResult::Progress {
+            steps_taken: total_steps,
+            branches_created: total_branches,
+        }
+    }
+
+    fn name(&self) -> &str {
+        "auto"
     }
 }
 
@@ -926,5 +1028,59 @@ mod tests {
         // Check that a and b are now in the same equivalence class
         let node = tree.get_mut(0).unwrap();
         assert!(node.cc.are_equal(a, b), "a and b should be equal after propagation");
+    }
+
+    #[test]
+    fn test_auto_tactic() {
+        use crate::core::{Context, Formula, Sequent, Term};
+
+        // Create a theory where all elements are equal
+        let mut sig = Signature::new();
+        sig.add_sort("Node".to_string());
+
+        let ctx = Context::new()
+            .extend("x".to_string(), DerivedSort::Base(0))
+            .extend("y".to_string(), DerivedSort::Base(0));
+
+        let axiom = Sequent {
+            context: ctx,
+            premise: Formula::True,
+            conclusion: Formula::Eq(
+                Term::Var("x".to_string(), DerivedSort::Base(0)),
+                Term::Var("y".to_string(), DerivedSort::Base(0)),
+            ),
+        };
+
+        let theory = Rc::new(ElaboratedTheory {
+            params: vec![],
+            theory: Theory {
+                name: "AllEqual".to_string(),
+                signature: sig,
+                axioms: vec![axiom],
+            },
+        });
+
+        let mut tree = SearchTree::new(theory);
+
+        // Add three elements
+        let (a, _) = tree.add_element(0, 0).unwrap();
+        let (b, _) = tree.add_element(0, 0).unwrap();
+        let (c, _) = tree.add_element(0, 0).unwrap();
+
+        // Run AutoTactic - should do forward chaining + propagation to fixpoint
+        let result = AutoTactic.run(&mut tree, 0, &Budget::quick());
+
+        match result {
+            TacticResult::Progress { steps_taken, .. } => {
+                assert!(steps_taken > 0, "Should have made progress");
+            }
+            other => panic!("Expected Progress, got {:?}", other),
+        }
+
+        // All three should be in the same equivalence class
+        let node = tree.get_mut(0).unwrap();
+        assert!(node.cc.are_equal(a, b), "a and b should be equal");
+        assert!(node.cc.are_equal(b, c), "b and c should be equal");
+        assert!(node.cc.are_equal(a, c), "a and c should be equal (transitively)");
     }
 }
