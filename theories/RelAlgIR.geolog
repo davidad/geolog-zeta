@@ -441,4 +441,145 @@ theory RelAlgIR extends GeologMeta {
         ps ProdSchema/left = wl Wire/schema,
         ps ProdSchema/right = wr Wire/schema,
         wo Wire/schema = ps ProdSchema/schema;
+
+  // ============================================================
+  // ALGEBRAIC LAWS (for query optimization)
+  // ============================================================
+  // These axioms express equivalences between query plans.
+  // An optimizer uses these to transform plans into more efficient forms.
+  //
+  // Notation: We describe semantic equivalence between operators.
+  // In practice, equivalence means the output wire produces the same Z-set.
+  //
+  // These are stated as properties (Prop-valued relations) rather than
+  // equational axioms, since geolog's geometric logic doesn't have
+  // built-in equality on terms. The optimizer interprets these as rewrite rules.
+
+  // Wire equivalence: two wires produce the same Z-set
+  equiv : [a: Wire, b: Wire] -> Prop;
+
+  // Reflexivity
+  ax/equiv/refl : forall w : Wire.
+    |- [a: w, b: w] equiv;
+
+  // Symmetry
+  ax/equiv/sym : forall w1 : Wire, w2 : Wire.
+    [a: w1, b: w2] equiv |- [a: w2, b: w1] equiv;
+
+  // Transitivity
+  ax/equiv/trans : forall w1 : Wire, w2 : Wire, w3 : Wire.
+    [a: w1, b: w2] equiv, [a: w2, b: w3] equiv |- [a: w1, b: w3] equiv;
+
+  // ------------------------------------------------------------
+  // Filter Laws
+  // ------------------------------------------------------------
+
+  // Filter(True, x) ≡ x
+  ax/filter_true : forall f : FilterOp, t : TruePred, wi : Wire, wo : Wire.
+    f FilterOp/pred = t TruePred/pred, f FilterOp/in = wi, f FilterOp/out = wo |-
+      [a: wo, b: wi] equiv;
+
+  // Filter(False, x) ≡ Empty
+  // (Every tuple is filtered out, result is empty)
+  // This would need EmptyOp with matching schema; omitted for simplicity.
+
+  // Filter-Filter Fusion: Filter(p, Filter(q, x)) ≡ Filter(p ∧ q, x)
+  // Expressed as: If f2.in = f1.out, then there exists a fused filter.
+  ax/filter_fusion : forall f1 : FilterOp, f2 : FilterOp,
+                           p1 : Pred, p2 : Pred,
+                           wi : Wire, wm : Wire, wo : Wire.
+    f1 FilterOp/in = wi, f1 FilterOp/out = wm, f1 FilterOp/pred = p1,
+    f2 FilterOp/in = wm, f2 FilterOp/out = wo, f2 FilterOp/pred = p2 |-
+      exists f3 : FilterOp, pa : AndPred.
+        pa AndPred/left = p1, pa AndPred/right = p2,
+        f3 FilterOp/in = wi, f3 FilterOp/pred = pa AndPred/pred,
+        [a: wo, b: f3 FilterOp/out] equiv;
+
+  // ------------------------------------------------------------
+  // Distinct Laws
+  // ------------------------------------------------------------
+
+  // Distinct is idempotent: Distinct(Distinct(x)) ≡ Distinct(x)
+  ax/distinct_idem : forall d1 : DistinctOp, d2 : DistinctOp,
+                           wi : Wire, wm : Wire, wo : Wire.
+    d1 DistinctOp/in = wi, d1 DistinctOp/out = wm,
+    d2 DistinctOp/in = wm, d2 DistinctOp/out = wo |-
+      [a: wo, b: wm] equiv;
+
+  // ------------------------------------------------------------
+  // Union Laws
+  // ------------------------------------------------------------
+
+  // Union is commutative: Union(x, y) ≡ Union(y, x)
+  ax/union_comm : forall u1 : UnionOp, wl : Wire, wr : Wire, wo : Wire.
+    u1 UnionOp/left_in = wl, u1 UnionOp/right_in = wr, u1 UnionOp/out = wo |-
+      exists u2 : UnionOp.
+        u2 UnionOp/left_in = wr, u2 UnionOp/right_in = wl,
+        [a: wo, b: u2 UnionOp/out] equiv;
+
+  // Union is associative: Union(x, Union(y, z)) ≡ Union(Union(x, y), z)
+  ax/union_assoc : forall u1 : UnionOp, u2 : UnionOp,
+                         wa : Wire, wb : Wire, wc : Wire, wyz : Wire, wo : Wire.
+    u2 UnionOp/left_in = wb, u2 UnionOp/right_in = wc, u2 UnionOp/out = wyz,
+    u1 UnionOp/left_in = wa, u1 UnionOp/right_in = wyz, u1 UnionOp/out = wo |-
+      exists u3 : UnionOp, u4 : UnionOp, wab : Wire.
+        u3 UnionOp/left_in = wa, u3 UnionOp/right_in = wb, u3 UnionOp/out = wab,
+        u4 UnionOp/left_in = wab, u4 UnionOp/right_in = wc,
+        [a: wo, b: u4 UnionOp/out] equiv;
+
+  // Union with Empty: Union(x, Empty) ≡ x
+  ax/union_empty_right : forall u : UnionOp, e : EmptyOp, wi : Wire, we : Wire, wo : Wire.
+    e EmptyOp/out = we, u UnionOp/left_in = wi, u UnionOp/right_in = we, u UnionOp/out = wo |-
+      [a: wo, b: wi] equiv;
+
+  ax/union_empty_left : forall u : UnionOp, e : EmptyOp, wi : Wire, we : Wire, wo : Wire.
+    e EmptyOp/out = we, u UnionOp/left_in = we, u UnionOp/right_in = wi, u UnionOp/out = wo |-
+      [a: wo, b: wi] equiv;
+
+  // ------------------------------------------------------------
+  // Negate Laws
+  // ------------------------------------------------------------
+
+  // Double negation: Negate(Negate(x)) ≡ x
+  ax/negate_involution : forall n1 : NegateOp, n2 : NegateOp,
+                              wi : Wire, wm : Wire, wo : Wire.
+    n1 NegateOp/in = wi, n1 NegateOp/out = wm,
+    n2 NegateOp/in = wm, n2 NegateOp/out = wo |-
+      [a: wo, b: wi] equiv;
+
+  // ------------------------------------------------------------
+  // Join Laws
+  // ------------------------------------------------------------
+
+  // Cross join is commutative (up to column reordering)
+  // Note: The output schemas differ, so this needs a projection to swap columns.
+  // Omitted for now as it requires more complex schema manipulation.
+
+  // Join with Empty: Join(x, Empty) ≡ Empty
+  ax/join_empty_right : forall j : JoinOp, e : EmptyOp, wi : Wire, we : Wire, wo : Wire.
+    e EmptyOp/out = we, j JoinOp/left_in = wi, j JoinOp/right_in = we, j JoinOp/out = wo |-
+      exists e2 : EmptyOp. [a: wo, b: e2 EmptyOp/out] equiv;
+
+  ax/join_empty_left : forall j : JoinOp, e : EmptyOp, wi : Wire, we : Wire, wo : Wire.
+    e EmptyOp/out = we, j JoinOp/left_in = we, j JoinOp/right_in = wi, j JoinOp/out = wo |-
+      exists e2 : EmptyOp. [a: wo, b: e2 EmptyOp/out] equiv;
+
+  // ------------------------------------------------------------
+  // DBSP Laws
+  // ------------------------------------------------------------
+
+  // Differentiation is inverse of integration (for streams of changes)
+  // Diff(Integrate(x)) ≡ x (for Δ-streams)
+  // Integrate(Diff(x)) ≡ x - x₀ (up to initial value)
+  // These are more subtle and depend on stream semantics; omitted for now.
+
+  // Delay respects Union: z⁻¹(x ∪ y) ≡ z⁻¹(x) ∪ z⁻¹(y)
+  ax/delay_union : forall u : UnionOp, d : DelayOp,
+                         wl : Wire, wr : Wire, wu : Wire, wo : Wire.
+    u UnionOp/left_in = wl, u UnionOp/right_in = wr, u UnionOp/out = wu,
+    d DelayOp/in = wu, d DelayOp/out = wo |-
+      exists dl : DelayOp, dr : DelayOp, u2 : UnionOp.
+        dl DelayOp/in = wl, dr DelayOp/in = wr,
+        u2 UnionOp/left_in = dl DelayOp/out, u2 UnionOp/right_in = dr DelayOp/out,
+        [a: wo, b: u2 UnionOp/out] equiv;
 }
