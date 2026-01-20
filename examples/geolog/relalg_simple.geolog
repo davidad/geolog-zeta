@@ -53,7 +53,8 @@ instance ScanV : RelAlgIR = {
 //
 // This demonstrates composition via wire sharing.
 
-instance FilterScan : RelAlgIR = {
+// Uses chase to derive relations.
+instance FilterScan : RelAlgIR = chase {
   // -- Schema (representing Graph theory) --
   target_theory : GeologMeta/Theory;
   target_theory GeologMeta/Theory/parent = target_theory;

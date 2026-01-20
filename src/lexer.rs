@@ -19,6 +19,7 @@ pub enum Token {
     Exists,
     True,
     False,
+    Chase,
 
     // Identifiers
     Ident(String),
@@ -55,6 +56,7 @@ impl std::fmt::Display for Token {
             Token::Exists => write!(f, "exists"),
             Token::True => write!(f, "true"),
             Token::False => write!(f, "false"),
+            Token::Chase => write!(f, "chase"),
             Token::Ident(s) => write!(f, "{}", s),
             Token::LBrace => write!(f, "{{"),
             Token::RBrace => write!(f, "}}"),
@@ -92,6 +94,7 @@ pub fn lexer() -> impl Parser<char, Vec<(Token, Span)>, Error = Simple<char>> {
         "exists" => Token::Exists,
         "true" => Token::True,
         "false" => Token::False,
+        "chase" => Token::Chase,
         _ => Token::Ident(s),
     });
 

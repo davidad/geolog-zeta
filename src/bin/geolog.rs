@@ -196,39 +196,43 @@ fn handle_command(state: &mut ReplState, cmd: MetaCommand) -> bool {
 /// Handle geolog source input
 fn handle_geolog(state: &mut ReplState, source: &str) {
     match state.execute_geolog(source) {
-        Ok(result) => match result {
-            ExecuteResult::Namespace(name) => {
-                println!("Namespace: {}", name);
-            }
-            ExecuteResult::Theory {
-                name,
-                num_sorts,
-                num_functions,
-                num_relations,
-            } => {
-                let mut parts = vec![format!("{} sorts", num_sorts)];
-                if num_functions > 0 {
-                    parts.push(format!("{} functions", num_functions));
+        Ok(results) => {
+            for result in results {
+                match result {
+                    ExecuteResult::Namespace(name) => {
+                        println!("Namespace: {}", name);
+                    }
+                    ExecuteResult::Theory {
+                        name,
+                        num_sorts,
+                        num_functions,
+                        num_relations,
+                    } => {
+                        let mut parts = vec![format!("{} sorts", num_sorts)];
+                        if num_functions > 0 {
+                            parts.push(format!("{} functions", num_functions));
+                        }
+                        if num_relations > 0 {
+                            parts.push(format!("{} relations", num_relations));
+                        }
+                        println!("Defined theory {} ({})", name, parts.join(", "));
+                    }
+                    ExecuteResult::Instance {
+                        name,
+                        theory_name,
+                        num_elements,
+                    } => {
+                        println!(
+                            "Defined instance {} : {} ({} elements)",
+                            name, theory_name, num_elements
+                        );
+                    }
+                    ExecuteResult::Query(result) => {
+                        handle_query_result(state, result);
+                    }
                 }
-                if num_relations > 0 {
-                    parts.push(format!("{} relations", num_relations));
-                }
-                println!("Defined theory {} ({})", name, parts.join(", "));
             }
-            ExecuteResult::Instance {
-                name,
-                theory_name,
-                num_elements,
-            } => {
-                println!(
-                    "Defined instance {} : {} ({} elements)",
-                    name, theory_name, num_elements
-                );
-            }
-            ExecuteResult::Query(result) => {
-                handle_query_result(state, result);
-            }
-        },
+        }
         Err(e) => {
             eprintln!("Error: {}", e);
         }

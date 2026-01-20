@@ -216,12 +216,16 @@ pub enum Formula {
 }
 
 /// An instance declaration
-/// e.g., `PetriNet instance ExampleNet { ... }`
+/// e.g., `instance ExampleNet : PetriNet = { ... }`
+/// or `instance ExampleNet : PetriNet = chase { ... }` for chase-before-check
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct InstanceDecl {
     pub theory: TypeExpr,
     pub name: String,
     pub body: Vec<Spanned<InstanceItem>>,
+    /// If true, run chase algorithm after elaboration before checking axioms.
+    /// Syntax: `instance Name : Theory = chase { ... }`
+    pub needs_chase: bool,
 }
 
 /// Items in an instance body

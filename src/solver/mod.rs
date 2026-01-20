@@ -154,39 +154,49 @@ pub fn enumerate_models(
     // Create search tree from base
     let mut tree = SearchTree::from_base(theory.clone(), base, universe);
 
-    // Initialize function and relation storage at root
-    let domain_sort_ids: Vec<Option<usize>> = sig
-        .functions
-        .iter()
-        .map(|f| match &f.domain {
-            DerivedSort::Base(sid) => Some(*sid),
-            DerivedSort::Product(_) => None,
-        })
-        .collect();
+    // Initialize function and relation storage at root (if not already initialized)
+    // This preserves any function values that were imported from param instances.
+    let num_funcs = sig.functions.len();
+    let num_rels = sig.relations.len();
 
-    if tree.init_functions(0, &domain_sort_ids).is_err() {
-        return EnumerationResult::Incomplete {
-            partial: tree.nodes[0].structure.clone(),
-            time_ms: start.elapsed().as_secs_f64() * 1000.0,
-            reason: "Failed to initialize function storage".to_string(),
-        };
+    // Only init functions if not already initialized (or wrong size)
+    if tree.nodes[0].structure.functions.len() != num_funcs {
+        let domain_sort_ids: Vec<Option<usize>> = sig
+            .functions
+            .iter()
+            .map(|f| match &f.domain {
+                DerivedSort::Base(sid) => Some(*sid),
+                DerivedSort::Product(_) => None,
+            })
+            .collect();
+
+        if tree.init_functions(0, &domain_sort_ids).is_err() {
+            return EnumerationResult::Incomplete {
+                partial: tree.nodes[0].structure.clone(),
+                time_ms: start.elapsed().as_secs_f64() * 1000.0,
+                reason: "Failed to initialize function storage".to_string(),
+            };
+        }
     }
 
-    let arities: Vec<usize> = sig
-        .relations
-        .iter()
-        .map(|r| match &r.domain {
-            DerivedSort::Base(_) => 1,
-            DerivedSort::Product(fields) => fields.len(),
-        })
-        .collect();
+    // Only init relations if not already initialized (or wrong size)
+    if tree.nodes[0].structure.relations.len() != num_rels {
+        let arities: Vec<usize> = sig
+            .relations
+            .iter()
+            .map(|r| match &r.domain {
+                DerivedSort::Base(_) => 1,
+                DerivedSort::Product(fields) => fields.len(),
+            })
+            .collect();
 
-    if tree.init_relations(0, &arities).is_err() {
-        return EnumerationResult::Incomplete {
-            partial: tree.nodes[0].structure.clone(),
-            time_ms: start.elapsed().as_secs_f64() * 1000.0,
-            reason: "Failed to initialize relation storage".to_string(),
-        };
+        if tree.init_relations(0, &arities).is_err() {
+            return EnumerationResult::Incomplete {
+                partial: tree.nodes[0].structure.clone(),
+                time_ms: start.elapsed().as_secs_f64() * 1000.0,
+                reason: "Failed to initialize relation storage".to_string(),
+            };
+        }
     }
 
     // Run AutoTactic

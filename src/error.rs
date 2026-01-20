@@ -158,6 +158,7 @@ fn format_token(token: &Token) -> String {
         Token::Turnstile => "|-".to_string(),
         Token::Or => r"\/".to_string(),
         Token::Question => "?".to_string(),
+        Token::Chase => "chase".to_string(),
     }
 }
 

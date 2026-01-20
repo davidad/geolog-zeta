@@ -183,8 +183,10 @@ impl ReplState {
         }
     }
 
-    /// Execute geolog source code (theory or instance definition)
-    pub fn execute_geolog(&mut self, source: &str) -> Result<ExecuteResult, String> {
+    /// Execute geolog source code (theory or instance definitions)
+    ///
+    /// Returns a list of results, one for each declaration processed.
+    pub fn execute_geolog(&mut self, source: &str) -> Result<Vec<ExecuteResult>, String> {
         // Parse the input
         let file = crate::parse(source).map_err(|e| format!("Parse error: {}", e))?;
 
@@ -318,11 +320,12 @@ impl ReplState {
             }
         }
 
-        // Return first result (usually there's just one)
-        results
-            .into_iter()
-            .next()
-            .ok_or_else(|| "No declarations found".to_string())
+        // Return all results
+        if results.is_empty() {
+            Err("No declarations found".to_string())
+        } else {
+            Ok(results)
+        }
     }
 
     /// Internal instance elaboration that works with our transitional state
@@ -492,6 +495,8 @@ impl ReplState {
 
         // Track imported UUIDs to avoid duplicates across params
         let mut imported_uuids = std::collections::HashSet::new();
+        // Track Luid -> new Slid mapping for importing function values later
+        let mut luid_to_new_slid: std::collections::HashMap<crate::id::Luid, Slid> = std::collections::HashMap::new();
 
         // Import elements from each param instance
         for (param_name, instance_name) in &resolved.arguments {
@@ -535,7 +540,8 @@ impl ReplState {
 
                 // Register in our new universe and add element
                 let new_luid = universe.intern(uuid);
-                let _local_slid = structure.add_element_with_luid(new_luid, local_sort_id);
+                let local_slid = structure.add_element_with_luid(new_luid, local_sort_id);
+                luid_to_new_slid.insert(luid, local_slid);
             }
 
             // Import elements from nested structures (e.g., initial_marking, target_marking in ReachabilityProblem)
@@ -563,7 +569,8 @@ impl ReplState {
                             if !imported_uuids.contains(&uuid) {
                                 imported_uuids.insert(uuid);
                                 let new_luid = universe.intern(uuid);
-                                let _local_slid = structure.add_element_with_luid(new_luid, local_sort_id);
+                                let local_slid = structure.add_element_with_luid(new_luid, local_sort_id);
+                                luid_to_new_slid.insert(luid, local_slid);
                             }
                         }
                     }
@@ -590,9 +597,48 @@ impl ReplState {
             .collect();
         structure.init_functions_full(&domains);
 
-        // Note: Function values from param instances will be handled by the solver
-        // through constraint propagation. The solver will need to find consistent
-        // function assignments.
+        // Import function values from param instances
+        for (param_name, instance_name) in &resolved.arguments {
+            let param_entry = self.instances.get(instance_name).unwrap();
+            let param_theory = self.theories.get(&param_entry.theory_name).unwrap();
+            let param_sig = &param_theory.theory.signature;
+
+            // For each function in the param theory
+            for (param_func_id, param_func) in param_sig.functions.iter().enumerate() {
+                // Find the corresponding function in the target theory
+                // It should be named "{param_name}/{func_name}"
+                let target_func_name = format!("{}/{}", param_name, param_func.name);
+                let target_func_id = sig.functions.iter().position(|f| f.name == target_func_name);
+
+                if let Some(target_func_id) = target_func_id {
+                    // Copy function values
+                    // Iterate over all elements in the domain of the param function
+                    if let DerivedSort::Base(domain_sort) = &param_func.domain {
+                        // Get all elements of the domain sort in the param instance
+                        for (idx, &sort_id) in param_entry.structure.sorts.iter().enumerate() {
+                            if sort_id == *domain_sort {
+                                let domain_slid = Slid::from_usize(idx);
+                                let domain_sort_slid = param_entry.structure.sort_local_id(domain_slid);
+
+                                // Get the function value in the param instance
+                                if let Some(codomain_slid) = param_entry.structure.get_function(param_func_id, domain_sort_slid) {
+                                    // Map both domain and codomain to new Slids
+                                    let domain_luid = param_entry.structure.get_luid(domain_slid);
+                                    let codomain_luid = param_entry.structure.get_luid(codomain_slid);
+
+                                    if let (Some(&new_domain_slid), Some(&new_codomain_slid)) =
+                                        (luid_to_new_slid.get(&domain_luid), luid_to_new_slid.get(&codomain_luid))
+                                    {
+                                        // Define the function value in the new structure
+                                        let _ = structure.define_function(target_func_id, new_domain_slid, new_codomain_slid);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
 
         Ok((structure, universe))
     }

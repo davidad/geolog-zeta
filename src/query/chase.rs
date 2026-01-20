@@ -818,4 +818,24 @@ pub fn compile_theory_axioms(theory: &ElaboratedTheory) -> Result<Vec<ChaseRule>
     Ok(rules)
 }
 
+/// Compile theory axioms, skipping axioms that can't be compiled.
+///
+/// This is a lenient version of [`compile_theory_axioms`] that returns
+/// all successfully compiled rules instead of failing on the first error.
+/// Useful for theories with complex axioms where some can be chased
+/// and others need different handling.
+pub fn compile_theory_axioms_lenient(theory: &ElaboratedTheory) -> Vec<ChaseRule> {
+    let mut rules = Vec::new();
+
+    for (idx, axiom) in theory.theory.axioms.iter().enumerate() {
+        let name = format!("axiom_{}", idx);
+        if let Ok(rule) = compile_axiom(axiom, &theory.theory.signature, name) {
+            rules.push(rule);
+        }
+        // Silently skip axioms that can't be compiled
+    }
+
+    rules
+}
+
 // Tests are in tests/unit_chase.rs

@@ -76,7 +76,8 @@ theory PlaceReachability {
 //    +---[ab]------+
 // ============================================================
 
-instance SimpleNet : PlaceReachability = {
+// Uses chase to derive CanReach from axioms (reflexivity, fire, transitivity)
+instance SimpleNet : PlaceReachability = chase {
   // Places
   A : P;
   B : P;
@@ -104,7 +105,8 @@ instance SimpleNet : PlaceReachability = {
 //   idle2 --[enter2]--> crit2 --[exit2]--> idle2
 // ============================================================
 
-instance MutexNet : PlaceReachability = {
+// Uses chase to derive reachability relation
+instance MutexNet : PlaceReachability = chase {
   // Places
   idle1 : P;
   crit1 : P;
@@ -143,7 +145,8 @@ instance MutexNet : PlaceReachability = {
 //   ready --[produce]--> buffer --[consume]--> done
 // ============================================================
 
-instance ProducerConsumerNet : PlaceReachability = {
+// Uses chase to derive reachability relation
+instance ProducerConsumerNet : PlaceReachability = chase {
   // Places
   ready : P;
   buffer : P;

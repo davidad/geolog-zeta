@@ -42,6 +42,14 @@ pub enum ElabError {
         expected_sort: String,
         actual_sort: String,
     },
+    /// Axiom violation during instance checking
+    AxiomViolation {
+        axiom_index: usize,
+        axiom_name: Option<String>,
+        num_violations: usize,
+    },
+    /// Chase algorithm failed (e.g., didn't converge)
+    ChaseFailed(String),
 }
 
 impl std::fmt::Display for ElabError {
@@ -98,6 +106,26 @@ impl std::fmt::Display for ElabError {
                     element_name, actual_sort, func_name, expected_sort
                 )
             }
+            ElabError::AxiomViolation {
+                axiom_index,
+                axiom_name,
+                num_violations,
+            } => {
+                if let Some(name) = axiom_name {
+                    write!(
+                        f,
+                        "axiom '{}' (#{}) violated: {} counterexample(s) found",
+                        name, axiom_index, num_violations
+                    )
+                } else {
+                    write!(
+                        f,
+                        "axiom #{} violated: {} counterexample(s) found",
+                        axiom_index, num_violations
+                    )
+                }
+            }
+            ElabError::ChaseFailed(msg) => write!(f, "chase failed: {}", msg),
         }
     }
 }

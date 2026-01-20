@@ -6,6 +6,8 @@ use std::rc::Rc;
 use crate::ast;
 use crate::core::*;
 use crate::id::{NumericId, Slid};
+use crate::query::chase::{chase_fixpoint, compile_theory_axioms_lenient};
+use crate::tensor::check_theory_axioms;
 use crate::universe::Universe;
 
 use super::env::Env;
@@ -97,7 +99,8 @@ pub fn elaborate_instance_ctx(
     ctx: &mut ElaborationContext<'_>,
     instance: &ast::InstanceDecl,
 ) -> ElabResult<InstanceElaborationResult> {
-    elaborate_instance_ctx_inner(ctx, instance, false)
+    // If needs_chase is set, we skip totality (chase will fill in missing values)
+    elaborate_instance_ctx_inner(ctx, instance, instance.needs_chase)
 }
 
 /// Elaborate an instance without validating totality.
@@ -589,6 +592,7 @@ fn elaborate_instance_ctx_inner(
                 theory: parse_type_expr_from_string(&resolved_theory_type)?,
                 name: format!("{}_{}", instance.name, field_name),
                 body: nested_decl.body.clone(),
+                needs_chase: false, // Nested instances don't separately chase
             };
 
             // 5. Recursively elaborate the nested instance
@@ -606,6 +610,33 @@ fn elaborate_instance_ctx_inner(
     // Skip this check when creating instances for chase (which will fill in missing values)
     if !skip_totality {
         validate_totality(&structure, &theory.theory.signature, &slid_to_name)?;
+    }
+
+    // 7. Run chase if requested (fills in missing values according to axioms)
+    if instance.needs_chase {
+        // Use lenient compilation: skip axioms that can't be compiled
+        // (e.g., those with complex term applications in premises)
+        let chase_rules = compile_theory_axioms_lenient(theory.as_ref());
+
+        if !chase_rules.is_empty() {
+            const MAX_CHASE_ITERATIONS: usize = 1000;
+            chase_fixpoint(&chase_rules, &mut structure, ctx.universe, &theory.theory.signature, MAX_CHASE_ITERATIONS)
+                .map_err(|e| ElabError::ChaseFailed(e.to_string()))?;
+        }
+    }
+
+    // 8. Check axioms - all instances must satisfy the theory's axioms
+    let axioms: Vec<_> = theory.theory.axioms.clone();
+    let violations = check_theory_axioms(&axioms, &structure, &theory.theory.signature);
+
+    if !violations.is_empty() {
+        // Report the first violation (could be extended to report all)
+        let (axiom_idx, violation_list) = &violations[0];
+        return Err(ElabError::AxiomViolation {
+            axiom_index: *axiom_idx,
+            axiom_name: Some(format!("axiom_{}", axiom_idx)),
+            num_violations: violation_list.len(),
+        });
     }
 
     Ok(InstanceElaborationResult {

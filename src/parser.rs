@@ -456,6 +456,7 @@ fn instance_item() -> impl Parser<Token, InstanceItem, Error = Simple<Token>> + 
                         theory: TypeExpr::Path(Path::single("_inferred".to_string())),
                         name: String::new(),
                         body,
+                        needs_chase: false,
                     },
                 )
             });
@@ -525,19 +526,26 @@ fn type_expr_no_instance() -> impl Parser<Token, TypeExpr, Error = Simple<Token>
 }
 
 fn instance_decl() -> impl Parser<Token, InstanceDecl, Error = Simple<Token>> + Clone {
-    // New syntax: instance Name : Type = { ... }
+    // Syntax: instance Name : Type = { ... }
+    //     or: instance Name : Type = chase { ... }
     just(Token::Instance)
         .ignore_then(ident())
         .then_ignore(just(Token::Colon))
         .then(type_expr_no_instance())
         .then_ignore(just(Token::Eq))
+        .then(just(Token::Chase).or_not())
         .then(
             instance_item()
                 .map_with_span(|item, span| Spanned::new(item, to_span(span)))
                 .repeated()
                 .delimited_by(just(Token::LBrace), just(Token::RBrace)),
         )
-        .map(|((name, theory), body)| InstanceDecl { theory, name, body })
+        .map(|(((name, theory), needs_chase), body)| InstanceDecl {
+            theory,
+            name,
+            body,
+            needs_chase: needs_chase.is_some(),
+        })
 }
 
 fn query_decl() -> impl Parser<Token, QueryDecl, Error = Simple<Token>> + Clone {

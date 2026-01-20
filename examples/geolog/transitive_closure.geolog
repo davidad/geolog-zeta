@@ -36,7 +36,8 @@ theory Graph {
 }
 
 // A linear chain: a -> b -> c -> d
-instance Chain : Graph = {
+// Chase derives Path tuples from Edge via ax/base and ax/trans.
+instance Chain : Graph = chase {
   a : V;
   b : V;
   c : V;
@@ -49,7 +50,8 @@ instance Chain : Graph = {
 }
 
 // A diamond: a -> b, a -> c, b -> d, c -> d
-instance Diamond : Graph = {
+// Chase derives all reachable paths.
+instance Diamond : Graph = chase {
   top : V;
   left : V;
   right : V;
@@ -63,7 +65,8 @@ instance Diamond : Graph = {
 }
 
 // A cycle: a -> b -> c -> a
-instance Cycle : Graph = {
+// Chase derives all reachable paths (full connectivity).
+instance Cycle : Graph = chase {
   x : V;
   y : V;
   z : V;
