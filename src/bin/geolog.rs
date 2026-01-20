@@ -462,50 +462,87 @@ fn handle_add(state: &mut ReplState, instance_name: &str, element_name: &str, so
 
 /// Handle :assert command
 fn handle_assert(state: &mut ReplState, instance_name: &str, relation_name: &str, args: &[String]) {
-    // Look up the instance
-    let Some((instance_slid, _)) = state.store.resolve_name(instance_name) else {
-        eprintln!("Instance '{}' not found", instance_name);
-        return;
+    use geolog::core::RelationStorage;
+
+    // Get the instance entry
+    let entry = match state.instances.get_mut(instance_name) {
+        Some(e) => e,
+        None => {
+            eprintln!("Instance '{}' not found", instance_name);
+            return;
+        }
     };
 
-    // Look up the relation
-    let Some((relation_slid, _)) = state.store.resolve_name(relation_name) else {
-        eprintln!(
-            "Relation '{}' not found. Note: Full relation lookup requires querying the theory.",
-            relation_name
-        );
-        return;
+    // Get the theory to look up the relation
+    let theory = match state.theories.get(&entry.theory_name) {
+        Some(t) => t.clone(),
+        None => {
+            eprintln!("Theory '{}' not found", entry.theory_name);
+            return;
+        }
     };
 
-    // For now, we only support single-argument relations
-    // Full implementation would handle products via Tuple elements
-    if args.len() != 1 {
-        eprintln!(
-            "Currently only single-argument relations are supported via :assert."
-        );
-        eprintln!(
-            "Multi-argument relations require Tuple element construction (pending geolog-7tt)."
-        );
-        return;
-    }
-
-    let arg_name = &args[0];
-    let Some((arg_slid, _)) = state.store.resolve_name(arg_name) else {
-        eprintln!("Element '{}' not found", arg_name);
-        return;
-    };
-
-    match state.store.add_rel_tuple(instance_slid, relation_slid, arg_slid) {
-        Ok(tuple_slid) => {
-            println!(
-                "Asserted {}({}) in instance '{}' (tuple #{})",
-                relation_name, arg_name, instance_name, tuple_slid
+    // Find the relation by name
+    let sig = &theory.theory.signature;
+    let rel_id = match sig.relations.iter().position(|r| r.name == relation_name) {
+        Some(id) => id,
+        None => {
+            eprintln!(
+                "Relation '{}' not found in theory '{}'",
+                relation_name, entry.theory_name
             );
+            eprintln!("Available relations: {:?}", sig.relations.iter().map(|r| &r.name).collect::<Vec<_>>());
+            return;
         }
-        Err(e) => {
-            eprintln!("Failed to assert relation: {}", e);
+    };
+
+    let rel = &sig.relations[rel_id];
+
+    // Resolve argument elements by name from the instance's element_names map
+    let mut arg_slids = Vec::new();
+    for arg_name in args {
+        if let Some(slid) = entry.element_names.get(arg_name) {
+            arg_slids.push(*slid);
+        } else {
+            eprintln!("Element '{}' not found in instance '{}'", arg_name, instance_name);
+            eprintln!("Available elements: {:?}", entry.element_names.keys().collect::<Vec<_>>());
+            return;
         }
     }
+
+    // Check arity matches (for product domains, flatten the field count)
+    let expected_arity = match &rel.domain {
+        geolog::core::DerivedSort::Base(_) => 1,
+        geolog::core::DerivedSort::Product(fields) => fields.len(),
+    };
+
+    if arg_slids.len() != expected_arity {
+        eprintln!(
+            "Relation '{}' expects {} argument(s), got {}",
+            relation_name, expected_arity, arg_slids.len()
+        );
+        return;
+    }
+
+    // Add the tuple to the relation
+    if entry.structure.relations.len() <= rel_id {
+        eprintln!("Relation storage not initialized for relation {}", rel_id);
+        return;
+    }
+
+    let already_present = entry.structure.relations[rel_id].contains(&arg_slids);
+    if already_present {
+        println!("Tuple already present in relation '{}'", relation_name);
+        return;
+    }
+
+    entry.structure.relations[rel_id].insert(arg_slids.clone());
+
+    let arg_names: Vec<_> = args.iter().cloned().collect();
+    println!(
+        "Asserted {}({}) in instance '{}'",
+        relation_name, arg_names.join(", "), instance_name
+    );
 }
 
 /// Handle :retract command
