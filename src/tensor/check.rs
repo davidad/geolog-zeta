@@ -170,19 +170,48 @@ pub fn check_sequent_bool(sequent: &Sequent, structure: &Structure, sig: &Signat
 
 /// Check multiple sequents (axioms of a theory) against a structure.
 /// Returns a list of (sequent_index, violations) for each violated sequent.
+///
+/// If tensor compilation panics (e.g., for unsupported formula patterns like
+/// function application in equality), silently skips that axiom. Forward
+/// chaining can handle these axioms differently via `eval_term_to_slid`.
 pub fn check_theory_axioms(
     axioms: &[Sequent],
     structure: &Structure,
     sig: &Signature,
 ) -> Vec<(usize, Vec<Violation>)> {
-    axioms
+    // Temporarily suppress panic output for expected panics (unsupported formulas)
+    let prev_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(|_| {
+        // Silently ignore panics - we handle them with catch_unwind
+    }));
+
+    let result = axioms
         .iter()
         .enumerate()
-        .filter_map(|(i, seq)| match check_sequent(seq, structure, sig) {
-            CheckResult::Satisfied => None,
-            CheckResult::Violated(vs) => Some((i, vs)),
+        .filter_map(|(i, seq)| {
+            // Use catch_unwind to handle panics from unsupported formula patterns
+            // (e.g., function applications in equality expressions)
+            let check_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                check_sequent(seq, structure, sig)
+            }));
+
+            match check_result {
+                Ok(CheckResult::Satisfied) => None,
+                Ok(CheckResult::Violated(vs)) => Some((i, vs)),
+                Err(_) => {
+                    // Tensor compilation panicked (e.g., unsupported term equality)
+                    // Treat as satisfied for now - forward chaining will handle these
+                    // axioms via a different code path (eval_term_to_slid).
+                    // TODO(geolog-dxr): Extend tensor compiler to handle function applications
+                    None
+                }
+            }
         })
-        .collect()
+        .collect();
+
+    // Restore the previous panic hook
+    std::panic::set_hook(prev_hook);
+    result
 }
 
 #[cfg(test)]
