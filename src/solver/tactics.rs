@@ -350,9 +350,11 @@ impl Tactic for ForwardChainingTactic {
 
                     Formula::Rel(rel_id, term) => {
                         // Assert the relation tuple
-                        // We need to evaluate the term with the variable assignment
-                        // For now, handle simple cases (Var terms)
-                        if let Some(tuple) = eval_term_to_tuple(term, &assignment) {
+                        // Evaluate term first, then mutate tree
+                        let tuple = tree.get(node).and_then(|n| {
+                            eval_term_to_tuple(term, &assignment, &n.structure)
+                        });
+                        if let Some(tuple) = tuple {
                             if let Err(e) = tree.assert_relation(node, *rel_id, tuple) {
                                 return TacticResult::Error(format!("Failed to assert relation: {}", e));
                             }
@@ -360,12 +362,23 @@ impl Tactic for ForwardChainingTactic {
                         }
                     }
 
-                    Formula::Eq(_t1, _t2) => {
+                    Formula::Eq(t1, t2) => {
                         // Add equation to congruence closure
-                        // For now, we need term evaluation which is more complex
-                        // Just note that this needs work
-                        // TODO: Implement equation handling via CC
-                        steps += 1; // Count as progress even if not fully implemented
+                        // Evaluate both terms first, then add equation
+                        let eq_slids = tree.get(node).and_then(|n| {
+                            let lhs = eval_term_to_slid(t1, &assignment, &n.structure)?;
+                            let rhs = eval_term_to_slid(t2, &assignment, &n.structure)?;
+                            Some((lhs, rhs))
+                        });
+                        if let Some((lhs, rhs)) = eq_slids {
+                            tree.add_pending_equation(
+                                node,
+                                lhs,
+                                rhs,
+                                super::types::EquationReason::AxiomConsequent { axiom_idx },
+                            );
+                            steps += 1;
+                        }
                     }
 
                     Formula::Disj(disjuncts) if !disjuncts.is_empty() => {
@@ -438,11 +451,46 @@ impl Tactic for ForwardChainingTactic {
     }
 }
 
+/// Helper: evaluate a term to a single Slid given variable assignment and structure.
+/// Returns None if the term contains constructs we can't handle or if evaluation fails.
+fn eval_term_to_slid(
+    term: &crate::core::Term,
+    assignment: &std::collections::HashMap<String, usize>,
+    structure: &crate::core::Structure,
+) -> Option<Slid> {
+    use crate::core::Term;
+
+    match term {
+        Term::Var(name, _sort) => {
+            // Simple variable - look up in assignment
+            assignment.get(name).map(|&idx| Slid::from_usize(idx))
+        }
+        Term::App(func_id, arg) => {
+            // Function application: evaluate arg, then look up function value
+            let arg_slid = eval_term_to_slid(arg, assignment, structure)?;
+            let sort_slid = structure.sort_local_id(arg_slid);
+            structure.get_function(*func_id, sort_slid)
+        }
+        Term::Record(_fields) => {
+            // Records evaluate to product elements - not a single Slid
+            // Would need product element lookup
+            None
+        }
+        Term::Project(base, field_name) => {
+            // Projection: evaluate base (must be a record element), then project
+            // This would require looking up the product element's components
+            let _ = (base, field_name);
+            None // Not yet implemented - needs product element storage
+        }
+    }
+}
+
 /// Helper: evaluate a term to a tuple of Slids given variable assignment.
-/// Returns None if the term contains constructs we can't yet handle.
+/// Used for relation assertions where the domain may be a product.
 fn eval_term_to_tuple(
     term: &crate::core::Term,
     assignment: &std::collections::HashMap<String, usize>,
+    structure: &crate::core::Structure,
 ) -> Option<Vec<Slid>> {
     use crate::core::Term;
 
@@ -455,21 +503,19 @@ fn eval_term_to_tuple(
             // Record term - collect all field values
             let mut tuple = Vec::new();
             for (_, field_term) in fields {
-                match eval_term_to_tuple(field_term, assignment) {
+                match eval_term_to_tuple(field_term, assignment, structure) {
                     Some(mut field_tuple) => tuple.append(&mut field_tuple),
                     None => return None,
                 }
             }
             Some(tuple)
         }
-        Term::App(_func_id, arg) => {
-            // Function application - would need actual evaluation
-            // For now, if arg is a simple var, we could try
-            let _ = arg;
-            None // Not yet implemented
+        Term::App(_func_id, _arg) => {
+            // Function application - evaluate to single value, wrap in vec
+            eval_term_to_slid(term, assignment, structure).map(|s| vec![s])
         }
         Term::Project(_, _) => {
-            // Projection - would need actual evaluation
+            // Projection - would need product element storage
             None
         }
     }

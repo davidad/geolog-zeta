@@ -253,6 +253,22 @@ impl SearchTree {
         node.structure.init_relations(arities);
         Ok(())
     }
+
+    /// Add a pending equation to a node's congruence closure
+    ///
+    /// Equations arise from axiom consequents, function conflicts, etc.
+    /// They are processed later during propagation.
+    pub fn add_pending_equation(
+        &mut self,
+        node: NodeId,
+        lhs: Slid,
+        rhs: Slid,
+        reason: super::types::EquationReason,
+    ) {
+        if let Some(node) = self.nodes.get_mut(node) {
+            node.cc.add_equation(lhs, rhs, reason);
+        }
+    }
 }
 
 // ============================================================================

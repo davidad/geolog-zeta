@@ -662,30 +662,88 @@ theorem pullback_range_iff {X Y : Type u} (f : X ⟶ Y) (P : Subobject Y) (x : X
   -- Combine everything
   rw [h4, hpb_arrow, pullback_snd_range, harrow]
 
+/-- In Type u, the range of image.ι equals the range of the original morphism.
+    This uses that factorThruImage is an epi (surjective in Type u). -/
+lemma image_ι_range_eq {X Y : Type u} (g : X ⟶ Y) :
+    Set.range (image.ι g) = Set.range g := by
+  ext y
+  constructor
+  · intro ⟨z, hz⟩
+    have h_epi : Epi (factorThruImage g) := inferInstance
+    rw [epi_iff_surjective] at h_epi
+    obtain ⟨x, hx⟩ := h_epi z
+    use x
+    calc g x
+        = (factorThruImage g ≫ image.ι g) x := by rw [image.fac]
+      _ = image.ι g (factorThruImage g x) := rfl
+      _ = image.ι g z := by rw [hx]
+      _ = y := hz
+  · intro ⟨x, hx⟩
+    use factorThruImage g x
+    calc image.ι g (factorThruImage g x)
+        = (factorThruImage g ≫ image.ι g) x := rfl
+      _ = g x := by rw [image.fac]
+      _ = y := hx
+
+/-- The arrow of (MonoOver.exists f).obj M equals image.ι (M.arrow ≫ f). -/
+lemma monoover_exists_arrow {X Y : Type u} (f : X ⟶ Y) (M : MonoOver X) :
+    ((MonoOver.exists f).obj M).arrow = image.ι (M.arrow ≫ f) := rfl
+
+/-- The range of ((Subobject.exists f).obj P).arrow equals the range of (P.arrow ≫ f). -/
+lemma subobject_exists_arrow_range {X Y : Type u} (f : X ⟶ Y) (P : Subobject X) :
+    Set.range ((Subobject.exists f).obj P).arrow = Set.range (P.arrow ≫ f) := by
+  let rep_P := Subobject.representative.obj P
+  let existsM := (MonoOver.exists f).obj rep_P
+  let existsP := (Subobject.exists f).obj P
+
+  -- Step 1: P = [rep_P] in the thin skeleton
+  have h_P_eq : P = (toThinSkeleton (MonoOver X)).obj rep_P := by
+    simp only [rep_P]
+    exact (Quotient.out_eq P).symm
+
+  -- Step 2: Use lower_comm to get the key equation
+  have h_func : (Subobject.lower (MonoOver.exists f)).obj ((toThinSkeleton (MonoOver X)).obj rep_P) =
+                (toThinSkeleton (MonoOver Y)).obj ((MonoOver.exists f).obj rep_P) := by
+    have h := Subobject.lower_comm (MonoOver.exists f)
+    have := congrFun (congrArg (fun G => G.obj) h) rep_P
+    simp only [Functor.comp_obj] at this
+    exact this
+
+  -- Step 3: existsP = [existsM]
+  have h_eq : existsP = (toThinSkeleton (MonoOver Y)).obj existsM := by
+    calc existsP
+      = (Subobject.lower (MonoOver.exists f)).obj P := rfl
+      _ = (Subobject.lower (MonoOver.exists f)).obj ((toThinSkeleton (MonoOver X)).obj rep_P) := by rw [← h_P_eq]
+      _ = (toThinSkeleton (MonoOver Y)).obj ((MonoOver.exists f).obj rep_P) := h_func
+      _ = (toThinSkeleton (MonoOver Y)).obj existsM := rfl
+
+  -- Step 4: representative.obj existsP ≅ existsM
+  have h_iso : Subobject.representative.obj existsP ≅ existsM := by
+    rw [h_eq]
+    exact Subobject.representativeIso existsM
+
+  -- Step 5: Arrows have the same range
+  have h_range : Set.range existsP.arrow = Set.range existsM.arrow :=
+    monoover_iso_same_range _ _ h_iso
+
+  have h_arrow : existsM.arrow = image.ι (rep_P.arrow ≫ f) := monoover_exists_arrow f rep_P
+  have h_img : Set.range (image.ι (rep_P.arrow ≫ f)) = Set.range (rep_P.arrow ≫ f) := image_ι_range_eq _
+  have h_rep : rep_P.arrow = P.arrow := rfl
+
+  rw [h_range, h_arrow, h_img, h_rep]
+
 /-- In Type u, y ∈ range ((Subobject.exists f).obj P).arrow iff ∃ x ∈ range P.arrow, f x = y.
     This is the set-theoretic fact that exists/image of a subobject is the direct image. -/
 theorem exists_range_iff {X Y : Type u} [HasImages (Type u)] (f : X ⟶ Y) (P : Subobject X) (y : Y) :
     y ∈ Set.range ((Subobject.exists f).obj P).arrow ↔ ∃ x, x ∈ Set.range P.arrow ∧ f x = y := by
-  -- Use the order isomorphism Types.subobjectEquivSet
-  let iso_X := Types.subobjectEquivSet X
-  let iso_Y := Types.subobjectEquivSet Y
-  -- The key facts:
-  -- 1. Types.subobjectEquivSet sends Subobject to Set.range of arrow
-  -- 2. Subobject.exists f corresponds to Set.image f under this isomorphism
-  -- For now, we use the characterization through the arrow directly.
-  --
-  -- (Subobject.exists f).obj P is the image of P.arrow composed with f
-  -- In Type u, this is characterized by the factorization through the image.
+  rw [subobject_exists_arrow_range]
   constructor
   · intro ⟨z, hz⟩
-    -- z is in the underlying type of (Subobject.exists f).obj P
-    -- The arrow factors through the image
-    -- We need to use the image factorization in Type u
-    sorry
+    use P.arrow z
+    exact ⟨⟨z, rfl⟩, hz⟩
   · intro ⟨x, ⟨z, hz⟩, hfx⟩
-    -- We have z with P.arrow z = x and f x = y
-    -- Need to show y is in range of ((exists f).obj P).arrow
-    sorry
+    use z
+    simp only [types_comp_apply, hz, hfx]
 
 /-- In Type u, x ∈ range (⨆ᵢ Pᵢ).arrow iff ∃ i, x ∈ range (Pᵢ).arrow.
     This is the set-theoretic fact that supremum of subobjects is union. -/
