@@ -516,8 +516,12 @@ fn compile_op(ctx: &mut CompileContext<'_>, op: &QueryOp) -> Result<Slid, String
 
         QueryOp::Empty => compile_empty(ctx),
 
+        QueryOp::Project { input, columns } => {
+            let input_wire = compile_op(ctx, input)?;
+            compile_project(ctx, input_wire, columns)
+        }
+
         // Not yet implemented (require additional context)
-        QueryOp::Project { .. } => Err("ProjectOp compilation not yet implemented".to_string()),
         QueryOp::Constant { .. } => Err("ConstantOp compilation not yet implemented (needs Elem)".to_string()),
         QueryOp::Apply { .. } => Err("ApplyOp compilation not yet implemented (needs Func)".to_string()),
     }
@@ -750,6 +754,61 @@ fn compile_empty(ctx: &mut CompileContext<'_>) -> Result<Slid, String> {
     Ok(out_wire)
 }
 
+fn compile_project(
+    ctx: &mut CompileContext<'_>,
+    input_wire: Slid,
+    columns: &[usize],
+) -> Result<Slid, String> {
+    // Create output schema (different from input - projected schema)
+    let schema_name = ctx.fresh_name("schema");
+    let out_schema = ctx.add_element(ctx.sort_ids.schema, &schema_name);
+    let out_wire = ctx.create_wire(out_schema)?;
+
+    // Create ProjMapping
+    let mapping_name = ctx.fresh_name("proj_mapping");
+    let proj_mapping = ctx.add_element(ctx.sort_ids.proj_mapping, &mapping_name);
+
+    // Create ProjEntry for each column
+    for (target_idx, &source_col) in columns.iter().enumerate() {
+        let entry_name = ctx.fresh_name("proj_entry");
+        let entry = ctx.add_element(ctx.sort_ids.proj_entry, &entry_name);
+
+        // Source column reference (from input wire)
+        let source_ref = ctx.create_col_ref(input_wire, source_col)?;
+
+        // Target path (simplified: just use HerePath for now)
+        // In a full implementation, we'd create proper paths for each output column
+        let target_path_name = ctx.fresh_name("col_path");
+        let target_path = ctx.add_element(ctx.sort_ids.col_path, &target_path_name);
+
+        // If this is not the first column, we'd need FstPath/SndPath navigation
+        // For now, we just use HerePath for all (placeholder behavior)
+        if target_idx == 0 {
+            let here_name = ctx.fresh_name("here_path");
+            let here = ctx.add_element(ctx.sort_ids.here_path, &here_name);
+            ctx.define_func("HerePath/path", here, target_path)?;
+        }
+
+        ctx.define_func("ProjEntry/mapping", entry, proj_mapping)?;
+        ctx.define_func("ProjEntry/source", entry, source_ref)?;
+        ctx.define_func("ProjEntry/target_path", entry, target_path)?;
+    }
+
+    // Create ProjectOp
+    let project_name = ctx.fresh_name("project");
+    let project = ctx.add_element(ctx.sort_ids.project_op, &project_name);
+
+    let op_name = ctx.fresh_name("op");
+    let op = ctx.add_element(ctx.sort_ids.op, &op_name);
+
+    ctx.define_func("ProjectOp/op", project, op)?;
+    ctx.define_func("ProjectOp/in", project, input_wire)?;
+    ctx.define_func("ProjectOp/out", project, out_wire)?;
+    ctx.define_func("ProjectOp/mapping", project, proj_mapping)?;
+
+    Ok(out_wire)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -936,5 +995,40 @@ mod tests {
         };
         let result = compile_to_relalg(&union_empty_plan, &relalg_theory, &mut universe);
         assert!(result.is_ok(), "Union(Scan, Empty) compilation should succeed");
+    }
+
+    #[test]
+    fn test_compile_project() {
+        let relalg_theory = load_relalg_theory();
+        let mut universe = Universe::new();
+
+        // Project columns 0 and 2 from a join result
+        let project_plan = QueryOp::Project {
+            input: Box::new(QueryOp::Join {
+                left: Box::new(QueryOp::Scan { sort_idx: 0 }),
+                right: Box::new(QueryOp::Scan { sort_idx: 1 }),
+                cond: crate::query::backend::JoinCond::Cross,
+            }),
+            columns: vec![0, 2],
+        };
+
+        let result = compile_to_relalg(&project_plan, &relalg_theory, &mut universe);
+        assert!(result.is_ok(), "Project compilation should succeed: {:?}", result.err());
+
+        // Simple project: select single column
+        let simple_project = QueryOp::Project {
+            input: Box::new(QueryOp::Scan { sort_idx: 0 }),
+            columns: vec![0],
+        };
+        let result = compile_to_relalg(&simple_project, &relalg_theory, &mut universe);
+        assert!(result.is_ok(), "Single column project should succeed");
+
+        // Identity project (all columns in order)
+        let identity_project = QueryOp::Project {
+            input: Box::new(QueryOp::Scan { sort_idx: 0 }),
+            columns: vec![0, 1, 2],
+        };
+        let result = compile_to_relalg(&identity_project, &relalg_theory, &mut universe);
+        assert!(result.is_ok(), "Identity project should succeed");
     }
 }
