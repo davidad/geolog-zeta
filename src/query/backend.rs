@@ -211,6 +211,111 @@ pub enum JoinCond {
 }
 
 // ============================================================================
+// Pretty Printing
+// ============================================================================
+
+use std::fmt;
+
+impl fmt::Display for QueryOp {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.fmt_indented(f, 0)
+    }
+}
+
+impl QueryOp {
+    /// Format with indentation for tree structure
+    fn fmt_indented(&self, f: &mut fmt::Formatter<'_>, indent: usize) -> fmt::Result {
+        let pad = "  ".repeat(indent);
+        match self {
+            QueryOp::Scan { sort_idx } => {
+                write!(f, "{}Scan(sort={})", pad, sort_idx)
+            }
+            QueryOp::Filter { input, pred } => {
+                writeln!(f, "{}Filter({})", pad, pred)?;
+                input.fmt_indented(f, indent + 1)
+            }
+            QueryOp::Project { input, columns } => {
+                writeln!(f, "{}Project({:?})", pad, columns)?;
+                input.fmt_indented(f, indent + 1)
+            }
+            QueryOp::Join { left, right, cond } => {
+                writeln!(f, "{}Join({})", pad, cond)?;
+                left.fmt_indented(f, indent + 1)?;
+                writeln!(f)?;
+                right.fmt_indented(f, indent + 1)
+            }
+            QueryOp::Union { left, right } => {
+                writeln!(f, "{}Union", pad)?;
+                left.fmt_indented(f, indent + 1)?;
+                writeln!(f)?;
+                right.fmt_indented(f, indent + 1)
+            }
+            QueryOp::Distinct { input } => {
+                writeln!(f, "{}Distinct", pad)?;
+                input.fmt_indented(f, indent + 1)
+            }
+            QueryOp::Negate { input } => {
+                writeln!(f, "{}Negate", pad)?;
+                input.fmt_indented(f, indent + 1)
+            }
+            QueryOp::Constant { tuple } => {
+                let vals: Vec<_> = tuple.iter().map(|s| s.index()).collect();
+                write!(f, "{}Const({:?})", pad, vals)
+            }
+            QueryOp::Empty => {
+                write!(f, "{}Empty", pad)
+            }
+            QueryOp::Apply { input, func_idx, arg_col } => {
+                writeln!(f, "{}Apply(func={}, arg_col={})", pad, func_idx, arg_col)?;
+                input.fmt_indented(f, indent + 1)
+            }
+            QueryOp::Delay { input, state_id } => {
+                writeln!(f, "{}z⁻¹(state={})", pad, state_id)?;
+                input.fmt_indented(f, indent + 1)
+            }
+            QueryOp::Diff { input, state_id } => {
+                writeln!(f, "{}δ(state={})", pad, state_id)?;
+                input.fmt_indented(f, indent + 1)
+            }
+            QueryOp::Integrate { input, state_id } => {
+                writeln!(f, "{}∫(state={})", pad, state_id)?;
+                input.fmt_indented(f, indent + 1)
+            }
+        }
+    }
+}
+
+impl fmt::Display for Predicate {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Predicate::True => write!(f, "⊤"),
+            Predicate::False => write!(f, "⊥"),
+            Predicate::ColEqConst { col, val } => write!(f, "c{}={}", col, val.index()),
+            Predicate::ColEqCol { left, right } => write!(f, "c{}=c{}", left, right),
+            Predicate::FuncEq { func_idx, arg_col, result_col } => {
+                write!(f, "f{}(c{})=c{}", func_idx, arg_col, result_col)
+            }
+            Predicate::FuncEqConst { func_idx, arg_col, expected } => {
+                write!(f, "f{}(c{})={}", func_idx, arg_col, expected.index())
+            }
+            Predicate::And(a, b) => write!(f, "({} ∧ {})", a, b),
+            Predicate::Or(a, b) => write!(f, "({} ∨ {})", a, b),
+        }
+    }
+}
+
+impl fmt::Display for JoinCond {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            JoinCond::Cross => write!(f, "×"),
+            JoinCond::Equi { left_col, right_col } => {
+                write!(f, "c{}=c{}", left_col, right_col)
+            }
+        }
+    }
+}
+
+// ============================================================================
 // DBSP Stream Context
 // ============================================================================
 
@@ -1309,5 +1414,107 @@ mod tests {
         // Result should be (1, 1, 1)
         let expected = vec![Slid::from_usize(1), Slid::from_usize(1), Slid::from_usize(1)];
         assert!(optimized_result.tuples.contains_key(&expected));
+    }
+
+    // ========================================================================
+    // Display / Pretty Printing Tests
+    // ========================================================================
+
+    #[test]
+    fn test_display_scan() {
+        let plan = QueryOp::Scan { sort_idx: 0 };
+        let display = format!("{}", plan);
+        assert_eq!(display, "Scan(sort=0)");
+    }
+
+    #[test]
+    fn test_display_filter() {
+        let plan = QueryOp::Filter {
+            input: Box::new(QueryOp::Scan { sort_idx: 1 }),
+            pred: Predicate::ColEqConst {
+                col: 0,
+                val: Slid::from_usize(42),
+            },
+        };
+        let display = format!("{}", plan);
+        assert!(display.contains("Filter(c0=42)"));
+        assert!(display.contains("Scan(sort=1)"));
+    }
+
+    #[test]
+    fn test_display_join() {
+        let plan = QueryOp::Join {
+            left: Box::new(QueryOp::Scan { sort_idx: 0 }),
+            right: Box::new(QueryOp::Scan { sort_idx: 1 }),
+            cond: JoinCond::Equi { left_col: 0, right_col: 0 },
+        };
+        let display = format!("{}", plan);
+        assert!(display.contains("Join(c0=c0)"));
+        assert!(display.contains("Scan(sort=0)"));
+        assert!(display.contains("Scan(sort=1)"));
+    }
+
+    #[test]
+    fn test_display_cross_join() {
+        let plan = QueryOp::Join {
+            left: Box::new(QueryOp::Scan { sort_idx: 0 }),
+            right: Box::new(QueryOp::Scan { sort_idx: 1 }),
+            cond: JoinCond::Cross,
+        };
+        let display = format!("{}", plan);
+        assert!(display.contains("Join(×)"));
+    }
+
+    #[test]
+    fn test_display_dbsp_operators() {
+        let plan = QueryOp::Integrate {
+            input: Box::new(QueryOp::Diff {
+                input: Box::new(QueryOp::Scan { sort_idx: 0 }),
+                state_id: 0,
+            }),
+            state_id: 1,
+        };
+        let display = format!("{}", plan);
+        assert!(display.contains("∫(state=1)"));
+        assert!(display.contains("δ(state=0)"));
+        assert!(display.contains("Scan(sort=0)"));
+    }
+
+    #[test]
+    fn test_display_nested_plan() {
+        // Filter(Join(×)
+        //   Scan(0)
+        //   Scan(1))
+        let plan = QueryOp::Filter {
+            input: Box::new(QueryOp::Join {
+                left: Box::new(QueryOp::Scan { sort_idx: 0 }),
+                right: Box::new(QueryOp::Scan { sort_idx: 1 }),
+                cond: JoinCond::Cross,
+            }),
+            pred: Predicate::ColEqCol { left: 0, right: 1 },
+        };
+        let display = format!("{}", plan);
+        // Verify structure is maintained
+        assert!(display.contains("Filter(c0=c1)"));
+        assert!(display.contains("Join(×)"));
+        // Verify indentation is present (child ops should be indented)
+        assert!(display.contains("  Scan(sort=0)"));
+        assert!(display.contains("  Scan(sort=1)"));
+    }
+
+    #[test]
+    fn test_display_predicate_compound() {
+        let pred = Predicate::And(
+            Box::new(Predicate::ColEqConst {
+                col: 0,
+                val: Slid::from_usize(1),
+            }),
+            Box::new(Predicate::Or(
+                Box::new(Predicate::True),
+                Box::new(Predicate::False),
+            )),
+        );
+        let display = format!("{}", pred);
+        assert_eq!(display, "(c0=1 ∧ (⊤ ∨ ⊥))");
     }
 }
