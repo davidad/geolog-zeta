@@ -59,7 +59,7 @@ mod tree;
 mod types;
 
 // Re-export main types
-pub use tactics::{Budget, CheckTactic, EnumerateFunctionTactic, Tactic, TacticResult};
+pub use tactics::{Budget, CheckTactic, EnumerateFunctionTactic, ForwardChainingTactic, Tactic, TacticResult};
 #[allow(deprecated)]
 pub use tactics::PropagationTactic;
 pub use tree::SearchTree;
