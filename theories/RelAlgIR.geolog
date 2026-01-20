@@ -202,6 +202,13 @@ theory RelAlgIR extends GeologMeta {
   FuncEqPred/arg : FuncEqPred -> ColRef;
   FuncEqPred/result : FuncEqPred -> ColRef;
 
+  // Function result equals constant: f(col_arg) = expected_elem
+  FuncConstEqPred : Sort;
+  FuncConstEqPred/pred : FuncConstEqPred -> Pred;
+  FuncConstEqPred/func : FuncConstEqPred -> GeologMeta/Func;
+  FuncConstEqPred/arg : FuncConstEqPred -> ColRef;
+  FuncConstEqPred/expected : FuncConstEqPred -> GeologMeta/Elem;
+
   // Conjunction: p ∧ q
   AndPred : Sort;
   AndPred/pred : AndPred -> Pred;

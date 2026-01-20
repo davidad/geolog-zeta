@@ -264,8 +264,8 @@ fn test_relalg_ir_loads() {
 
     let ir = state.theories.get("RelAlgIR").expect("RelAlgIR theory should exist");
 
-    // RelAlgIR has 78 sorts (40 from GeologMeta + 38 own)
-    assert_eq!(ir.theory.signature.sorts.len(), 78, "RelAlgIR should have 78 sorts");
+    // RelAlgIR has 79 sorts (40 from GeologMeta + 39 own)
+    assert_eq!(ir.theory.signature.sorts.len(), 79, "RelAlgIR should have 79 sorts");
 
     // Check GeologMeta sorts are correctly qualified
     assert!(ir.theory.signature.lookup_sort("GeologMeta/Srt").is_some(),

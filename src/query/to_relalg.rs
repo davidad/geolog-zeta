@@ -41,17 +41,18 @@
 //!
 //! # Supported Predicates
 //!
-//! | Predicate        | RelAlgIR Sort    | Notes                        |
-//! |------------------|------------------|------------------------------|
-//! | `True`           | `TruePred`       | Always true                  |
-//! | `False`          | `FalsePred`      | Always false                 |
-//! | `ColEqCol`       | `ColEqPred`      | Two columns equal            |
-//! | `ColEqConst`     | `ConstEqPred`    | Column equals constant       |
-//! | `FuncEq`         | `FuncEqPred`     | f(arg) = result              |
-//! | `And`            | `AndPred`        | Conjunction                  |
-//! | `Or`             | `OrPred`         | Disjunction                  |
+//! | Predicate        | RelAlgIR Sort       | Notes                        |
+//! |------------------|---------------------|------------------------------|
+//! | `True`           | `TruePred`          | Always true                  |
+//! | `False`          | `FalsePred`         | Always false                 |
+//! | `ColEqCol`       | `ColEqPred`         | Two columns equal            |
+//! | `ColEqConst`     | `ConstEqPred`       | Column equals constant       |
+//! | `FuncEq`         | `FuncEqPred`        | f(arg) = result              |
+//! | `FuncEqConst`    | `FuncConstEqPred`   | f(arg) = expected            |
+//! | `And`            | `AndPred`           | Conjunction                  |
+//! | `Or`             | `OrPred`            | Disjunction                  |
 //!
-//! Not yet supported: `FuncEqConst` (needs FuncConstEqPred in RelAlgIR).
+//! All predicate types are now supported!
 //!
 //! # Example
 //!
@@ -166,6 +167,7 @@ struct RelAlgSortIds {
     col_eq_pred: SortId,
     const_eq_pred: SortId,
     func_eq_pred: SortId,
+    func_const_eq_pred: SortId,
     and_pred: SortId,
     or_pred: SortId,
 
@@ -228,6 +230,7 @@ impl RelAlgSortIds {
             col_eq_pred: lookup("ColEqPred")?,
             const_eq_pred: lookup("ConstEqPred")?,
             func_eq_pred: lookup("FuncEqPred")?,
+            func_const_eq_pred: lookup("FuncConstEqPred")?,
             and_pred: lookup("AndPred")?,
             or_pred: lookup("OrPred")?,
 
@@ -578,6 +581,37 @@ impl<'a> CompileContext<'a> {
 
         Ok(pred)
     }
+
+    /// Create a FuncConstEqPred (func(arg_col) = expected_elem)
+    fn create_func_const_eq_pred(
+        &mut self,
+        wire: Slid,
+        func_idx: usize,
+        arg_col: usize,
+        expected: Slid,
+    ) -> Result<Slid, String> {
+        // Create Func element
+        let func = self.get_func_elem(func_idx)?;
+
+        // Create ColRef for argument
+        let arg_ref = self.create_col_ref(wire, arg_col)?;
+
+        // Create Elem for expected value
+        let expected_elem = self.get_elem(expected)?;
+
+        let eq_name = self.fresh_name("func_const_eq_pred");
+        let func_const_eq = self.add_element(self.sort_ids.func_const_eq_pred, &eq_name);
+
+        let pred_name = self.fresh_name("pred");
+        let pred = self.add_element(self.sort_ids.pred, &pred_name);
+
+        self.define_func("FuncConstEqPred/pred", func_const_eq, pred)?;
+        self.define_func("FuncConstEqPred/func", func_const_eq, func)?;
+        self.define_func("FuncConstEqPred/arg", func_const_eq, arg_ref)?;
+        self.define_func("FuncConstEqPred/expected", func_const_eq, expected_elem)?;
+
+        Ok(pred)
+    }
 }
 
 /// Compile a predicate to a Pred element
@@ -609,12 +643,12 @@ fn compile_predicate(
         } => {
             ctx.create_func_eq_pred(wire, *func_idx, *arg_col, *result_col)
         }
-        Predicate::FuncEqConst { .. } => {
-            // FuncEqConst (func(col) = expected) doesn't have a direct RelAlgIR mapping.
-            // Would need a "constant result" predicate type. Fall back to TruePred for now.
-            // TODO: Add FuncConstEqPred to RelAlgIR theory
-            let (_, pred_elem) = ctx.create_true_pred()?;
-            Ok(pred_elem)
+        Predicate::FuncEqConst {
+            func_idx,
+            arg_col,
+            expected,
+        } => {
+            ctx.create_func_const_eq_pred(wire, *func_idx, *arg_col, *expected)
         }
         Predicate::And(left, right) => {
             let left_pred = compile_predicate(ctx, wire, left)?;
@@ -1191,6 +1225,32 @@ mod tests {
         assert!(
             instance.names.values().any(|n| n.starts_with("func_")),
             "Should create Func element for function reference"
+        );
+
+        // Test FuncEqConst predicate
+        let plan = QueryOp::Filter {
+            input: Box::new(QueryOp::Scan { sort_idx: 0 }),
+            pred: crate::query::backend::Predicate::FuncEqConst {
+                func_idx: 0,
+                arg_col: 0,
+                expected: Slid::from_usize(99),
+            },
+        };
+
+        let result = compile_to_relalg(&plan, &relalg_theory, &mut universe);
+        assert!(
+            result.is_ok(),
+            "FuncEqConst predicate compilation should succeed"
+        );
+        let instance = result.unwrap();
+        // Should have both Func and Elem elements
+        assert!(
+            instance.names.values().any(|n| n.starts_with("func_")),
+            "Should create Func element"
+        );
+        assert!(
+            instance.names.values().any(|n| n.starts_with("elem_")),
+            "Should create Elem element for expected value"
         );
     }
 
