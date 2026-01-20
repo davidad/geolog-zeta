@@ -127,65 +127,93 @@ pub fn compile_axiom(
     })
 }
 
-/// Compile a premise formula to a QueryOp
-fn compile_premise(
+/// Column mapping: which context variable does each output column represent?
+/// Maps output column index -> context variable index
+type ColumnMapping = Vec<usize>;
+
+/// Compile a premise formula to a QueryOp and its column mapping
+fn compile_premise_with_mapping(
     formula: &Formula,
     var_indices: &HashMap<String, usize>,
     context: &Context,
     sig: &Signature,
-) -> Result<QueryOp, ChaseError> {
+) -> Result<(QueryOp, ColumnMapping), ChaseError> {
     match formula {
         Formula::True => {
             // True premise: scan all elements of first variable's sort
             if context.vars.is_empty() {
-                // No variables: this is a ground check, return empty scan
-                // (The rule fires once if conclusion can be added)
-                Ok(QueryOp::Empty)
+                Ok((QueryOp::Empty, vec![]))
             } else {
-                // Scan the sort of the first variable
                 let (_, sort) = &context.vars[0];
                 let sort_idx = resolve_sort_index(sort, sig)?;
-                Ok(QueryOp::Scan { sort_idx })
+                // Output column 0 corresponds to context variable 0
+                Ok((QueryOp::Scan { sort_idx }, vec![0]))
             }
         }
 
-        Formula::Rel(rel_id, _arg) => {
-            // Relation: scan tuples in the relation directly
-            // TODO: Use _arg to extract column bindings for joining
-            // For now, we just scan all tuples in the relation
-            Ok(QueryOp::ScanRelation { rel_id: *rel_id })
+        Formula::Rel(rel_id, arg) => {
+            // Extract column-to-variable mapping from the record argument
+            let mapping = extract_rel_column_mapping(arg, var_indices)?;
+            Ok((QueryOp::ScanRelation { rel_id: *rel_id }, mapping))
         }
 
         Formula::Conj(formulas) => {
-            // Conjunction: build a join tree
             if formulas.is_empty() {
-                return compile_premise(&Formula::True, var_indices, context, sig);
+                return compile_premise_with_mapping(&Formula::True, var_indices, context, sig);
             }
 
-            let mut ops: Vec<QueryOp> = Vec::new();
+            // Compile each formula and track column mappings
+            let mut ops_with_mappings: Vec<(QueryOp, ColumnMapping)> = Vec::new();
             for f in formulas {
-                ops.push(compile_premise(f, var_indices, context, sig)?);
+                ops_with_mappings.push(compile_premise_with_mapping(f, var_indices, context, sig)?);
             }
 
-            // Build left-deep join tree
-            let mut result = ops.remove(0);
-            for op in ops {
-                result = QueryOp::Join {
-                    left: Box::new(result),
-                    right: Box::new(op),
+            // Build join tree with filters for shared variables
+            let (mut result_op, mut result_mapping) = ops_with_mappings.remove(0);
+
+            for (right_op, right_mapping) in ops_with_mappings {
+                // Find shared variables between current result and right side
+                let left_width = result_mapping.len();
+                let mut equi_conditions: Vec<(usize, usize)> = Vec::new();
+
+                for (right_col, &right_var) in right_mapping.iter().enumerate() {
+                    // Check if this variable appears in the left side
+                    for (left_col, &left_var) in result_mapping.iter().enumerate() {
+                        if left_var == right_var {
+                            // Shared variable! Need to match these columns
+                            // Right column is at offset left_width after join
+                            equi_conditions.push((left_col, left_width + right_col));
+                            break;
+                        }
+                    }
+                }
+
+                // Create the join
+                result_op = QueryOp::Join {
+                    left: Box::new(result_op),
+                    right: Box::new(right_op),
                     cond: crate::query::backend::JoinCond::Cross,
                 };
+
+                // Update mapping: concatenate left and right mappings
+                result_mapping.extend(right_mapping.iter().copied());
+
+                // Add filters for shared variables
+                for (left_col, right_col) in equi_conditions {
+                    result_op = QueryOp::Filter {
+                        input: Box::new(result_op),
+                        pred: Predicate::ColEqCol { left: left_col, right: right_col },
+                    };
+                }
             }
 
-            Ok(result)
+            Ok((result_op, result_mapping))
         }
 
         Formula::Eq(left, right) => {
-            // Equality: becomes a filter predicate
             let left_col = term_to_column(left, var_indices)?;
             let right_col = term_to_column(right, var_indices)?;
 
-            // Need a base scan first
             if context.vars.is_empty() {
                 return Err(ChaseError::UnsupportedPremise(
                     "Equality without variables".to_string()
@@ -196,29 +224,68 @@ fn compile_premise(
             let sort_idx = resolve_sort_index(sort, sig)?;
             let scan = QueryOp::Scan { sort_idx };
 
-            Ok(QueryOp::Filter {
-                input: Box::new(scan),
-                pred: Predicate::ColEqCol { left: left_col, right: right_col },
-            })
-        }
-
-        Formula::False => {
-            // False premise: never fires
-            Ok(QueryOp::Empty)
-        }
-
-        Formula::Disj(_) => {
-            Err(ChaseError::UnsupportedPremise(
-                "Disjunction in premise not yet supported".to_string()
+            Ok((
+                QueryOp::Filter {
+                    input: Box::new(scan),
+                    pred: Predicate::ColEqCol { left: left_col, right: right_col },
+                },
+                vec![0], // Single-element scan
             ))
         }
 
-        Formula::Exists(_, _, _) => {
+        Formula::False => Ok((QueryOp::Empty, vec![])),
+
+        Formula::Disj(_) => Err(ChaseError::UnsupportedPremise(
+            "Disjunction in premise not yet supported".to_string()
+        )),
+
+        Formula::Exists(_, _, _) => Err(ChaseError::UnsupportedPremise(
+            "Existential in premise not yet supported".to_string()
+        )),
+    }
+}
+
+/// Extract column-to-variable mapping from a relation argument term
+fn extract_rel_column_mapping(
+    arg: &Term,
+    var_indices: &HashMap<String, usize>,
+) -> Result<ColumnMapping, ChaseError> {
+    match arg {
+        Term::Var(name, _) => {
+            // Single variable: maps to its context index
+            let idx = var_indices.get(name).ok_or_else(|| {
+                ChaseError::UnboundVariable(name.clone())
+            })?;
+            Ok(vec![*idx])
+        }
+        Term::Record(fields) => {
+            // Record: extract each field's variable mapping in order
+            let mut mapping = Vec::new();
+            for (_, term) in fields {
+                let field_mapping = extract_rel_column_mapping(term, var_indices)?;
+                mapping.extend(field_mapping);
+            }
+            Ok(mapping)
+        }
+        Term::App(_, _) | Term::Project(_, _) => {
+            // Function application in relation argument - complex case
+            // For now, return an error; we'd need to track function outputs
             Err(ChaseError::UnsupportedPremise(
-                "Existential in premise not yet supported".to_string()
+                "Function application in relation argument not yet supported".to_string()
             ))
         }
     }
+}
+
+/// Compile a premise formula to a QueryOp (wrapper for compile_premise_with_mapping)
+fn compile_premise(
+    formula: &Formula,
+    var_indices: &HashMap<String, usize>,
+    context: &Context,
+    sig: &Signature,
+) -> Result<QueryOp, ChaseError> {
+    let (op, _mapping) = compile_premise_with_mapping(formula, var_indices, context, sig)?;
+    Ok(op)
 }
 
 /// Compile a conclusion formula to a ChaseHead
