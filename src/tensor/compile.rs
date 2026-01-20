@@ -5,7 +5,7 @@ use std::collections::{BTreeSet, HashMap};
 use crate::core::{Context, DerivedSort, Formula, RelId, Signature, Structure, Term};
 use crate::id::{NumericId, Slid};
 
-use super::builder::{conjunction_all, disjunction_all, exists};
+use super::builder::{conjunction, conjunction_all, disjunction_all, exists};
 use super::expr::TensorExpr;
 use super::sparse::SparseTensor;
 
@@ -76,6 +76,51 @@ pub fn build_carrier_index(structure: &Structure, sort_id: usize) -> HashMap<Sli
         .enumerate()
         .map(|(idx, slid_u64)| (Slid::from_usize(slid_u64 as usize), idx))
         .collect()
+}
+
+/// Convert a function's graph (extent) to a SparseTensor.
+///
+/// For function f : A → B, builds a 2D tensor where (i, j) is present
+/// iff f(a_i) = b_j (where a_i is the i-th element of A, b_j is j-th of B).
+pub fn function_to_tensor(
+    structure: &Structure,
+    func_id: usize,
+    domain_sort_id: usize,
+    codomain_sort_id: usize,
+) -> SparseTensor {
+    use crate::id::{NumericId, Slid};
+    use std::collections::BTreeSet;
+
+    let domain_carrier = &structure.carriers[domain_sort_id];
+    let codomain_carrier = &structure.carriers[codomain_sort_id];
+
+    let domain_size = domain_carrier.len() as usize;
+    let codomain_size = codomain_carrier.len() as usize;
+
+    // Build reverse index for codomain (Slid -> position)
+    let codomain_index: HashMap<Slid, usize> = codomain_carrier
+        .iter()
+        .enumerate()
+        .map(|(idx, slid_u64)| (Slid::from_usize(slid_u64 as usize), idx))
+        .collect();
+
+    // Iterate over function's extent
+    let mut extent = BTreeSet::new();
+    for (domain_idx, domain_slid_u64) in domain_carrier.iter().enumerate() {
+        let domain_slid = Slid::from_usize(domain_slid_u64 as usize);
+        let sort_slid = structure.sort_local_id(domain_slid);
+
+        if let Some(codomain_slid) = structure.get_function(func_id, sort_slid) {
+            if let Some(&codomain_idx) = codomain_index.get(&codomain_slid) {
+                extent.insert(vec![domain_idx, codomain_idx]);
+            }
+        }
+    }
+
+    SparseTensor {
+        dims: vec![domain_size, codomain_size],
+        extent,
+    }
 }
 
 /// Convert a VecRelation to a SparseTensor.
@@ -382,10 +427,108 @@ pub fn compile_formula(
                         (TensorExpr::leaf(tensor), vars)
                     }
                 }
+                // f(x) = y: function application equals variable
+                (Term::App(func_id, arg), Term::Var(var_name, _var_sort))
+                | (Term::Var(var_name, _var_sort), Term::App(func_id, arg)) => {
+                    // arg must be a simple variable for now
+                    let Term::Var(arg_name, _arg_sort) = arg.as_ref() else {
+                        panic!(
+                            "Nested function application in equality not yet supported: {:?} = {:?}",
+                            t1, t2
+                        );
+                    };
+
+                    // Get domain and codomain sort IDs
+                    let func_sym = &sig.functions[*func_id];
+                    let DerivedSort::Base(domain_sort_id) = &func_sym.domain else {
+                        panic!("Function with product domain in equality not yet supported");
+                    };
+                    let DerivedSort::Base(codomain_sort_id) = &func_sym.codomain else {
+                        panic!("Function with product codomain in equality not yet supported");
+                    };
+
+                    // Build function extent tensor: (arg, result) pairs
+                    let func_tensor = function_to_tensor(structure, *func_id, *domain_sort_id, *codomain_sort_id);
+
+                    // Variables: arg_name maps to dim 0, var_name maps to dim 1
+                    // Order alphabetically for consistency
+                    let (vars, needs_transpose) = if arg_name < var_name {
+                        (vec![arg_name.clone(), var_name.clone()], false)
+                    } else {
+                        (vec![var_name.clone(), arg_name.clone()], true)
+                    };
+
+                    let expr = if needs_transpose {
+                        // Swap dimensions: (arg, result) -> (result, arg)
+                        TensorExpr::Contract {
+                            inner: Box::new(TensorExpr::leaf(func_tensor)),
+                            index_map: vec![1, 0], // swap dimensions
+                            output: (0..2).collect(),
+                        }
+                    } else {
+                        TensorExpr::leaf(func_tensor)
+                    };
+
+                    (expr, vars)
+                }
+
+                // f(x) = g(y): two function applications equal
+                (Term::App(func_id1, arg1), Term::App(func_id2, arg2)) => {
+                    // Both args must be simple variables
+                    let Term::Var(arg1_name, _arg1_sort) = arg1.as_ref() else {
+                        panic!("Nested function application in equality not yet supported");
+                    };
+                    let Term::Var(arg2_name, _arg2_sort) = arg2.as_ref() else {
+                        panic!("Nested function application in equality not yet supported");
+                    };
+
+                    // Get function sorts
+                    let func1_sym = &sig.functions[*func_id1];
+                    let func2_sym = &sig.functions[*func_id2];
+                    let DerivedSort::Base(domain1_sort_id) = &func1_sym.domain else {
+                        panic!("Function with product domain in equality not yet supported");
+                    };
+                    let DerivedSort::Base(codomain1_sort_id) = &func1_sym.codomain else {
+                        panic!("Function with product codomain in equality not yet supported");
+                    };
+                    let DerivedSort::Base(domain2_sort_id) = &func2_sym.domain else {
+                        panic!("Function with product domain in equality not yet supported");
+                    };
+                    let DerivedSort::Base(codomain2_sort_id) = &func2_sym.codomain else {
+                        panic!("Function with product codomain in equality not yet supported");
+                    };
+
+                    // Build function extent tensors
+                    let func1_tensor = function_to_tensor(structure, *func_id1, *domain1_sort_id, *codomain1_sort_id);
+                    let func2_tensor = function_to_tensor(structure, *func_id2, *domain2_sort_id, *codomain2_sort_id);
+
+                    // f(x) = g(y) means: ∃z. f(x) = z ∧ g(y) = z
+                    // func1_tensor has vars [arg1_name, z], func2_tensor has vars [arg2_name, z]
+                    // We need to join on z and then existentially quantify z out
+
+                    let vars1 = vec![arg1_name.clone(), "_z".to_string()];
+                    let vars2 = vec![arg2_name.clone(), "_z".to_string()];
+
+                    // Conjunction on shared variable _z
+                    let (conj_expr, conj_vars) = conjunction(
+                        TensorExpr::leaf(func1_tensor),
+                        &vars1,
+                        TensorExpr::leaf(func2_tensor),
+                        &vars2,
+                    );
+
+                    // Existentially quantify out _z
+                    let (result_expr, result_vars) = exists(conj_expr, &conj_vars, "_z");
+
+                    (result_expr, result_vars)
+                }
+
                 _ => {
-                    // More complex term equality not yet implemented
-                    // For now, panic; later could compile to more complex expressions
-                    panic!("Complex term equality not yet supported");
+                    // Records, projections, etc. not yet implemented
+                    panic!(
+                        "Complex term equality not yet supported: {:?} = {:?}",
+                        t1, t2
+                    );
                 }
             }
         }
@@ -616,6 +759,103 @@ mod tests {
         assert!(vars.is_empty());
         assert_eq!(result.len(), 1); // scalar true
         assert!(result.contains(&[]));
+    }
+
+    #[test]
+    fn test_compile_formula_func_app_equality() {
+        // Test: f(x) = y where f is a function
+        let mut sig = Signature::new();
+        let node_id = sig.add_sort("Node".to_string());
+
+        // Add function f : Node -> Node
+        sig.add_function("f".to_string(), DerivedSort::Base(node_id), DerivedSort::Base(node_id));
+
+        let mut universe = Universe::new();
+        let mut structure = Structure::new(1);
+
+        // Add 3 nodes
+        for _ in 0..3 {
+            structure.add_element(&mut universe, node_id);
+        }
+
+        // Define f: 0 -> 1, 1 -> 2, 2 -> 0
+        structure.init_functions(&[Some(0)]); // f has domain sort 0
+        structure.define_function(0, Slid::from_usize(0), Slid::from_usize(1)).unwrap();
+        structure.define_function(0, Slid::from_usize(1), Slid::from_usize(2)).unwrap();
+        structure.define_function(0, Slid::from_usize(2), Slid::from_usize(0)).unwrap();
+
+        let ctx = CompileContext::new();
+
+        // Build: f(x) = y
+        let formula = Formula::Eq(
+            Term::App(0, Box::new(Term::Var("x".to_string(), DerivedSort::Base(0)))),
+            Term::Var("y".to_string(), DerivedSort::Base(0)),
+        );
+
+        let (expr, vars) = compile_formula(&formula, &ctx, &structure, &sig);
+        let result = expr.materialize();
+
+        // Variables should be x and y (alphabetical order)
+        assert_eq!(vars.len(), 2);
+        assert!(vars.contains(&"x".to_string()));
+        assert!(vars.contains(&"y".to_string()));
+
+        // Result should have exactly 3 tuples: (0,1), (1,2), (2,0)
+        // representing f(0)=1, f(1)=2, f(2)=0
+        // But order depends on alphabetical sort of variable names
+        assert_eq!(result.len(), 3);
+    }
+
+    #[test]
+    fn test_compile_formula_two_func_apps_equality() {
+        // Test: f(x) = g(y) where f, g are functions
+        let mut sig = Signature::new();
+        let node_id = sig.add_sort("Node".to_string());
+
+        // Add functions f, g : Node -> Node
+        sig.add_function("f".to_string(), DerivedSort::Base(node_id), DerivedSort::Base(node_id));
+        sig.add_function("g".to_string(), DerivedSort::Base(node_id), DerivedSort::Base(node_id));
+
+        let mut universe = Universe::new();
+        let mut structure = Structure::new(1);
+
+        // Add 3 nodes
+        for _ in 0..3 {
+            structure.add_element(&mut universe, node_id);
+        }
+
+        // Define f: 0 -> 1, 1 -> 1, 2 -> 2
+        // Define g: 0 -> 0, 1 -> 1, 2 -> 2
+        structure.init_functions(&[Some(0), Some(0)]); // Both have domain sort 0
+        structure.define_function(0, Slid::from_usize(0), Slid::from_usize(1)).unwrap();
+        structure.define_function(0, Slid::from_usize(1), Slid::from_usize(1)).unwrap();
+        structure.define_function(0, Slid::from_usize(2), Slid::from_usize(2)).unwrap();
+        structure.define_function(1, Slid::from_usize(0), Slid::from_usize(0)).unwrap();
+        structure.define_function(1, Slid::from_usize(1), Slid::from_usize(1)).unwrap();
+        structure.define_function(1, Slid::from_usize(2), Slid::from_usize(2)).unwrap();
+
+        let ctx = CompileContext::new();
+
+        // Build: f(x) = g(y)
+        // f(x) = g(y) when ∃z. f(x) = z ∧ g(y) = z
+        // f(0)=1, f(1)=1, f(2)=2
+        // g(0)=0, g(1)=1, g(2)=2
+        // So f(x)=g(y) holds for: (0,1), (1,1), (2,2) since f(0)=g(1)=1, f(1)=g(1)=1, f(2)=g(2)=2
+        let formula = Formula::Eq(
+            Term::App(0, Box::new(Term::Var("x".to_string(), DerivedSort::Base(0)))),
+            Term::App(1, Box::new(Term::Var("y".to_string(), DerivedSort::Base(0)))),
+        );
+
+        let (expr, vars) = compile_formula(&formula, &ctx, &structure, &sig);
+        let result = expr.materialize();
+
+        // Variables should be x and y
+        assert_eq!(vars.len(), 2);
+        assert!(vars.contains(&"x".to_string()));
+        assert!(vars.contains(&"y".to_string()));
+
+        // f(x) = g(y) holds for: (x=0,y=1), (x=1,y=1), (x=2,y=2)
+        assert_eq!(result.len(), 3);
     }
 
     #[test]
