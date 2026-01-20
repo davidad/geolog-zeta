@@ -1,8 +1,8 @@
 # Geolog
 
-**Geometric Logic REPL** - A language and runtime for formal specifications using geometric logic (coherent logic).
+**Geometric Logic REPL** - A language and runtime for formal specifications using geometric logic.
 
-Geolog provides a highly customizable, efficient, concurrent, append-only, persistent, multi-instance memory infrastructure for everything from business process workflow orchestration to formal verification via diagrammatic rewriting.
+Geolog aims to provide a highly customizable, efficient, concurrent, append-only, persistent memory and query infrastructure for everything from business process workflow orchestration to formal verification via diagrammatic rewriting.
 
 ## Quick Start
 
@@ -128,18 +128,18 @@ The chase algorithm automatically computed the full reachability relation, inclu
 
 ## Basic Concepts
 
-Geolog is based on **geometric logic** (also called coherent logic), a fragment of first-order logic that:
+Geolog is based on **geometric logic**, a fragment of first-order logic that:
 - Allows existential quantification in conclusions
 - Allows disjunctions in conclusions
 - Is preserved by geometric morphisms (structure-preserving maps)
 
 A **theory** defines:
 - **Sorts**: Types of elements
-- **Functions**: Maps between sorts
-- **Relations**: Predicates on sorts (via `-> Prop`)
-- **Axioms**: Logical rules that constrain valid models
+- **Function symbols**: Function-typed variables with domain and codomain derived from sorts
+- **Relation symbols**: Predicate-typed variables with domain derived from sorts, and codomain `-> Prop`
+- **Axioms**: Geometric sequents (first universal quantifiers, then an implication between two propositions which are then purely positive)
 
-An **instance** is a concrete model satisfying a theory.
+An **instance** is a concrete finite model, which means it assigns to each sort a finite set, to each function a finite function, and to each relation a Boolean-valued tensor, such that all axioms evaluate to true.
 
 ---
 
@@ -298,9 +298,9 @@ theory TodoList {
   Item : Sort;
 
   // Unary relations (predicates on single elements)
-  completed : [item: Item] -> Prop;
-  high_priority : [item: Item] -> Prop;
-  blocked : [item: Item] -> Prop;
+  completed : Item -> Prop;
+  high_priority : Item -> Prop;
+  blocked : Item -> Prop;
 }
 ```
 
@@ -747,9 +747,9 @@ theory TodoList {
   Item : Sort;
 
   // Status relations
-  completed : [item: Item] -> Prop;
-  high_priority : [item: Item] -> Prop;
-  blocked : [item: Item] -> Prop;
+  completed : Item -> Prop;
+  high_priority : Item -> Prop;
+  blocked : Item -> Prop;
 
   // Dependencies
   depends_on : [x: Item, y: Item] -> Prop;
