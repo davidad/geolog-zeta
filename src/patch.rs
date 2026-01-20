@@ -69,7 +69,7 @@ impl FunctionPatch {
 
 /// Changes to relation assertions (tuples added/removed)
 ///
-/// Tuples are stored as Vec<Uuid> since element Slids are unstable across versions.
+/// Tuples are stored as `Vec<Uuid>` since element Slids are unstable across versions.
 /// We track both assertions and retractions to support inversion.
 #[derive(Default, Clone, Debug, PartialEq, Eq, Archive, Deserialize, Serialize)]
 #[archive(check_bytes)]

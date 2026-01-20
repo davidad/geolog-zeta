@@ -810,13 +810,13 @@ pub enum MetaCommand {
     Commit(Option<String>),
     /// Show commit history
     History,
-    /// Add element to instance: :add <instance> <element> <sort>
+    /// Add element to instance: `:add <instance> <element> <sort>`
     Add { instance: String, element: String, sort: String },
-    /// Assert relation tuple: :assert <instance> <relation> <args...>
+    /// Assert relation tuple: `:assert <instance> <relation> <args...>`
     Assert { instance: String, relation: String, args: Vec<String> },
-    /// Retract element from instance: :retract <instance> <element>
+    /// Retract element from instance: `:retract <instance> <element>`
     Retract { instance: String, element: String },
-    /// Query instance: :query <instance> <sort> [filter conditions]
+    /// Query instance: `:query <instance> <sort> [filter conditions]`
     Query { instance: String, sort: String },
     Unknown(String),
 }

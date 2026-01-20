@@ -318,23 +318,19 @@ In Type u, this is straightforward because:
 so lifting is just `fun ctx i => emb.embed _ (ctx i)` modulo the isomorphism.
 -/
 
-/-- Types.productIso.hom extracts component j when applied at j -/
-lemma Types_productIso_hom_apply {β : Type u} (f : β → Type u) (x : ∏ᶜ f) (j : β) :
+/-- Types.productIso.hom extracts component j when applied at j.
+    Uses Mathlib's Types.productIso_hom_comp_eval. -/
+lemma Types_productIso_hom_apply {J : Type v} (f : J → Type (max v u)) (x : ∏ᶜ f) (j : J) :
     (Types.productIso f).hom x j = Pi.π f j x := by
-  have h := limit.isoLimitCone_hom_π (Types.productLimitCone f) ⟨j⟩
-  simp only [Types.productLimitCone] at h
-  have h' := congrFun h x
-  simp only [types_comp_apply, Discrete.natTrans_app] at h'
-  rfl
+  have h := Types.productIso_hom_comp_eval f j
+  exact congrFun h x
 
-/-- Types.productIso.inv satisfies projection identity -/
-lemma Types_productIso_inv_apply {β : Type u} (f : β → Type u) (g : (j : β) → f j) (j : β) :
+/-- Types.productIso.inv satisfies projection identity.
+    Uses Mathlib's Types.productIso_inv_comp_π. -/
+lemma Types_productIso_inv_apply {J : Type v} (f : J → Type (max v u)) (g : (j : J) → f j) (j : J) :
     Pi.π f j ((Types.productIso f).inv g) = g j := by
-  have h := limit.isoLimitCone_inv_π (Types.productLimitCone f) ⟨j⟩
-  simp only [Types.productLimitCone, limit.π] at h
-  have h' := congrFun h g
-  simp only [types_comp_apply, Discrete.natTrans_app] at h'
-  exact h'
+  have h := Types.productIso_inv_comp_π f j
+  exact congrFun h g
 
 /-- Lift an element of a derived sort along an embedding.
     For base sorts: just the embedding.
@@ -421,39 +417,102 @@ theorem term_interpret_commutes {M M' : Structure S (Type u)}
   induction t with
   | var v =>
     -- Term.interpret for var v is: Pi.π _ v ≫ eqToHom _
-    -- In Type u, this simplifies since eqToHom is identity when sort is xs.nth v
-    -- liftEmbedContext applies liftSort componentwise
+    -- In Type u, eqToHom is identity when proving xs.nth v = xs.nth v (rfl)
     simp only [Term.interpret, types_comp_apply, eqToHom_refl, types_id_apply]
     -- Goal: Pi.π _ v (liftEmbedContext emb xs ctx) = liftSort emb _ (Pi.π _ v ctx)
     --
-    -- The key insight is that liftEmbedContext is defined via Types.productIso,
-    -- and extracting component v gives liftSort applied to the v-th component.
+    -- liftEmbedContext applies liftSort componentwise via Types.productIso:
+    --   liftEmbedContext ctx = productIso.inv (fun i => liftSort (productIso.hom ctx i))
+    -- Extracting component v via Pi.π gives the v-th component of the function.
     --
-    -- For now, we prove this by direct calculation:
-    -- LHS = Pi.π f_M' v (liftEmbedContext emb xs ctx)
-    -- where f_M' i = (xs.nth i).interpret M'.sorts
-    -- By limit.isoLimitCone_inv_π, this equals the v-th component of the lifted function.
-    -- That v-th component is liftSort emb (xs.nth v) (ctx' v) where ctx' = productIso.hom ctx.
-    -- And ctx' v = Pi.π f_M v ctx by limit.isoLimitCone_hom_π.
-    -- So LHS = liftSort emb (xs.nth v) (Pi.π f_M v ctx) = RHS.
-    --
-    -- This requires careful universe handling; defer to sorry for now.
-    sorry
+    -- Define the relevant functions with explicit types
+    let f_M := fun i : Fin xs.length => (xs.nth i).interpret M.sorts
+    let f_M' := fun i : Fin xs.length => (xs.nth i).interpret M'.sorts
+    -- The lifted function
+    let g : (i : Fin xs.length) → f_M' i :=
+        fun i => liftSort emb (xs.nth i) ((Types.productIso f_M).hom ctx i)
+    -- liftEmbedContext is productIso.inv applied to g
+    have h1 : liftEmbedContext emb xs ctx = (Types.productIso f_M').inv g := rfl
+    rw [h1]
+    -- Apply Types_productIso_inv_apply: Pi.π f_M' v (productIso.inv g) = g v
+    rw [Types_productIso_inv_apply f_M' g v]
+    -- Now goal: g v = liftSort emb (xs.nth v) (Pi.π f_M v ctx)
+    -- g v = liftSort emb (xs.nth v) ((Types.productIso f_M).hom ctx v)
+    -- So we need: (Types.productIso f_M).hom ctx v = Pi.π f_M v ctx
+    have h2 : (Types.productIso f_M).hom ctx v = Pi.π f_M v ctx :=
+      Types_productIso_hom_apply f_M ctx v
+    simp only [g, h2]
+    -- Goal should now be: liftSort emb (xs.nth v) (Pi.π f_M v ctx) = liftSort emb _ (Pi.π _ v ctx)
+    -- This is definitionally true since f_M i = (xs.nth i).interpret M.sorts
+    rfl
   | func f t' ih =>
     -- Function application composes term interpretation with the function.
     -- By IH, liftSort commutes with term interpretation of the argument.
     -- By func_comm (generalized), the function application commutes with liftSort.
     sorry
-  | pair tᵢ ih =>
+  | @pair n Aᵢ tᵢ ih =>
     -- Pair builds a product from component interpretations.
-    -- By IH, each component commutes with liftSort.
-    -- liftSort on products applies componentwise, so results match.
-    sorry
-  | proj t' i ih =>
+    -- Term.interpret M (pair tᵢ) = Pi.lift (fun i => (tᵢ i).interpret M)
+    simp only [Term.interpret]
+    -- Goal: Pi.lift (fun i => (tᵢ i).interpret M') (liftEmbedContext emb xs ctx) =
+    --       liftSort emb (.prod Aᵢ) (Pi.lift (fun i => (tᵢ i).interpret M) ctx)
+    --
+    -- Strategy: show both sides equal productIso.inv of the same function.
+    -- Use Types.productIso to convert between Pi.lift and actual pi types.
+    let f_M := fun j : Fin n => (Aᵢ j).interpret M.sorts
+    let f_M' := fun j : Fin n => (Aᵢ j).interpret M'.sorts
+    -- Apply productIso.hom to both sides; equality in the pi type is extensional
+    apply (Types.productIso f_M').symm.injective
+    -- Goal: productIso.hom (Pi.lift ...) = productIso.hom (liftSort ...)
+    simp only [Iso.symm_hom]
+    -- After productIso.inv, goal is about pi-type functions
+    -- LHS: productIso.hom (Pi.lift (fun i => (tᵢ i).interpret M') (liftEmbedContext ...))
+    --    = fun j => Pi.π _ j (Pi.lift (...) ...)
+    --    = fun j => (tᵢ j).interpret M' (liftEmbedContext ...)
+    -- RHS: productIso.hom (liftSort emb (.prod Aᵢ) (Pi.lift ...))
+    --    = fun j => liftSort emb (Aᵢ j) (productIso.hom (Pi.lift ...) j)
+    --    = fun j => liftSort emb (Aᵢ j) ((tᵢ j).interpret M ctx)
+    -- By IH, these are equal.
+    funext j
+    -- Goal after funext: productIso.hom (LHS) j = productIso.hom (RHS) j
+    rw [Types_productIso_hom_apply]
+    -- LHS = Pi.π f_M' j (Pi.lift (...) (liftEmbedContext ...))
+    --     = (tᵢ j).interpret M' (liftEmbedContext ...) (by limit.lift_π)
+    simp only [limit.lift_π, Fan.mk_π_app]
+    -- Now use IH
+    rw [ih j]
+    -- RHS: liftSort emb (Aᵢ j) (Pi.π f_M j (Pi.lift (fun i => (tᵢ i).interpret M) ctx))
+    -- By liftSort definition on products
+    simp only [liftSort]
+    rw [Types_productIso_hom_apply]
+    simp only [limit.lift_π, Fan.mk_π_app]
+  | @proj n Aᵢ t' i ih =>
     -- Projection extracts the i-th component from a product.
-    -- By IH, liftSort commutes with the tuple interpretation.
-    -- Pi.π applied to liftSort of a product extracts the i-th lifted component.
-    sorry
+    -- Term.interpret M (proj t' i) = t'.interpret M ≫ Pi.π _ i
+    simp only [Term.interpret, types_comp_apply]
+    -- Goal: Pi.π _ i (t'.interpret M' (liftEmbedContext emb xs ctx)) =
+    --       liftSort emb (Aᵢ i) (Pi.π _ i (t'.interpret M ctx))
+    -- By IH: t'.interpret M' (liftEmbedContext emb xs ctx) = liftSort emb (.prod Aᵢ) (t'.interpret M ctx)
+    rw [ih]
+    -- Goal: Pi.π _ i (liftSort emb (.prod Aᵢ) (t'.interpret M ctx)) =
+    --       liftSort emb (Aᵢ i) (Pi.π _ i (t'.interpret M ctx))
+    -- This is "liftSort distributes over projection"
+    -- By definition, liftSort emb (.prod Aᵢ) x = productIso.inv (fun j => liftSort emb (Aᵢ j) (productIso.hom x j))
+    let x := Term.interpret M t' ctx
+    let f_M := fun j : Fin n => (Aᵢ j).interpret M.sorts
+    let f_M' := fun j : Fin n => (Aᵢ j).interpret M'.sorts
+    let g : (j : Fin n) → f_M' j := fun j => liftSort emb (Aᵢ j) ((Types.productIso f_M).hom x j)
+    -- liftSort emb (.prod Aᵢ) x = (Types.productIso f_M').inv g
+    have h1 : liftSort emb (.prod Aᵢ) x = (Types.productIso f_M').inv g := rfl
+    rw [h1]
+    -- Apply Types_productIso_inv_apply: Pi.π f_M' i (productIso.inv g) = g i
+    rw [Types_productIso_inv_apply f_M' g i]
+    -- Goal: g i = liftSort emb (Aᵢ i) (Pi.π f_M i x)
+    -- g i = liftSort emb (Aᵢ i) ((Types.productIso f_M).hom x i)
+    have h2 : (Types.productIso f_M).hom x i = Pi.π f_M i x :=
+      Types_productIso_hom_apply f_M x i
+    simp only [g, h2]
+    rfl
 
 /-!
 **Formula Satisfaction Monotonicity**

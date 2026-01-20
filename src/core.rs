@@ -397,12 +397,12 @@ use crate::universe::Universe;
 /// carriers grow — we just extend the inner/outer Vecs.
 #[derive(Clone, Debug)]
 pub enum ProductStorage {
-    /// Binary product [x: A, y: B] → Vec<Vec<OptSlid>>
+    /// Binary product `[x: A, y: B]` → `Vec<Vec<OptSlid>>`
     /// Outer dim is A (first field), inner is B (second field).
-    /// Access: rows[x_local][y_local]
+    /// Access: `rows[x_local][y_local]`
     Binary(Vec<Vec<OptSlid>>),
 
-    /// Ternary product [x: A, y: B, z: C] → Vec<Vec<Vec<OptSlid>>>
+    /// Ternary product `[x: A, y: B, z: C]` → `Vec<Vec<Vec<OptSlid>>>`
     Ternary(Vec<Vec<Vec<OptSlid>>>),
 
     /// Higher-arity products: fall back to HashMap for flexibility.

@@ -137,8 +137,8 @@ pub enum QueryOp {
     /// Empty relation
     Empty,
 
-    /// Apply a function: extends tuples with func(arg_col)
-    /// (t₁, ..., tₙ) → (t₁, ..., tₙ, func(t[arg_col]))
+    /// Apply a function: extends tuples with `func(arg_col)`
+    /// `(t₁, ..., tₙ)` → `(t₁, ..., tₙ, func(t[arg_col]))`
     Apply {
         input: Box<QueryOp>,
         func_idx: usize,
