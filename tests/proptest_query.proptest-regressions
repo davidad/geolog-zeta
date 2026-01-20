@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 58732b0034992e09c980d677405cd7448269d1b30d5deb09f018a60e30c56215 # shrinks to structure = Structure { theory_luid: None, luids: [], luid_to_slid: {}, sorts: [], carriers: [RoaringTreemap<[]>, RoaringTreemap<[]>, RoaringTreemap<[0]>, RoaringTreemap<[]>], functions: [], relations: [], parents: {}, nested: {} }, query = Filter { input: Scan { sort_idx: 2 }, pred: Or(FuncEqConst { func_idx: 0, arg_col: 0, expected: Slid(0) }, True) }

@@ -107,7 +107,65 @@ fn arb_distinct(max_sort: usize) -> impl Strategy<Value = QueryOp> {
     })
 }
 
-/// Generate a filter with column equality predicate
+/// Generate a simple predicate (no recursion, no function predicates)
+/// Use this for tests with structures that don't have functions.
+fn arb_simple_predicate_no_funcs() -> impl Strategy<Value = Predicate> {
+    prop_oneof![
+        Just(Predicate::True),
+        Just(Predicate::False),
+        (0..5usize, 0..5usize).prop_map(|(left, right)| Predicate::ColEqCol { left, right }),
+        (0..5usize, arb_slid()).prop_map(|(col, val)| Predicate::ColEqConst { col, val }),
+    ]
+}
+
+/// Generate a simple predicate (no recursion) - includes function predicates
+/// Use this for to_relalg compilation tests where functions don't need to evaluate.
+fn arb_simple_predicate() -> impl Strategy<Value = Predicate> {
+    prop_oneof![
+        Just(Predicate::True),
+        Just(Predicate::False),
+        (0..5usize, 0..5usize).prop_map(|(left, right)| Predicate::ColEqCol { left, right }),
+        (0..5usize, arb_slid()).prop_map(|(col, val)| Predicate::ColEqConst { col, val }),
+        (0..3usize, 0..5usize, 0..5usize)
+            .prop_map(|(func_idx, arg_col, result_col)| Predicate::FuncEq { func_idx, arg_col, result_col }),
+        (0..3usize, 0..5usize, arb_slid())
+            .prop_map(|(func_idx, arg_col, expected)| Predicate::FuncEqConst { func_idx, arg_col, expected }),
+    ]
+}
+
+/// Generate a predicate with possible And/Or nesting (no function predicates)
+fn arb_predicate_no_funcs() -> impl Strategy<Value = Predicate> {
+    arb_simple_predicate_no_funcs().prop_recursive(2, 8, 2, |inner| {
+        prop_oneof![
+            inner.clone(),
+            (inner.clone(), inner.clone()).prop_map(|(l, r)| Predicate::And(Box::new(l), Box::new(r))),
+            (inner.clone(), inner).prop_map(|(l, r)| Predicate::Or(Box::new(l), Box::new(r))),
+        ]
+    })
+}
+
+/// Generate a predicate with possible And/Or nesting (includes function predicates)
+fn arb_predicate() -> impl Strategy<Value = Predicate> {
+    arb_simple_predicate().prop_recursive(2, 8, 2, |inner| {
+        prop_oneof![
+            inner.clone(),
+            (inner.clone(), inner.clone()).prop_map(|(l, r)| Predicate::And(Box::new(l), Box::new(r))),
+            (inner.clone(), inner).prop_map(|(l, r)| Predicate::Or(Box::new(l), Box::new(r))),
+        ]
+    })
+}
+
+/// Generate a filter with arbitrary predicate (no function predicates)
+/// Safe for testing against structures without functions.
+fn arb_filter_safe(max_sort: usize) -> impl Strategy<Value = QueryOp> {
+    (arb_scan(max_sort), arb_predicate_no_funcs())
+        .prop_map(|(input, pred)| QueryOp::Filter {
+            input: Box::new(input),
+            pred,
+        })
+}
+
+/// Generate a filter with column equality predicate (simple version)
 fn arb_filter_col_eq_const(max_sort: usize) -> impl Strategy<Value = QueryOp> {
     (arb_scan(max_sort), arb_slid())
         .prop_map(|(input, val)| QueryOp::Filter {
@@ -117,6 +175,7 @@ fn arb_filter_col_eq_const(max_sort: usize) -> impl Strategy<Value = QueryOp> {
 }
 
 /// Generate a query without DBSP operators (for comparing naive vs optimized)
+/// Uses arb_filter_safe to avoid function predicates that require functions in the structure.
 fn arb_query_no_dbsp(max_sort: usize) -> impl Strategy<Value = QueryOp> {
     prop_oneof![
         4 => arb_scan(max_sort),
@@ -127,6 +186,7 @@ fn arb_query_no_dbsp(max_sort: usize) -> impl Strategy<Value = QueryOp> {
         1 => arb_negate(max_sort),
         1 => arb_distinct(max_sort),
         2 => arb_filter_col_eq_const(max_sort),
+        3 => arb_filter_safe(max_sort),
     ]
 }
 
@@ -502,6 +562,21 @@ mod to_relalg_tests {
                 state_id,
             };
             let _ = compile_to_relalg(&integrate_plan, &relalg_theory, &mut universe);
+        }
+
+        /// Compiling all predicate types should work
+        #[test]
+        fn compile_all_predicate_types_no_panic(pred in super::arb_predicate()) {
+            let relalg_theory = load_relalg_theory();
+            let mut universe = Universe::new();
+
+            let filter_plan = QueryOp::Filter {
+                input: Box::new(QueryOp::Scan { sort_idx: 0 }),
+                pred,
+            };
+
+            // Should compile without panic
+            let _ = compile_to_relalg(&filter_plan, &relalg_theory, &mut universe);
         }
     }
 }
