@@ -319,9 +319,26 @@ pub fn compile_formula(
             disjunction_all(compiled)
         }
 
-        Formula::Exists(var_name, _sort, inner) => {
+        Formula::Exists(var_name, sort, inner) => {
             // Compile inner formula
             let (inner_expr, inner_vars) = compile_formula(inner, _ctx, structure, sig);
+
+            // Check if the quantified variable appears in the inner formula
+            if !inner_vars.contains(var_name) {
+                // The variable doesn't appear free in the inner formula.
+                // For example: ∃x. True  or  ∃x. (y = y)
+                //
+                // In this case, the existential is:
+                // - FALSE if the domain is empty (no witness exists)
+                // - Equal to the inner formula otherwise (witness exists vacuously)
+                let domain_card = derived_sort_cardinality(structure, sort);
+                if domain_card == 0 {
+                    // Empty domain: existential is false
+                    return (TensorExpr::scalar(false), inner_vars);
+                }
+                // Non-empty domain: the existential is equivalent to the inner formula
+                return (inner_expr, inner_vars);
+            }
 
             // Apply existential (sum over the variable)
             exists(inner_expr, &inner_vars, var_name)
@@ -599,6 +616,62 @@ mod tests {
         assert!(vars.is_empty());
         assert_eq!(result.len(), 1); // scalar true
         assert!(result.contains(&[]));
+    }
+
+    #[test]
+    fn test_compile_formula_exists_empty_domain() {
+        // When the domain is empty, ∃x. φ should be false even if φ is true
+        // This is the case for ∃x. x = x on an empty structure
+        let mut sig = Signature::new();
+        let node_id = sig.add_sort("Node".to_string());
+
+        // Empty structure (no elements)
+        let structure = Structure::new(1);
+
+        let ctx = CompileContext::new();
+
+        // Build: ∃x. x = x
+        // Inner formula x = x compiles to scalar true (no variables)
+        // But since domain is empty, the existential should be false
+        let inner = Formula::Eq(
+            Term::Var("x".to_string(), DerivedSort::Base(node_id)),
+            Term::Var("x".to_string(), DerivedSort::Base(node_id)),
+        );
+        let formula = Formula::Exists("x".to_string(), DerivedSort::Base(node_id), Box::new(inner));
+
+        let (expr, vars) = compile_formula(&formula, &ctx, &structure, &sig);
+        let result = expr.materialize();
+
+        // Should be FALSE (empty) because there's no witness in empty domain
+        assert!(vars.is_empty());
+        assert!(result.is_empty(), "∃x. x = x should be false on empty domain");
+    }
+
+    #[test]
+    fn test_compile_formula_exists_nonempty_domain() {
+        // When the domain is non-empty, ∃x. x = x should be true
+        let mut sig = Signature::new();
+        let node_id = sig.add_sort("Node".to_string());
+
+        let mut universe = Universe::new();
+        let mut structure = Structure::new(1);
+        structure.add_element(&mut universe, node_id); // Add one element
+
+        let ctx = CompileContext::new();
+
+        // Build: ∃x. x = x
+        let inner = Formula::Eq(
+            Term::Var("x".to_string(), DerivedSort::Base(node_id)),
+            Term::Var("x".to_string(), DerivedSort::Base(node_id)),
+        );
+        let formula = Formula::Exists("x".to_string(), DerivedSort::Base(node_id), Box::new(inner));
+
+        let (expr, vars) = compile_formula(&formula, &ctx, &structure, &sig);
+        let result = expr.materialize();
+
+        // Should be TRUE because there's a witness
+        assert!(vars.is_empty());
+        assert!(result.contains(&[]), "∃x. x = x should be true on non-empty domain");
     }
 
     #[test]
