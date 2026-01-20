@@ -204,7 +204,7 @@ impl Store {
     ///
     /// DSorts in GeologMeta are represented as either BaseDS or ProdDS elements.
     /// This traverses the structure to build the corresponding DerivedSort.
-    fn resolve_dsort(&self, dsort_slid: Slid) -> DerivedSort {
+    pub fn resolve_dsort(&self, dsort_slid: Slid) -> DerivedSort {
         // Check if it's a BaseDS
         if let Some(base_ds_sort) = self.sort_ids.base_ds {
             if let Some(srt_func) = self.func_ids.base_ds_srt {
