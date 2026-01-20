@@ -87,6 +87,14 @@ struct RelAlgSortIds {
     delay_op: SortId,
     diff_op: SortId,
     integrate_op: SortId,
+    empty_op: SortId,
+    const_op: SortId,
+    project_op: SortId,
+    apply_op: SortId,
+
+    // Projection mapping
+    proj_mapping: SortId,
+    proj_entry: SortId,
 
     // Predicates
     pred: SortId,
@@ -140,6 +148,13 @@ impl RelAlgSortIds {
             delay_op: lookup("DelayOp")?,
             diff_op: lookup("DiffOp")?,
             integrate_op: lookup("IntegrateOp")?,
+            empty_op: lookup("EmptyOp")?,
+            const_op: lookup("ConstOp")?,
+            project_op: lookup("ProjectOp")?,
+            apply_op: lookup("ApplyOp")?,
+
+            proj_mapping: lookup("ProjMapping")?,
+            proj_entry: lookup("ProjEntry")?,
 
             pred: lookup("Pred")?,
             true_pred: lookup("TruePred")?,
@@ -494,12 +509,17 @@ fn compile_op(ctx: &mut CompileContext<'_>, op: &QueryOp) -> Result<Slid, String
             compile_integrate(ctx, input_wire)
         }
 
-        // Not yet implemented
+        QueryOp::Negate { input } => {
+            let input_wire = compile_op(ctx, input)?;
+            compile_negate(ctx, input_wire)
+        }
+
+        QueryOp::Empty => compile_empty(ctx),
+
+        // Not yet implemented (require additional context)
         QueryOp::Project { .. } => Err("ProjectOp compilation not yet implemented".to_string()),
-        QueryOp::Negate { .. } => Err("NegateOp compilation not yet implemented".to_string()),
-        QueryOp::Constant { .. } => Err("ConstantOp compilation not yet implemented".to_string()),
-        QueryOp::Empty => Err("EmptyOp compilation not yet implemented".to_string()),
-        QueryOp::Apply { .. } => Err("ApplyOp compilation not yet implemented".to_string()),
+        QueryOp::Constant { .. } => Err("ConstantOp compilation not yet implemented (needs Elem)".to_string()),
+        QueryOp::Apply { .. } => Err("ApplyOp compilation not yet implemented (needs Func)".to_string()),
     }
 }
 
@@ -693,6 +713,43 @@ fn compile_integrate(ctx: &mut CompileContext<'_>, input_wire: Slid) -> Result<S
     Ok(out_wire)
 }
 
+fn compile_negate(ctx: &mut CompileContext<'_>, input_wire: Slid) -> Result<Slid, String> {
+    // Negate preserves schema (from wf/negate_schema axiom)
+    let schema_name = ctx.fresh_name("schema");
+    let out_schema = ctx.add_element(ctx.sort_ids.schema, &schema_name);
+    let out_wire = ctx.create_wire(out_schema)?;
+
+    let negate_name = ctx.fresh_name("negate");
+    let negate = ctx.add_element(ctx.sort_ids.negate_op, &negate_name);
+
+    let op_name = ctx.fresh_name("op");
+    let op = ctx.add_element(ctx.sort_ids.op, &op_name);
+
+    ctx.define_func("NegateOp/op", negate, op)?;
+    ctx.define_func("NegateOp/in", negate, input_wire)?;
+    ctx.define_func("NegateOp/out", negate, out_wire)?;
+
+    Ok(out_wire)
+}
+
+fn compile_empty(ctx: &mut CompileContext<'_>) -> Result<Slid, String> {
+    // Empty produces a wire with some schema (we use a fresh placeholder)
+    let schema_name = ctx.fresh_name("schema");
+    let out_schema = ctx.add_element(ctx.sort_ids.schema, &schema_name);
+    let out_wire = ctx.create_wire(out_schema)?;
+
+    let empty_name = ctx.fresh_name("empty");
+    let empty = ctx.add_element(ctx.sort_ids.empty_op, &empty_name);
+
+    let op_name = ctx.fresh_name("op");
+    let op = ctx.add_element(ctx.sort_ids.op, &op_name);
+
+    ctx.define_func("EmptyOp/op", empty, op)?;
+    ctx.define_func("EmptyOp/out", empty, out_wire)?;
+
+    Ok(out_wire)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -846,5 +903,38 @@ mod tests {
             compile_to_relalg(&integrate_plan, &relalg_theory, &mut universe).is_ok(),
             "Integrate compilation should succeed"
         );
+    }
+
+    #[test]
+    fn test_compile_negate_and_empty() {
+        let relalg_theory = load_relalg_theory();
+        let mut universe = Universe::new();
+
+        // Test Negate
+        let negate_plan = QueryOp::Negate {
+            input: Box::new(QueryOp::Scan { sort_idx: 0 }),
+        };
+        let result = compile_to_relalg(&negate_plan, &relalg_theory, &mut universe);
+        assert!(result.is_ok(), "Negate compilation should succeed");
+
+        // Test Empty
+        let empty_plan = QueryOp::Empty;
+        let result = compile_to_relalg(&empty_plan, &relalg_theory, &mut universe);
+        assert!(result.is_ok(), "Empty compilation should succeed");
+
+        // Should have: Schema, Wire, EmptyOp, Op
+        let instance = result.unwrap();
+        assert!(
+            instance.structure.len() >= 4,
+            "Empty should create at least 4 elements"
+        );
+
+        // Test Union with Empty (common pattern)
+        let union_empty_plan = QueryOp::Union {
+            left: Box::new(QueryOp::Scan { sort_idx: 0 }),
+            right: Box::new(QueryOp::Empty),
+        };
+        let result = compile_to_relalg(&union_empty_plan, &relalg_theory, &mut universe);
+        assert!(result.is_ok(), "Union(Scan, Empty) compilation should succeed");
     }
 }
