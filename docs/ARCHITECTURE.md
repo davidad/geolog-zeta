@@ -210,5 +210,19 @@ See `bd ready` for current work items. Key frontiers:
 
 ## Recent Milestones
 
+- **Unified model enumeration API** (`2026-01-19`): Consolidated `solve()`, `extend()`, and `query()`
+  into single `enumerate_models()` function. REPL commands `:solve` and `:extend` now share underlying implementation.
+
+- **Tensor compiler improvements** (`2026-01-20`):
+  - Function application equalities: `f(x) = y`, `y = f(x)`, `f(x) = g(y)` now compile correctly
+  - Empty-domain existential fix: `∃x. φ` on empty domain correctly returns false
+  - Closed `geolog-dxr` (tensor compilation panics on function terms)
+
+- **Bootstrap query migration** (`2026-01-20`): All 6 bootstrap_queries functions now delegate
+  to compiled query engine (`store_queries.rs`). Net reduction of ~144 lines of handcoded iteration.
+
+- **Proptest coverage** (`2026-01-20`): Added 6 solver proptests covering trivial theories,
+  inconsistent theories, existential theories, and Horn clause propagation.
+
 - **Geometric logic solver complete** (`geolog-xj2`): Forward chaining, equation propagation,
   existential body processing, derivation search for False. Interactive via `:solve`.
