@@ -1,0 +1,66 @@
+// Test Trace theory with axioms using product codomains
+
+theory PetriNet {
+  P : Sort;
+  T : Sort;
+  in : Sort;
+  out : Sort;
+  in/src : in -> P;
+  in/tgt : in -> T;
+  out/src : out -> T;
+  out/tgt : out -> P;
+}
+
+// Trace theory with axioms
+theory (N : PetriNet instance) Trace {
+  F : Sort;
+  F/of : F -> N/T;
+
+  W : Sort;
+  W/src : W -> [firing : F, arc : N/out];
+  W/tgt : W -> [firing : F, arc : N/in];
+
+  input_terminal : Sort;
+  output_terminal : Sort;
+  input_terminal/of : input_terminal -> N/P;
+  output_terminal/of : output_terminal -> N/P;
+  input_terminal/tgt : input_terminal -> [firing : F, arc : N/in];
+  output_terminal/src : output_terminal -> [firing : F, arc : N/out];
+
+  // Axiom: wires are injective on source
+  // forall w1, w2 : W. w1 W/src = w2 W/src |- w1 = w2;
+  // (Commented out - requires product codomain equality in premises)
+
+  // Axiom: every arc endpoint must be wired or terminated
+  // forall f : F, arc : N/out. arc N/out/src = f F/of |-
+  //   (exists w : W. w W/src = [firing: f, arc: arc]) \/
+  //   (exists o : output_terminal. o output_terminal/src = [firing: f, arc: arc]);
+  // (Commented out - requires product codomain values in conclusions)
+}
+
+// Simple net for testing
+instance SimpleNet : PetriNet = {
+  A : P;
+  B : P;
+  t : T;
+  arc_in : in;
+  arc_in in/src = A;
+  arc_in in/tgt = t;
+  arc_out : out;
+  arc_out out/src = t;
+  arc_out out/tgt = B;
+}
+
+// Test that the basic theory without axioms still works
+instance SimpleTrace : SimpleNet Trace = {
+  f1 : F;
+  f1 F/of = SimpleNet/t;
+
+  it : input_terminal;
+  it input_terminal/of = SimpleNet/A;
+  it input_terminal/tgt = [firing: f1, arc: SimpleNet/arc_in];
+
+  ot : output_terminal;
+  ot output_terminal/of = SimpleNet/B;
+  ot output_terminal/src = [firing: f1, arc: SimpleNet/arc_out];
+}

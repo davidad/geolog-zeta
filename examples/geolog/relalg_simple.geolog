@@ -1,0 +1,130 @@
+// Example: RelAlgIR query plan instances
+//
+// This demonstrates creating query plans as RelAlgIR instances.
+// These show the string diagram representation of relational algebra.
+//
+// First we need to load both GeologMeta (for Srt, Func, etc.) and RelAlgIR.
+// This file just defines instances; load theories first in the REPL:
+//   :load theories/GeologMeta.geolog
+//   :load theories/RelAlgIR.geolog
+//   :load examples/geolog/relalg_simple.geolog
+//
+// Note: RelAlgIR extends GeologMeta, so a RelAlgIR instance contains
+// elements from both GeologMeta sorts (Srt, Func, Elem) and RelAlgIR
+// sorts (Wire, Schema, ScanOp, etc.)
+
+// ============================================================
+// Example 1: Simple Scan
+// ============================================================
+// Query: "scan all elements of sort V"
+// Plan:  () --[ScanOp]--> Wire
+
+instance ScanV : RelAlgIR = {
+  // -- Schema (target theory) --
+  target_theory : GeologMeta/Theory;
+  target_theory GeologMeta/Theory/parent = target_theory;
+
+  v_srt : GeologMeta/Srt;
+  v_srt GeologMeta/Srt/theory = target_theory;
+
+  // -- Query Plan --
+  v_base_schema : BaseSchema;
+  v_base_schema BaseSchema/srt = v_srt;
+
+  v_schema : Schema;
+  v_base_schema BaseSchema/schema = v_schema;
+
+  scan_out : Wire;
+  scan_out Wire/schema = v_schema;
+
+  scan : ScanOp;
+  scan ScanOp/srt = v_srt;
+  scan ScanOp/out = scan_out;
+
+  scan_op : Op;
+  scan ScanOp/op = scan_op;
+}
+
+// ============================================================
+// Example 2: Filter(Scan)
+// ============================================================
+// Query: "scan E, filter where src(e) = some vertex"
+// Plan:  () --[Scan]--> w1 --[Filter]--> w2
+//
+// This demonstrates composition via wire sharing.
+
+// Uses chase to derive relations.
+instance FilterScan : RelAlgIR = chase {
+  // -- Schema (representing Graph theory) --
+  target_theory : GeologMeta/Theory;
+  target_theory GeologMeta/Theory/parent = target_theory;
+
+  // Sorts: V (vertices), E (edges)
+  v_srt : GeologMeta/Srt;
+  v_srt GeologMeta/Srt/theory = target_theory;
+
+  e_srt : GeologMeta/Srt;
+  e_srt GeologMeta/Srt/theory = target_theory;
+
+  // Functions: src : E -> V
+  // First create the DSort wrappers
+  v_base_ds : GeologMeta/BaseDS;
+  v_base_ds GeologMeta/BaseDS/srt = v_srt;
+
+  e_base_ds : GeologMeta/BaseDS;
+  e_base_ds GeologMeta/BaseDS/srt = e_srt;
+
+  v_dsort : GeologMeta/DSort;
+  v_base_ds GeologMeta/BaseDS/dsort = v_dsort;
+
+  e_dsort : GeologMeta/DSort;
+  e_base_ds GeologMeta/BaseDS/dsort = e_dsort;
+
+  src_func : GeologMeta/Func;
+  src_func GeologMeta/Func/theory = target_theory;
+  src_func GeologMeta/Func/dom = e_dsort;
+  src_func GeologMeta/Func/cod = v_dsort;
+
+  // NOTE: For a complete example, we'd also need an Instance element
+  // and Elem elements. For simplicity, we use a simpler predicate structure.
+
+  // Using TruePred for now (matches all, demonstrating structure)
+
+  // -- Query Plan --
+  // Schema for E
+  e_base_schema : BaseSchema;
+  e_base_schema BaseSchema/srt = e_srt;
+
+  e_schema : Schema;
+  e_base_schema BaseSchema/schema = e_schema;
+
+  // Wire 1: output of Scan (E elements)
+  w1 : Wire;
+  w1 Wire/schema = e_schema;
+
+  // Wire 2: output of Filter (filtered E elements)
+  w2 : Wire;
+  w2 Wire/schema = e_schema;
+
+  // Scan operation
+  scan : ScanOp;
+  scan ScanOp/srt = e_srt;
+  scan ScanOp/out = w1;
+
+  scan_op : Op;
+  scan ScanOp/op = scan_op;
+
+  // Predicate: TruePred (matches all - demonstrates filter structure)
+  true_pred : TruePred;
+  pred_elem : Pred;
+  true_pred TruePred/pred = pred_elem;
+
+  // Filter operation: w1 --[Filter(pred)]--> w2
+  filter : FilterOp;
+  filter FilterOp/in = w1;
+  filter FilterOp/out = w2;
+  filter FilterOp/pred = pred_elem;
+
+  filter_op : Op;
+  filter FilterOp/op = filter_op;
+}

@@ -1,0 +1,94 @@
+// Petri Net Reachability Vision Test
+// Based on 2025-12-12 design document
+
+// Basic Petri net structure
+theory PetriNet {
+  // Places
+  P : Sort;
+
+  // Transitions
+  T : Sort;
+
+  // Arcs (input to transitions, output from transitions)
+  in : Sort;
+  out : Sort;
+  in/src : in -> P;
+  in/tgt : in -> T;
+  out/src : out -> T;
+  out/tgt : out -> P;
+}
+
+// A marking is a multiset of tokens, each at a place
+theory (N : PetriNet instance) Marking {
+  token : Sort;
+  token/of : token -> N/P;
+}
+
+// A reachability problem is: can we get from initial marking to target?
+theory (N : PetriNet instance) ReachabilityProblem {
+  initial_marking : N Marking instance;
+  target_marking : N Marking instance;
+}
+
+// A trace is a sequence of firings connected by wires
+theory (N : PetriNet instance) Trace {
+  // Firings of transitions
+  F : Sort;
+  F/of : F -> N/T;
+
+  // Wires connect firing outputs to firing inputs
+  W : Sort;
+  W/src : W -> [firing : F, arc : N/out];
+  W/tgt : W -> [firing : F, arc : N/in];
+
+  // Terminals are unconnected arc endpoints (to/from the initial/target markings)
+  input_terminal : Sort;
+  output_terminal : Sort;
+  input_terminal/of : input_terminal -> N/P;
+  output_terminal/of : output_terminal -> N/P;
+  input_terminal/tgt : input_terminal -> [firing : F, arc : N/in];
+  output_terminal/src : output_terminal -> [firing : F, arc : N/out];
+}
+
+// Example Petri net: A <--ab/ba--> B, (A,B) --abc--> C
+instance ExampleNet : PetriNet = {
+  A : P;
+  B : P;
+  C : P;
+  ab : T;
+  ba : T;
+  abc : T;
+  ab_in : in;
+  ab_in in/src = A;
+  ab_in in/tgt = ab;
+  ab_out : out;
+  ab_out out/src = ab;
+  ab_out out/tgt = B;
+  ba_in : in;
+  ba_in in/src = B;
+  ba_in in/tgt = ba;
+  ba_out : out;
+  ba_out out/src = ba;
+  ba_out out/tgt = A;
+  abc_in1 : in;
+  abc_in1 in/src = A;
+  abc_in1 in/tgt = abc;
+  abc_in2 : in;
+  abc_in2 in/src = B;
+  abc_in2 in/tgt = abc;
+  abc_out : out;
+  abc_out out/src = abc;
+  abc_out out/tgt = C;
+}
+
+// Reachability problem: Can we reach B from A?
+instance problem0 : ExampleNet ReachabilityProblem = {
+  initial_marking = {
+    t : token;
+    t token/of = ExampleNet/A;
+  };
+  target_marking = {
+    t : token;
+    t token/of = ExampleNet/B;
+  };
+}

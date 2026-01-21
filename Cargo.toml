@@ -18,6 +18,7 @@ toml = "0.8"      # workspace.toml parsing
 serde = { version = "1", features = ["derive"] }  # for toml
 egglog-union-find = "1.0"  # union-find for congruence closure
 egglog-numeric-id = "1.0"  # newtype IDs with define_id! macro
+itertools = "0.13"         # Either type for zero-copy iterators
 
 [dev-dependencies]
 insta = "1.40"    # snapshot testing

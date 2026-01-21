@@ -21,22 +21,22 @@ theory Preorder {
 
 // The discrete preorder: only reflexive pairs
 // (no elements are comparable except to themselves)
-instance Discrete3 : Preorder = {
+// Uses `chase` to automatically derive reflexive pairs from axiom ax/refl.
+instance Discrete3 : Preorder = chase {
   a : X;
   b : X;
   c : X;
-  // Reflexivity is the only ordering - no explicit relation tuples needed
-  // since the axiom will derive them
 }
 
 // A total order on 3 elements: a ≤ b ≤ c
-instance Chain3 : Preorder = {
+// Uses `chase` to derive reflexive and transitive closure.
+instance Chain3 : Preorder = chase {
   bot : X;
   mid : X;
   top : X;
 
-  // Note: we'd need relation assertions here, but that syntax
-  // isn't implemented in instance elaboration yet.
-  // The theory defines what it MEANS to be a preorder;
-  // instances would assert which pairs are related.
+  // Assert the basic ordering; chase will add reflexive pairs
+  // and transitive closure (bot ≤ top)
+  [x: bot, y: mid] leq;
+  [x: mid, y: top] leq;
 }

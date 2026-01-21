@@ -52,19 +52,54 @@ Geolog is a language for geometric logic with semantics in topoi. This document 
 ┌───────────────────────────────▼─────────────────────────────────────────────┐
 │                            STORAGE LAYER                                     │
 ├─────────────────────────────────────────────────────────────────────────────┤
-│  workspace.rs     Session management (theories + instances + naming)        │
+│  store/                                                                     │
+│    ├── mod.rs           Store struct: unified GeologMeta persistence        │
+│    ├── schema.rs        Schema ID caches (sort_ids, func_ids, etc.)         │
+│    ├── append.rs        Append-only element/function/relation creation      │
+│    ├── theory.rs        Theory → Store integration                          │
+│    ├── instance.rs      Instance → Store integration                        │
+│    ├── commit.rs        Git-like commit/version control                     │
+│    └── bootstrap_queries.rs  Hardcoded query patterns (being replaced)      │
+│                                                                             │
+│  workspace.rs     Legacy session management (deprecated, use Store)         │
 │  patch.rs         Patch-based structure modifications                       │
 │  version.rs       Git-like version control for structures                   │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                            QUERY LAYER                                       │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  query/                                                                     │
+│    ├── mod.rs         Re-exports and overview                               │
+│    ├── compile.rs     Query → QueryOp plan compilation                      │
+│    ├── backend.rs     Naive QueryOp executor (reference impl)               │
+│    ├── optimize.rs    Algebraic law rewriting (filter fusion, etc.)         │
+│    ├── pattern.rs     Legacy Pattern API (deprecated)                       │
+│    └── store_queries.rs  Store-level compiled query methods                 │
+│                                                                             │
+│  Relational query engine for GeologMeta and instance queries.               │
+│  Query API: Query::scan(sort).filter_eq(func, col, val).compile()           │
+│  Optimizer applies RelAlgIR laws: Filter(p, Filter(q, x)) → Filter(p∧q, x)  │
 └─────────────────────────────────────────────────────────────────────────────┘
 
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                         SOLVING LAYER (frontier)                             │
 ├─────────────────────────────────────────────────────────────────────────────┤
 │  solver/                                                                    │
-│    ├── mod.rs     Re-exports and overview                                   │
-│    ├── types.rs   SearchNode, Obligation, NodeStatus, etc.                  │
-│    ├── tree.rs    Explicit search tree for model finding                    │
-│    └── tactics.rs Automated search tactics (Check, Enumerate, Propagate)   │
+│    ├── mod.rs     Unified model enumeration API + re-exports                │
+│    │              - enumerate_models(): core unified function               │
+│    │              - solve(): find models from scratch                       │
+│    │              - query(): extend existing models                         │
+│    ├── types.rs   SearchNode, Obligation, NodeStatus, CongruenceClosure     │
+│    ├── tree.rs    Explicit search tree with from_base() for extensions      │
+│    └── tactics.rs Automated search tactics:                                 │
+│                   - CheckTactic: axiom checking, obligation reporting       │
+│                   - ForwardChainingTactic: Datalog-style forward chaining   │
+│                   - PropagateEquationsTactic: congruence closure propagation│
+│                   - AutoTactic: composite fixpoint solver                   │
+│                                                                             │
+│  REPL commands: `:solve <theory>`, `:extend <instance> <theory>`            │
+│  See examples/geolog/solver_demo.geolog for annotated examples.             │
 │                                                                             │
 │  tensor/                                                                    │
 │    ├── mod.rs     Re-exports                                                │
@@ -168,7 +203,33 @@ Sequent {
 
 See `bd ready` for current work items. Key frontiers:
 
-- **Solver completion** (`geolog-xj2`): Full geometric logic model finding
-- **Congruence closure** (`geolog-fjy`): Equation handling in solver
-- **Leapfrog Triejoin** (`geolog-bpd`): Efficient multi-way joins
-- **Product instance elaboration** (`geolog-ulh`): `[x: a, y: b] mul = c` syntax
+- **Query engine** (`geolog-7tt`, `geolog-32x`): Chase algorithm and RelAlgIR compiler
+- **Nested instance elaboration** (`geolog-1d4`): Inline instance definitions
+- **Monotonic Submodel proofs** (`geolog-rgg`): Lean4 formalization
+- **Disjunction variable alignment** (`geolog-69b`): Extend tensor builder for heterogeneous disjuncts
+
+## Recent Milestones
+
+- **Unified model enumeration API** (`2026-01-19`): Consolidated `solve()`, `extend()`, and `query()`
+  into single `enumerate_models()` function. REPL commands `:solve` and `:extend` now share underlying implementation.
+
+- **Tensor compiler improvements** (`2026-01-20`):
+  - Function application equalities: `f(x) = y`, `y = f(x)`, `f(x) = g(y)` now compile correctly
+  - Empty-domain existential fix: `∃x. φ` on empty domain correctly returns false
+  - Closed `geolog-dxr` (tensor compilation panics on function terms)
+
+- **Bootstrap query migration** (`2026-01-20`): All 6 bootstrap_queries functions now delegate
+  to compiled query engine (`store_queries.rs`). Net reduction of ~144 lines of handcoded iteration.
+
+- **Proptest coverage** (`2026-01-20`): Added 6 solver proptests covering trivial theories,
+  inconsistent theories, existential theories, and Horn clause propagation.
+
+- **Theory extends fix** (`2026-01-20`): Fixed bug where function names like `Func/dom` (using `/`
+  as naming convention) were incorrectly treated as grandparent-qualified names. RelAlgIR.geolog
+  now loads correctly, unblocking homoiconic query plan work (`geolog-32x`).
+
+- **:explain REPL command** (`2026-01-20`): Added `:explain <instance> <sort>` to show query
+  execution plans, with Display impl for QueryOp using math notation (∫, δ, z⁻¹, ×, ∧, ∨).
+
+- **Geometric logic solver complete** (`geolog-xj2`): Forward chaining, equation propagation,
+  existential body processing, derivation search for False. Interactive via `:solve`.

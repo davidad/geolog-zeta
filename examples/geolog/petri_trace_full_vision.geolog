@@ -1,0 +1,57 @@
+// Trace theory with wires and disjunctions
+// Testing the full vision from 2025-12-12
+
+theory PetriNet {
+  P : Sort;
+  T : Sort;
+  in : Sort;
+  out : Sort;
+  in/src : in -> P;
+  in/tgt : in -> T;
+  out/src : out -> T;
+  out/tgt : out -> P;
+}
+
+theory (N : PetriNet instance) Trace {
+  F : Sort;
+  F/of : F -> N/T;
+
+  W : Sort;
+  W/src : W -> [firing : F, arc : N/out];
+  W/tgt : W -> [firing : F, arc : N/in];
+
+  input_terminal : Sort;
+  output_terminal : Sort;
+  input_terminal/of : input_terminal -> N/P;
+  output_terminal/of : output_terminal -> N/P;
+  input_terminal/tgt : input_terminal -> [firing : F, arc : N/in];
+  output_terminal/src : output_terminal -> [firing : F, arc : N/out];
+
+  // Every out arc of every firing: either wired or terminal
+  ax5 : forall f : F, arc : N/out. |-
+    (exists w : W. w W/src = [firing: f, arc: arc]) \/
+    (exists o : output_terminal. o output_terminal/src = [firing: f, arc: arc]);
+
+  // Every in arc of every firing: either wired or terminal
+  ax6 : forall f : F, arc : N/in. |-
+    (exists w : W. w W/tgt = [firing: f, arc: arc]) \/
+    (exists i : input_terminal. i input_terminal/tgt = [firing: f, arc: arc]);
+}
+
+instance SimpleNet : PetriNet = {
+  A : P;
+  B : P;
+  t : T;
+  arc_in : in;
+  arc_in in/src = A;
+  arc_in in/tgt = t;
+  arc_out : out;
+  arc_out out/src = t;
+  arc_out out/tgt = B;
+}
+
+// Chase should create both wires AND terminals (naive chase adds all disjuncts)
+instance trace_test : SimpleNet Trace = chase {
+  f1 : F;
+  f1 F/of = SimpleNet/t;
+}

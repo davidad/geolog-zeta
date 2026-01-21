@@ -1,0 +1,195 @@
+// Full Petri Net Reachability - Type-Theoretic Encoding
+//
+// This demonstrates the complete type-theoretic encoding of Petri net
+// reachability from the original geolog design vision.
+//
+// Original design: loose_thoughts/2025-12-12_12:10_VanillaPetriNetRechability.md
+//
+// Key concepts:
+// - PetriNet: places, transitions, input/output arcs (with proper arc semantics)
+// - Marking: tokens in a net (parameterized by net)
+// - ReachabilityProblem: initial and target markings (nested instances)
+// - Trace: sequence of firings with wires connecting arcs
+// - Iso: isomorphism between two sorts (used for bijections)
+// - Solution: a trace with isomorphisms to markings
+//
+// This encoding is more type-theoretically precise than the simple
+// PlaceReachability: it tracks individual tokens and arc multiplicities,
+// enabling correct handling of "multi-token" transitions.
+
+// ============================================================
+// THEORY: PetriNet
+// Basic structure: places, transitions, and arcs
+// ============================================================
+
+theory PetriNet {
+  P : Sort;      // Places
+  T : Sort;      // Transitions
+
+  in : Sort;     // Input arcs (place -> transition)
+  out : Sort;    // Output arcs (transition -> place)
+
+  // Each arc knows which place/transition it connects
+  in/src : in -> P;    // Input arc source place
+  in/tgt : in -> T;    // Input arc target transition
+  out/src : out -> T;  // Output arc source transition
+  out/tgt : out -> P;  // Output arc target place
+}
+
+// ============================================================
+// THEORY: Marking (parameterized by N : PetriNet)
+// A marking assigns tokens to places
+// ============================================================
+
+theory (N : PetriNet instance) Marking {
+  token : Sort;
+  token/of : token -> N/P;
+}
+
+// ============================================================
+// THEORY: ReachabilityProblem (parameterized by N : PetriNet)
+// Defines initial and target markings as nested instances
+// ============================================================
+
+theory (N : PetriNet instance) ReachabilityProblem {
+  initial_marking : N Marking instance;
+  target_marking : N Marking instance;
+}
+
+// ============================================================
+// THEORY: Trace (parameterized by N : PetriNet)
+// A trace is a sequence of transition firings with "wires"
+// connecting input and output arcs
+// ============================================================
+
+theory (N : PetriNet instance) Trace {
+  // Firings
+  F : Sort;
+  F/of : F -> N/T;
+
+  // Wires connect output of one firing to input of another
+  W : Sort;
+  W/src : W -> [firing : F, arc : N/out];  // Wire source (firing, output arc)
+  W/tgt : W -> [firing : F, arc : N/in];   // Wire target (firing, input arc)
+
+  // Wire coherence: output arc must belong to source firing's transition
+  ax1 : forall w : W. |- w W/src .arc N/out/src = w W/src .firing F/of;
+  // Wire coherence: input arc must belong to target firing's transition
+  ax2 : forall w : W. |- w W/tgt .arc N/in/tgt = w W/tgt .firing F/of;
+
+  // Wire uniqueness: each (firing, out-arc) pair has at most one wire
+  ax3 : forall w1, w2 : W. w1 W/src = w2 W/src |- w1 = w2;
+  // Wire uniqueness: each (firing, in-arc) pair has at most one wire
+  ax4 : forall w1, w2 : W. w1 W/tgt = w2 W/tgt |- w1 = w2;
+
+  // Terminals: for initial marking tokens (input) and final marking tokens (output)
+  input_terminal : Sort;
+  output_terminal : Sort;
+  input_terminal/of : input_terminal -> N/P;
+  output_terminal/of : output_terminal -> N/P;
+  input_terminal/tgt : input_terminal -> [firing : F, arc : N/in];
+  output_terminal/src : output_terminal -> [firing : F, arc : N/out];
+
+  // Every output arc of every firing must be wired OR be an output terminal
+  ax5 : forall f : F, arc : N/out. arc N/out/src = f F/of |-
+    (exists w : W. w W/src = [firing: f, arc: arc]) \/
+    (exists o : output_terminal. o output_terminal/src = [firing: f, arc: arc]);
+
+  // Every input arc of every firing must be wired OR be an input terminal
+  ax6 : forall f : F, arc : N/in. arc N/in/tgt = f F/of |-
+    (exists w : W. w W/tgt = [firing: f, arc: arc]) \/
+    (exists i : input_terminal. i input_terminal/tgt = [firing: f, arc: arc]);
+}
+
+// ============================================================
+// THEORY: Iso (parameterized by two sorts)
+// An isomorphism between two sorts
+// ============================================================
+
+theory (X : Sort) (Y : Sort) Iso {
+  fwd : X -> Y;
+  bwd : Y -> X;
+  fb : forall x : X. |- x fwd bwd = x;
+  bf : forall y : Y. |- y bwd fwd = y;
+}
+
+// ============================================================
+// THEORY: Solution (parameterized by N and RP)
+// A solution to a reachability problem
+// ============================================================
+
+theory (N : PetriNet instance) (RP : N ReachabilityProblem instance) Solution {
+  // The witnessing trace
+  trace : N Trace instance;
+
+  // Bijection between input terminals and initial marking tokens
+  initial_marking_iso : (trace/input_terminal) (RP/initial_marking/token) Iso instance;
+
+  // Bijection between output terminals and target marking tokens
+  target_marking_iso : (trace/output_terminal) (RP/target_marking/token) Iso instance;
+
+  // Initial marking commutes: token placement matches terminal placement
+  initial_marking_P_comm : forall i : trace/input_terminal.
+    |- i trace/input_terminal/of = i initial_marking_iso/fwd RP/initial_marking/token/of;
+
+  // Target marking commutes: token placement matches terminal placement
+  target_marking_P_comm : forall o : trace/output_terminal.
+    |- o trace/output_terminal/of = o target_marking_iso/fwd RP/target_marking/token/of;
+}
+
+// ============================================================
+// INSTANCE: ExampleNet - a small Petri net
+//
+//   (A) --[ab]--> (B) --[bc]--> (C)
+//    ^             |
+//    +---[ba]------+
+// ============================================================
+
+instance ExampleNet : PetriNet = {
+  // Places
+  A : P;
+  B : P;
+  C : P;
+
+  // Transitions
+  ab : T;
+  ba : T;
+  bc : T;
+
+  // A -> B (via ab)
+  ab_in : in;
+  ab_in in/src = A;
+  ab_in in/tgt = ab;
+  ab_out : out;
+  ab_out out/src = ab;
+  ab_out out/tgt = B;
+
+  // B -> A (via ba)
+  ba_in : in;
+  ba_in in/src = B;
+  ba_in in/tgt = ba;
+  ba_out : out;
+  ba_out out/src = ba;
+  ba_out out/tgt = A;
+
+  // B -> C (via bc)
+  bc_in : in;
+  bc_in in/src = B;
+  bc_in in/tgt = bc;
+  bc_out : out;
+  bc_out out/src = bc;
+  bc_out out/tgt = C;
+}
+
+// ============================================================
+// Example queries (once query solving is implemented):
+//
+// query can_reach_B_from_A {
+//   ? : ExampleNet problem0 Solution instance;
+// }
+//
+// where problem0 : ExampleNet ReachabilityProblem = {
+//   initial_marking = { tok : token; tok token/of = ExampleNet/A; };
+//   target_marking = { tok : token; tok token/of = ExampleNet/B; };
+// }
+// ============================================================

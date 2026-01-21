@@ -115,13 +115,16 @@ pub fn disjunction(
     let set2: std::collections::HashSet<_> = vars2.iter().collect();
 
     if set1 != set2 {
-        // For disjunction, variables must match. If they don't, we need to
-        // align them by extending each tensor with the missing variables
-        // (treating them as "any value" via Product with full domain).
-        // For now, we require exact match since this is the geometric logic case.
+        // Variables don't match - this should have been handled at compile_formula level
+        // by extending tensors with full-domain products for missing variables.
+        // If we get here, something went wrong.
+        let only_in_1: Vec<_> = set1.difference(&set2).collect();
+        let only_in_2: Vec<_> = set2.difference(&set1).collect();
         panic!(
-            "disjunction requires same variables; got {:?} vs {:?}",
-            vars1, vars2
+            "disjunction received mismatched variables (should have been aligned).\n\
+             Left has: {:?}, Right has: {:?}\n\
+             Only in left: {:?}, Only in right: {:?}",
+            vars1, vars2, only_in_1, only_in_2
         );
     }
 

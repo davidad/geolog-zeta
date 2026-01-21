@@ -36,7 +36,8 @@ instance Trivial : Monoid = {
   e : M;
 
   // Multiplication table: e * e = e
-  [x: e, y: e] mul = e;
+  // Using positional syntax: [a, b] maps to [x: a, y: b]
+  [e, e] mul = e;
 
   // Identity: e is the identity element
   e id = e;

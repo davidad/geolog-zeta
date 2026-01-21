@@ -102,10 +102,13 @@ ax/trans : forall x : X, y : X, z : X.
 ### Instance
 
 ```ebnf
-instance := 'instance' identifier ':' type_expr '=' '{' instance_item* '}'
+instance := 'instance' identifier ':' type_expr '=' instance_body
+instance_body := '{' instance_item* '}' | 'chase' '{' instance_item* '}'
 
 instance_item := element_decl | equation | nested_instance
 ```
+
+Using `= chase { ... }` runs the chase algorithm during elaboration, automatically deriving facts from axioms.
 
 #### Element Declaration
 ```
@@ -130,7 +133,8 @@ identifier '=' '{' instance_item* '}' ';'
 type_expr := 'Sort' | 'Prop' | path | record_type | app_type | arrow_type | instance_type
 
 record_type := '[' (field (',' field)*)? ']'
-field := identifier ':' type_expr
+field := identifier ':' type_expr    // Named field
+       | type_expr                   // Positional: gets name "0", "1", etc.
 
 app_type := type_expr type_expr          // Juxtaposition
 arrow_type := type_expr '->' type_expr
@@ -142,7 +146,9 @@ Examples:
 Sort                    // The universe of sorts
 Prop                    // Propositions
 V                       // A named sort
-[x: M, y: M]           // Product type (record)
+[x: M, y: M]           // Product type with named fields
+[M, M]                 // Product type with positional fields ("0", "1")
+[M, on: M]             // Mixed: first positional, second named
 M -> M                  // Function type
 PetriNet instance      // Instance of a theory
 N PetriNet instance    // Parameterized: N is a PetriNet instance
@@ -154,7 +160,8 @@ N PetriNet instance    // Parameterized: N is a PetriNet instance
 term := path | record | paren_term | application | projection
 
 record := '[' (entry (',' entry)*)? ']'
-entry := identifier ':' term
+entry := identifier ':' term         // Named entry
+       | term                        // Positional: gets name "0", "1", etc.
 
 paren_term := '(' term ')'
 application := term term           // Postfix! 'x f' means 'f(x)'
@@ -175,10 +182,17 @@ Examples:
 ```
 A                       // Variable/element reference
 ab src                  // Apply src to ab
-[x: a, y: b] mul       // Apply mul to record
+[x: a, y: b] mul       // Apply mul to record (named fields)
+[a, b] mul             // Apply mul to record (positional)
+[a, on: b] rel         // Mixed: positional first, named second
 x f g                   // Composition: g(f(x))
 r .field               // Project field from record r
 ```
+
+**Note on positional fields**: Positional fields are assigned names "0", "1", etc.
+When matching against a relation defined with named fields (e.g., `rel : [x: M, y: M] -> Prop`),
+positional fields are matched by position: "0" matches the first field, "1" the second, etc.
+This allows mixing positional and named syntax: `[a, y: b] rel` is equivalent to `[x: a, y: b] rel`.
 
 ## Formulas
 
@@ -277,4 +291,33 @@ formula := term '=' term | term ident | 'exists' qvars '.' formula | formula '\/
 
 path := ident ('/' ident)*
 ident := [a-zA-Z_][a-zA-Z0-9_]*
+```
+
+## Example Files
+
+The `examples/geolog/` directory contains working examples:
+
+| File | Description |
+|------|-------------|
+| `graph.geolog` | Simple directed graph theory with vertices and edges |
+| `preorder.geolog` | Preorder (reflexive, transitive relation) with discrete/chain instances |
+| `transitive_closure.geolog` | **Demonstrates chase algorithm** - computes reachability |
+| `monoid.geolog` | Algebraic monoid theory with associativity axiom |
+| `petri_net.geolog` | Petri net formalization with places, transitions, marking |
+| `petri_net_showcase.geolog` | **Full showcase** - parameterized theories, nested instances, cross-references |
+| `todo_list.geolog` | Task management example with dependencies |
+| `solver_demo.geolog` | Solver demonstration with reachability queries |
+| `relalg_simple.geolog` | Simple RelAlgIR query plan examples |
+
+### Running Examples
+
+```bash
+# Start REPL with an example
+cargo run -- examples/geolog/graph.geolog
+
+# Or load interactively
+cargo run
+:source examples/geolog/transitive_closure.geolog
+:inspect Chain
+:chase Chain   # Computes transitive closure!
 ```

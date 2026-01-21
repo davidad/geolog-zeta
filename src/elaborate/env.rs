@@ -54,46 +54,13 @@ impl Env {
 }
 
 /// Elaborate a type expression into a DerivedSort
+///
+/// Uses the concatenative stack-based type evaluator.
 pub fn elaborate_type(env: &Env, ty: &ast::TypeExpr) -> ElabResult<DerivedSort> {
-    match ty {
-        ast::TypeExpr::Sort => {
-            // "Sort" is the kind of sorts, not a sort itself
-            Err(ElabError::NotASort(
-                "Sort is a kind, not a type".to_string(),
-            ))
-        }
-        ast::TypeExpr::Prop => {
-            // "Prop" is the kind for relation codomains, not a sort itself
-            Err(ElabError::NotASort(
-                "Prop is a kind, not a type".to_string(),
-            ))
-        }
-        ast::TypeExpr::Path(path) => env.resolve_sort_path(path),
-        ast::TypeExpr::Record(fields) => {
-            let elab_fields: Result<Vec<_>, _> = fields
-                .iter()
-                .map(|(name, ty)| elaborate_type(env, ty).map(|s| (name.clone(), s)))
-                .collect();
-            Ok(DerivedSort::Product(elab_fields?))
-        }
-        ast::TypeExpr::App(_, _) => {
-            // Type application — for things like "N Marking"
-            // This is used for parameterized types, which we'll handle later
-            Err(ElabError::UnsupportedFeature(
-                "type application".to_string(),
-            ))
-        }
-        ast::TypeExpr::Arrow(_, _) => {
-            // Function types aren't sorts in this sense
-            Err(ElabError::NotASort("arrow types are not sorts".to_string()))
-        }
-        ast::TypeExpr::Instance(_) => {
-            // "T instance" is the type of instances of theory T
-            Err(ElabError::UnsupportedFeature(
-                "instance types in sort position".to_string(),
-            ))
-        }
-    }
+    use super::types::eval_type_expr;
+
+    let val = eval_type_expr(ty, env)?;
+    val.as_derived_sort(env)
 }
 
 /// Elaborate a term in a given context
@@ -238,24 +205,95 @@ pub fn elaborate_formula(env: &Env, ctx: &Context, formula: &ast::Formula) -> El
     }
 }
 
+/// Remap a DerivedSort for nested instance fields.
+///
+/// When copying sorts/functions from a nested instance field's theory into the local signature,
+/// we need different remapping rules:
+/// - Unqualified sorts (like "Token" in Marking) get prefixed with field_prefix (e.g., "RP/initial/Token")
+/// - Already-qualified sorts (like "N/P" in Marking) map to the parent param (e.g., just "N/P")
+///
+/// # Arguments
+/// * `field_prefix` - The prefix for the nested field (e.g., "RP/initial")
+/// * `parent_param` - The parent parameter name (e.g., "RP"), used to strip when mapping qualified sorts
+#[allow(dead_code)]
+pub(crate) fn remap_derived_sort_for_nested(
+    sort: &DerivedSort,
+    source_sig: &Signature,
+    target_sig: &Signature,
+    field_prefix: &str,
+    parent_param: &str,
+) -> DerivedSort {
+    match sort {
+        DerivedSort::Base(source_id) => {
+            let sort_name = &source_sig.sorts[*source_id];
+            let qualified_name = if sort_name.contains('/') {
+                // Already qualified (e.g., "N/P" from a parameterized theory)
+                // Try to find it directly in the target (e.g., "N/P" should exist from outer param)
+                // If not found, try with parent param prefix (e.g., "RP/N/P")
+                if target_sig.lookup_sort(sort_name).is_some() {
+                    sort_name.clone()
+                } else {
+                    format!("{}/{}", parent_param, sort_name)
+                }
+            } else {
+                // Unqualified sort from the field's theory - prefix with field_prefix
+                format!("{}/{}", field_prefix, sort_name)
+            };
+            if let Some(target_id) = target_sig.lookup_sort(&qualified_name) {
+                DerivedSort::Base(target_id)
+            } else {
+                // Fallback: just use the source ID (shouldn't happen in well-formed code)
+                eprintln!(
+                    "Warning: could not remap sort '{}' (qualified: '{}') in nested field",
+                    sort_name, qualified_name
+                );
+                sort.clone()
+            }
+        }
+        DerivedSort::Product(fields) => {
+            let remapped_fields = fields
+                .iter()
+                .map(|(name, s)| {
+                    (
+                        name.clone(),
+                        remap_derived_sort_for_nested(s, source_sig, target_sig, field_prefix, parent_param),
+                    )
+                })
+                .collect();
+            DerivedSort::Product(remapped_fields)
+        }
+    }
+}
+
 /// Remap a DerivedSort from one signature namespace to another.
 ///
 /// When copying sorts/functions from a param theory into the local signature,
 /// the sort IDs need to be remapped. For example, if PetriNet has sort P at id=0,
 /// and we copy it as "N/P" into local signature at id=2, then any DerivedSort::Base(0)
 /// needs to become DerivedSort::Base(2).
+///
+/// The `preserve_existing_prefix` flag controls requalification behavior:
+/// - false (instance params): always prefix with param_name. N/X becomes M/N/X.
+/// - true (extends): preserve existing qualifier. N/X stays N/X.
 pub(crate) fn remap_derived_sort(
     sort: &DerivedSort,
     source_sig: &Signature,
     target_sig: &Signature,
     param_name: &str,
+    preserve_existing_prefix: bool,
 ) -> DerivedSort {
     match sort {
         DerivedSort::Base(source_id) => {
             // Look up the sort name in the source signature
             let sort_name = &source_sig.sorts[*source_id];
             // Find the corresponding qualified name in target signature
-            let qualified_name = format!("{}/{}", param_name, sort_name);
+            let qualified_name = if preserve_existing_prefix && sort_name.contains('/') {
+                // Extends case: already-qualified names keep their original qualifier
+                sort_name.clone()
+            } else {
+                // Instance param case OR unqualified name: prefix with param_name
+                format!("{}/{}", param_name, sort_name)
+            };
             let target_id = target_sig
                 .lookup_sort(&qualified_name)
                 .expect("qualified sort should have been added");
@@ -267,7 +305,7 @@ pub(crate) fn remap_derived_sort(
                 .map(|(name, s)| {
                     (
                         name.clone(),
-                        remap_derived_sort(s, source_sig, target_sig, param_name),
+                        remap_derived_sort(s, source_sig, target_sig, param_name, preserve_existing_prefix),
                     )
                 })
                 .collect();

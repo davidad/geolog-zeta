@@ -27,10 +27,45 @@ impl SearchTree {
     ///
     /// The root node contains an empty Structure with the right number of
     /// sorts but no elements.
+    ///
+    /// This is equivalent to `SearchTree::from_base(theory, empty_structure)`.
+    /// Use this for `:solve` (finding models from scratch).
     pub fn new(theory: Rc<ElaboratedTheory>) -> Self {
         let num_sorts = theory.theory.signature.sorts.len();
         let root_structure = Structure::new(num_sorts);
+        Self::from_base_inner(theory, root_structure, Universe::new())
+    }
 
+    /// Create a search tree starting from an existing base structure.
+    ///
+    /// This enables the unified model-finding API:
+    /// - `:solve T` = `SearchTree::new(T)` = find models of T from scratch
+    /// - `:query M T'` = `SearchTree::from_base(T', M)` = find extensions of M to T'
+    ///
+    /// The base structure's elements, function values, and relation tuples are
+    /// preserved as "frozen" facts. The solver will only add new facts, not remove
+    /// existing ones (the refinement order).
+    ///
+    /// # Arguments
+    /// - `theory`: The theory to satisfy (may extend the base structure's theory)
+    /// - `base`: The starting structure (may already have elements, functions, relations)
+    /// - `universe`: The universe for Luid allocation (should contain Luids from base)
+    ///
+    /// # Panics
+    /// Panics if the base structure has more sorts than the theory signature.
+    pub fn from_base(theory: Rc<ElaboratedTheory>, base: Structure, universe: Universe) -> Self {
+        let num_sorts = theory.theory.signature.sorts.len();
+        assert!(
+            base.carriers.len() <= num_sorts,
+            "Base structure has {} sorts but theory only has {}",
+            base.carriers.len(),
+            num_sorts
+        );
+        Self::from_base_inner(theory, base, universe)
+    }
+
+    /// Internal constructor shared by `new` and `from_base`.
+    fn from_base_inner(theory: Rc<ElaboratedTheory>, root_structure: Structure, universe: Universe) -> Self {
         let root = SearchNode {
             id: 0,
             parent: None,
@@ -46,7 +81,7 @@ impl SearchTree {
         Self {
             nodes: vec![root],
             theory,
-            universe: Universe::new(),
+            universe,
         }
     }
 
@@ -253,6 +288,22 @@ impl SearchTree {
         node.structure.init_relations(arities);
         Ok(())
     }
+
+    /// Add a pending equation to a node's congruence closure
+    ///
+    /// Equations arise from axiom consequents, function conflicts, etc.
+    /// They are processed later during propagation.
+    pub fn add_pending_equation(
+        &mut self,
+        node: NodeId,
+        lhs: Slid,
+        rhs: Slid,
+        reason: super::types::EquationReason,
+    ) {
+        if let Some(node) = self.nodes.get_mut(node) {
+            node.cc.add_equation(lhs, rhs, reason);
+        }
+    }
 }
 
 // ============================================================================
@@ -303,15 +354,8 @@ impl SearchTree {
                 return Ok(false); // Function storage not initialized
             }
 
-            // Get domain size
-            let domain_size = match &func_sym.domain {
-                crate::core::DerivedSort::Base(sort_id) => node.structure.carrier_size(*sort_id),
-                crate::core::DerivedSort::Product(_) => {
-                    // Product domains: need to compute cardinality
-                    // For now, skip (TODO: handle product domains properly)
-                    continue;
-                }
-            };
+            // Get domain cardinality (works for base and product sorts)
+            let domain_size = func_sym.domain.cardinality(&node.structure);
 
             // Check all domain elements have values (local functions only for now)
             let func_col = &node.structure.functions[func_id];
@@ -398,6 +442,17 @@ impl SearchTree {
                     }
                     crate::core::FunctionColumn::ProductLocal { storage, .. } => {
                         storage.defined_count()
+                    }
+                    crate::core::FunctionColumn::ProductCodomain { field_columns, .. } => {
+                        // Count elements where ALL fields are defined
+                        if field_columns.is_empty() {
+                            0
+                        } else {
+                            let len = field_columns[0].len();
+                            (0..len)
+                                .filter(|&i| field_columns.iter().all(|col| col.get(i).is_some_and(|opt| opt.is_some())))
+                                .count()
+                        }
                     }
                 })
                 .collect(),

@@ -86,10 +86,13 @@ pub enum Declaration {
 
 /// A theory declaration
 /// e.g., `theory (N : PetriNet instance) Marking { ... }`
+/// or `theory Foo extends Bar { ... }`
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TheoryDecl {
     pub params: Vec<Param>,
     pub name: String,
+    /// Optional parent theory to extend
+    pub extends: Option<Path>,
     pub body: Vec<Spanned<TheoryItem>>,
 }
 
@@ -143,29 +146,105 @@ pub struct QuantifiedVar {
     pub ty: TypeExpr,
 }
 
-/// Type expressions
+/// A single token in a type expression stack program (concatenative parsing)
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum TypeExpr {
-    /// The kind `Sort`
-    Sort,
-
-    /// The kind `Prop` (for relation declarations: `R : domain -> Prop`)
-    Prop,
-
-    /// A named type or path: `P`, `N.P`, `N Marking`
+pub enum TypeToken {
+    /// Push a path onto the stack (might be sort, instance ref, or theory name)
     Path(Path),
 
-    /// Application: `N Marking`, `trace input_terminal`
-    App(Box<TypeExpr>, Box<TypeExpr>),
+    /// The `Sort` keyword - pushes the Sort kind
+    Sort,
 
-    /// Function type: `in -> P`
-    Arrow(Box<TypeExpr>, Box<TypeExpr>),
+    /// The `Prop` keyword - pushes the Prop kind
+    Prop,
 
-    /// Record type: `[firing : F, arc : N.out]`
+    /// The `instance` keyword - pops top, wraps as instance type, pushes
+    Instance,
+
+    /// Arrow - pops two types (domain, codomain), pushes function type
+    /// Note: arrows are handled specially during parsing to maintain infix syntax
+    Arrow,
+
+    /// Record type literal: `[field : Type, ...]`
+    /// Contains nested TypeExprs for field types (evaluated recursively)
     Record(Vec<(String, TypeExpr)>),
+}
 
-    /// Instance type: `PetriNet instance`
-    Instance(Box<TypeExpr>),
+/// A type expression as a flat stack program (concatenative style)
+///
+/// Instead of a tree like `App(App(A, B), C)`, we store a flat sequence
+/// `[Path(A), Path(B), Path(C)]` that gets evaluated during elaboration
+/// when we have access to the symbol table (to know theory arities).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TypeExpr {
+    pub tokens: Vec<TypeToken>,
+}
+
+impl TypeExpr {
+    /// Create a type expression from a single path
+    pub fn single_path(p: Path) -> Self {
+        Self {
+            tokens: vec![TypeToken::Path(p)],
+        }
+    }
+
+    /// Create the Sort kind
+    pub fn sort() -> Self {
+        Self {
+            tokens: vec![TypeToken::Sort],
+        }
+    }
+
+    /// Create the Prop kind
+    pub fn prop() -> Self {
+        Self {
+            tokens: vec![TypeToken::Prop],
+        }
+    }
+
+    /// Check if this is a single path (common case)
+    pub fn as_single_path(&self) -> Option<&Path> {
+        if self.tokens.len() == 1
+            && let TypeToken::Path(p) = &self.tokens[0] {
+                return Some(p);
+            }
+        None
+    }
+
+    /// Check if this is the Sort kind
+    pub fn is_sort(&self) -> bool {
+        matches!(self.tokens.as_slice(), [TypeToken::Sort])
+    }
+
+    /// Check if this ends with `instance`
+    pub fn is_instance(&self) -> bool {
+        self.tokens.last() == Some(&TypeToken::Instance)
+    }
+
+    /// Get the inner type expression (without the trailing `instance` token)
+    pub fn instance_inner(&self) -> Option<Self> {
+        if self.is_instance() {
+            Some(Self {
+                tokens: self.tokens[..self.tokens.len() - 1].to_vec(),
+            })
+        } else {
+            None
+        }
+    }
+
+    /// Check if this is the Prop kind
+    pub fn is_prop(&self) -> bool {
+        matches!(self.tokens.as_slice(), [TypeToken::Prop])
+    }
+
+    /// Check if this is a record type
+    pub fn as_record(&self) -> Option<&Vec<(String, TypeExpr)>> {
+        if self.tokens.len() == 1
+            && let TypeToken::Record(fields) = &self.tokens[0] {
+                return Some(fields);
+            }
+        None
+    }
 }
 
 /// Terms (elements of types)
@@ -190,6 +269,9 @@ pub enum Term {
 /// Formulas (geometric logic)
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Formula {
+    /// False/Bottom (⊥): inconsistency, empty disjunction
+    False,
+
     /// Relation application: `rel(term)` or `rel([field: value, ...])`
     RelApp(String, Term),
 
@@ -207,25 +289,26 @@ pub enum Formula {
 
     /// Truth
     True,
-
-    /// Falsity (for completeness, though geometric logic rarely uses it)
-    False,
 }
 
 /// An instance declaration
-/// e.g., `PetriNet instance ExampleNet { ... }`
+/// e.g., `instance ExampleNet : PetriNet = { ... }`
+/// or `instance ExampleNet : PetriNet = chase { ... }` for chase-before-check
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct InstanceDecl {
     pub theory: TypeExpr,
     pub name: String,
     pub body: Vec<Spanned<InstanceItem>>,
+    /// If true, run chase algorithm after elaboration before checking axioms.
+    /// Syntax: `instance Name : Theory = chase { ... }`
+    pub needs_chase: bool,
 }
 
 /// Items in an instance body
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum InstanceItem {
-    /// Element declaration: `A : P;`
-    Element(String, TypeExpr),
+    /// Element declaration: `A : P;` or `a, b, c : P;`
+    Element(Vec<String>, TypeExpr),
 
     /// Equation: `ab_in in.src = A;`
     Equation(Term, Term),

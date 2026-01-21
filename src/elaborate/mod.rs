@@ -7,10 +7,11 @@ mod env;
 mod error;
 mod instance;
 mod theory;
+pub mod types;
 
 // Re-export main types and functions
 pub use env::{elaborate_formula, elaborate_term, elaborate_type, Env};
 pub use error::{ElabError, ElabResult};
-#[allow(deprecated)]
-pub use instance::{elaborate_instance, elaborate_instance_ws};
+pub use instance::{ElaborationContext, InstanceElaborationResult, InstanceEntry, elaborate_instance_ctx, elaborate_instance_ctx_partial};
 pub use theory::elaborate_theory;
+pub use types::{eval_type_expr, TypeValue};

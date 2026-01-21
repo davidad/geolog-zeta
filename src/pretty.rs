@@ -169,48 +169,82 @@ impl Pretty {
     }
 
     pub fn type_expr(&mut self, ty: &TypeExpr) {
-        match ty {
-            TypeExpr::Sort => self.write("Sort"),
-            TypeExpr::Prop => self.write("Prop"),
-            TypeExpr::Path(p) => self.write(&p.to_string()),
-            TypeExpr::App(f, a) => {
-                self.type_expr(f);
-                self.write(" ");
-                self.type_expr_atom(a);
-            }
-            TypeExpr::Arrow(d, c) => {
-                self.type_expr_atom(d);
-                self.write(" -> ");
-                self.type_expr(c);
-            }
-            TypeExpr::Record(fields) => {
-                self.write("[");
-                for (i, (name, ty)) in fields.iter().enumerate() {
-                    if i > 0 {
-                        self.write(", ");
+        use crate::ast::TypeToken;
+
+        let mut need_space = false;
+
+        for token in &ty.tokens {
+            match token {
+                TypeToken::Sort => {
+                    if need_space {
+                        self.write(" ");
                     }
-                    self.write(name);
-                    self.write(" : ");
-                    self.type_expr(ty);
+                    self.write("Sort");
+                    need_space = true;
                 }
-                self.write("]");
-            }
-            TypeExpr::Instance(t) => {
-                self.type_expr(t);
-                self.write(" instance");
+                TypeToken::Prop => {
+                    if need_space {
+                        self.write(" ");
+                    }
+                    self.write("Prop");
+                    need_space = true;
+                }
+                TypeToken::Path(p) => {
+                    if need_space {
+                        self.write(" ");
+                    }
+                    self.write(&p.to_string());
+                    need_space = true;
+                }
+                TypeToken::Instance => {
+                    self.write(" instance");
+                    need_space = true;
+                }
+                TypeToken::Arrow => {
+                    // Arrows are inserted between chunks
+                    // This simplistic approach just prints " -> " when we see Arrow
+                    self.write(" -> ");
+                    need_space = false;
+                }
+                TypeToken::Record(fields) => {
+                    if need_space {
+                        self.write(" ");
+                    }
+                    self.write("[");
+                    for (i, (name, field_ty)) in fields.iter().enumerate() {
+                        if i > 0 {
+                            self.write(", ");
+                        }
+                        self.write(name);
+                        self.write(" : ");
+                        self.type_expr(field_ty);
+                    }
+                    self.write("]");
+                    need_space = true;
+                }
             }
         }
     }
 
     /// Print a type expression that might need parentheses
+    #[allow(dead_code)]
     fn type_expr_atom(&mut self, ty: &TypeExpr) {
-        match ty {
-            TypeExpr::Arrow(_, _) | TypeExpr::App(_, _) => {
-                self.write("(");
-                self.type_expr(ty);
-                self.write(")");
-            }
-            _ => self.type_expr(ty),
+        use crate::ast::TypeToken;
+
+        // Check if this needs parentheses (has arrows or multiple paths)
+        let has_arrow = ty.tokens.iter().any(|t| matches!(t, TypeToken::Arrow));
+        let path_count = ty
+            .tokens
+            .iter()
+            .filter(|t| matches!(t, TypeToken::Path(_)))
+            .count();
+
+        if has_arrow || path_count > 1 {
+            self.write("(");
+            self.type_expr(ty);
+            self.write(")");
+        } else {
+            self.type_expr(ty);
         }
     }
 
@@ -332,8 +366,8 @@ impl Pretty {
 
     pub fn instance_item(&mut self, item: &InstanceItem) {
         match item {
-            InstanceItem::Element(name, ty) => {
-                self.write(name);
+            InstanceItem::Element(names, ty) => {
+                self.write(&names.join(", "));
                 self.write(" : ");
                 self.type_expr(ty);
                 self.write(";");

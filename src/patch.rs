@@ -69,7 +69,7 @@ impl FunctionPatch {
 
 /// Changes to relation assertions (tuples added/removed)
 ///
-/// Tuples are stored as Vec<Uuid> since element Slids are unstable across versions.
+/// Tuples are stored as `Vec<Uuid>` since element Slids are unstable across versions.
 /// We track both assertions and retractions to support inversion.
 #[derive(Default, Clone, Debug, PartialEq, Eq, Archive, Deserialize, Serialize)]
 #[archive(check_bytes)]
@@ -279,8 +279,31 @@ pub fn diff(
     // We need to compare function values for elements that exist in both
     for func_id in 0..new.num_functions() {
         if func_id >= old.num_functions() {
-            // New function - all values are additions
-            continue; // TODO: handle schema changes
+            // New function added to schema - all its values are additions
+            // Record each defined value with old_value = None
+            let Some(new_func_col) = new.functions[func_id].as_local() else { continue };
+            for (sort_slid, opt_codomain) in new_func_col.iter().enumerate() {
+                if let Some(new_codomain_slid) = get_slid(*opt_codomain) {
+                    // Find UUIDs for domain and codomain
+                    let domain_uuid = find_uuid_by_sort_slid(new, universe, func_id, sort_slid);
+                    if let Some(domain_uuid) = domain_uuid {
+                        let new_codomain_luid = new.luids[new_codomain_slid.index()];
+                        if let Some(new_codomain_uuid) = universe.get(new_codomain_luid) {
+                            // Record: this domain element now maps to this codomain element
+                            // (was undefined before since function didn't exist)
+                            patch.functions.old_values
+                                .entry(func_id)
+                                .or_default()
+                                .insert(domain_uuid, None);
+                            patch.functions.new_values
+                                .entry(func_id)
+                                .or_default()
+                                .insert(domain_uuid, new_codomain_uuid);
+                        }
+                    }
+                }
+            }
+            continue;
         }
 
         let mut old_vals: BTreeMap<Uuid, Option<Uuid>> = BTreeMap::new();

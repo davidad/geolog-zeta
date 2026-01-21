@@ -1,0 +1,18 @@
+// Test: Record literals in existential conclusions
+
+theory RecordExistentialTest {
+  A : Sort;
+  B : Sort;
+
+  R : Sort;
+  R/data : R -> [x: A, y: B];
+
+  // Axiom: given any a:A and b:B, there exists an R with that data
+  ax1 : forall a : A, b : B. |-
+    exists r : R. r R/data = [x: a, y: b];
+}
+
+instance Test : RecordExistentialTest = chase {
+  a1 : A;
+  b1 : B;
+}

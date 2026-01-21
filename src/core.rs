@@ -45,6 +45,27 @@ impl DerivedSort {
             DerivedSort::Product(fields) => fields.len(),
         }
     }
+
+    /// Returns the cardinality of this derived sort in a given structure.
+    ///
+    /// For Base(s), returns the carrier size of sort s.
+    /// For Product([x: A, y: B, ...]), returns the product of cardinalities.
+    /// An empty product (unit type) has cardinality 1.
+    pub fn cardinality(&self, structure: &Structure) -> usize {
+        match self {
+            DerivedSort::Base(sort_id) => structure.carrier_size(*sort_id),
+            DerivedSort::Product(fields) => {
+                if fields.is_empty() {
+                    1 // Unit type has one inhabitant
+                } else {
+                    fields
+                        .iter()
+                        .map(|(_, field_sort)| field_sort.cardinality(structure))
+                        .product()
+                }
+            }
+        }
+    }
 }
 
 /// A function symbol with its domain and codomain
@@ -62,7 +83,17 @@ pub struct RelationSymbol {
     pub domain: DerivedSort,
 }
 
-/// A signature: sorts + function symbols + relation symbols
+/// An instance field declaration (a field that holds a sub-instance)
+/// e.g., `initial_marking : N Marking instance;`
+#[derive(Clone, Debug)]
+pub struct InstanceFieldSymbol {
+    pub name: String,
+    /// The theory type expression (e.g., "N Marking" as a string for now)
+    /// This needs to be resolved with actual parameter bindings during instance elaboration
+    pub theory_type: String,
+}
+
+/// A signature: sorts + function symbols + relation symbols + instance fields
 #[derive(Clone, Debug, Default)]
 pub struct Signature {
     /// Sort names, indexed by SortId
@@ -77,6 +108,10 @@ pub struct Signature {
     pub relations: Vec<RelationSymbol>,
     /// Map from relation name to RelId
     pub rel_names: HashMap<String, RelId>,
+    /// Instance field declarations (fields that hold sub-instances)
+    pub instance_fields: Vec<InstanceFieldSymbol>,
+    /// Map from instance field name to index
+    pub instance_field_names: HashMap<String, usize>,
 }
 
 impl Signature {
@@ -124,6 +159,20 @@ impl Signature {
 
     pub fn lookup_rel(&self, name: &str) -> Option<RelId> {
         self.rel_names.get(name).copied()
+    }
+
+    /// Add an instance field declaration.
+    /// Returns the field index (0-based).
+    pub fn add_instance_field(&mut self, name: String, theory_type: String) -> usize {
+        let id = self.instance_fields.len();
+        self.instance_field_names.insert(name.clone(), id);
+        self.instance_fields.push(InstanceFieldSymbol { name, theory_type });
+        id
+    }
+
+    /// Look up an instance field by name
+    pub fn lookup_instance_field(&self, name: &str) -> Option<usize> {
+        self.instance_field_names.get(name).copied()
     }
 }
 
@@ -325,7 +374,7 @@ impl Term {
 /// A well-typed geometric formula
 #[derive(Clone, Debug)]
 pub enum Formula {
-    /// Relation (currently unused — geometric logic often encodes via equations)
+    /// Relation application: R(t) where R is a relation symbol and t is a term
     Rel(RelId, Term),
     /// Truth
     True,
@@ -358,6 +407,8 @@ pub struct Theory {
     pub name: String,
     pub signature: Signature,
     pub axioms: Vec<Sequent>,
+    /// Axiom names (parallel to axioms vec), e.g. "ax/input_complete"
+    pub axiom_names: Vec<String>,
 }
 
 /// A theory can have parameters (other theories it depends on)
@@ -397,12 +448,12 @@ use crate::universe::Universe;
 /// carriers grow — we just extend the inner/outer Vecs.
 #[derive(Clone, Debug)]
 pub enum ProductStorage {
-    /// Binary product [x: A, y: B] → Vec<Vec<OptSlid>>
+    /// Binary product `[x: A, y: B]` → `Vec<Vec<OptSlid>>`
     /// Outer dim is A (first field), inner is B (second field).
-    /// Access: rows[x_local][y_local]
+    /// Access: `rows[x_local][y_local]`
     Binary(Vec<Vec<OptSlid>>),
 
-    /// Ternary product [x: A, y: B, z: C] → Vec<Vec<Vec<OptSlid>>>
+    /// Ternary product `[x: A, y: B, z: C]` → `Vec<Vec<Vec<OptSlid>>>`
     Ternary(Vec<Vec<Vec<OptSlid>>>),
 
     /// Higher-arity products: fall back to HashMap for flexibility.
@@ -465,11 +516,10 @@ impl ProductStorage {
                 while rows[tuple[0]].len() <= tuple[1] {
                     rows[tuple[0]].push(None);
                 }
-                if let Some(existing) = get_slid(rows[tuple[0]][tuple[1]]) {
-                    if existing != value {
+                if let Some(existing) = get_slid(rows[tuple[0]][tuple[1]])
+                    && existing != value {
                         return Err(existing);
                     }
-                }
                 rows[tuple[0]][tuple[1]] = some_slid(value);
                 Ok(())
             }
@@ -484,20 +534,18 @@ impl ProductStorage {
                 while planes[tuple[0]][tuple[1]].len() <= tuple[2] {
                     planes[tuple[0]][tuple[1]].push(None);
                 }
-                if let Some(existing) = get_slid(planes[tuple[0]][tuple[1]][tuple[2]]) {
-                    if existing != value {
+                if let Some(existing) = get_slid(planes[tuple[0]][tuple[1]][tuple[2]])
+                    && existing != value {
                         return Err(existing);
                     }
-                }
                 planes[tuple[0]][tuple[1]][tuple[2]] = some_slid(value);
                 Ok(())
             }
             ProductStorage::General(map) => {
-                if let Some(&existing) = map.get(tuple) {
-                    if existing != value {
+                if let Some(&existing) = map.get(tuple)
+                    && existing != value {
                         return Err(existing);
                     }
-                }
                 map.insert(tuple.to_vec(), value);
                 Ok(())
             }
@@ -568,6 +616,18 @@ pub enum FunctionColumn {
         storage: ProductStorage,
         field_sorts: Vec<SortId>,
     },
+    /// Base domain with product codomain (multiple fields).
+    /// Each domain element maps to a tuple of codomain Slids.
+    ProductCodomain {
+        /// One column per field - field_columns[i][domain_idx] = codomain Slid for field i
+        field_columns: Vec<Vec<OptSlid>>,
+        /// Field names in order
+        field_names: Vec<String>,
+        /// Sort IDs for each codomain field
+        field_sorts: Vec<SortId>,
+        /// Domain sort ID (for carrier size lookups during growth)
+        domain_sort: SortId,
+    },
 }
 
 /// Linearize a tuple of sort-local indices into a flat column index.
@@ -609,6 +669,9 @@ impl FunctionColumn {
             FunctionColumn::Local(v) => v.len(),
             FunctionColumn::External(v) => v.len(),
             FunctionColumn::ProductLocal { .. } => 0, // Product domains have dynamic size
+            FunctionColumn::ProductCodomain { field_columns, .. } => {
+                field_columns.first().map(|c| c.len()).unwrap_or(0)
+            }
         }
     }
 
@@ -618,6 +681,16 @@ impl FunctionColumn {
             FunctionColumn::Local(v) => v.iter().filter(|x| x.is_some()).count(),
             FunctionColumn::External(v) => v.iter().filter(|x| x.is_some()).count(),
             FunctionColumn::ProductLocal { storage, .. } => storage.defined_count(),
+            FunctionColumn::ProductCodomain { field_columns, .. } => {
+                // Count entries where ALL fields are defined
+                if field_columns.is_empty() {
+                    return 0;
+                }
+                let len = field_columns[0].len();
+                (0..len)
+                    .filter(|&i| field_columns.iter().all(|col| col.get(i).and_then(|x| *x).is_some()))
+                    .count()
+            }
         }
     }
 
@@ -629,6 +702,11 @@ impl FunctionColumn {
     /// Check if this is a local column (base domain, local codomain)
     pub fn is_local(&self) -> bool {
         matches!(self, FunctionColumn::Local(_))
+    }
+
+    /// Check if this is a product codomain column
+    pub fn is_product_codomain(&self) -> bool {
+        matches!(self, FunctionColumn::ProductCodomain { .. })
     }
 
     /// Check if this is an external column (base domain, external codomain)
@@ -646,7 +724,8 @@ impl FunctionColumn {
         match self {
             FunctionColumn::Local(v) => v[idx],
             FunctionColumn::External(_) => panic!("get_local called on external column"),
-            FunctionColumn::ProductLocal { .. } => panic!("get_local called on product column"),
+            FunctionColumn::ProductLocal { .. } => panic!("get_local called on product domain column"),
+            FunctionColumn::ProductCodomain { .. } => panic!("get_local called on product codomain column"),
         }
     }
 
@@ -655,7 +734,8 @@ impl FunctionColumn {
         match self {
             FunctionColumn::External(v) => v[idx],
             FunctionColumn::Local(_) => panic!("get_external called on local column"),
-            FunctionColumn::ProductLocal { .. } => panic!("get_external called on product column"),
+            FunctionColumn::ProductLocal { .. } => panic!("get_external called on product domain column"),
+            FunctionColumn::ProductCodomain { .. } => panic!("get_external called on product codomain column"),
         }
     }
 
@@ -664,7 +744,8 @@ impl FunctionColumn {
         match self {
             FunctionColumn::Local(v) => v.iter(),
             FunctionColumn::External(_) => panic!("iter_local called on external column"),
-            FunctionColumn::ProductLocal { .. } => panic!("iter_local called on product column"),
+            FunctionColumn::ProductLocal { .. } => panic!("iter_local called on product domain column"),
+            FunctionColumn::ProductCodomain { .. } => panic!("iter_local called on product codomain column"),
         }
     }
 
@@ -673,7 +754,8 @@ impl FunctionColumn {
         match self {
             FunctionColumn::External(v) => v.iter(),
             FunctionColumn::Local(_) => panic!("iter_external called on local column"),
-            FunctionColumn::ProductLocal { .. } => panic!("iter_external called on product column"),
+            FunctionColumn::ProductLocal { .. } => panic!("iter_external called on product domain column"),
+            FunctionColumn::ProductCodomain { .. } => panic!("iter_external called on product codomain column"),
         }
     }
 
@@ -681,7 +763,9 @@ impl FunctionColumn {
     pub fn as_local(&self) -> Option<&Vec<OptSlid>> {
         match self {
             FunctionColumn::Local(v) => Some(v),
-            FunctionColumn::External(_) | FunctionColumn::ProductLocal { .. } => None,
+            FunctionColumn::External(_)
+            | FunctionColumn::ProductLocal { .. }
+            | FunctionColumn::ProductCodomain { .. } => None,
         }
     }
 
@@ -689,7 +773,9 @@ impl FunctionColumn {
     pub fn as_local_mut(&mut self) -> Option<&mut Vec<OptSlid>> {
         match self {
             FunctionColumn::Local(v) => Some(v),
-            FunctionColumn::External(_) | FunctionColumn::ProductLocal { .. } => None,
+            FunctionColumn::External(_)
+            | FunctionColumn::ProductLocal { .. }
+            | FunctionColumn::ProductCodomain { .. } => None,
         }
     }
 
@@ -778,8 +864,10 @@ pub struct Structure {
     /// E.g., for `problem0 : ExampleNet ReachabilityProblem`, this contains {"N": uuid_of_ExampleNet}
     pub parents: HashMap<String, Uuid>,
 
-    /// Nested structures (for instance-valued fields)
-    pub nested: HashMap<Luid, Structure>,
+    /// Nested structures (for instance-valued fields).
+    /// Maps field name → nested Structure.
+    /// E.g., for `initial_marking = { ... }`, this contains {"initial_marking": Structure}
+    pub nested: HashMap<String, Structure>,
 }
 
 /// Function init info: domain sort ID and whether codomain is external
@@ -796,6 +884,24 @@ pub enum FunctionDomainInfo {
     Base(SortId),
     /// Product domain: list of sort IDs for each field
     Product(Vec<SortId>),
+}
+
+/// Full function initialization info (domain + codomain)
+#[derive(Clone, Debug)]
+pub struct FunctionFullInfo {
+    pub domain: FunctionDomainInfo,
+    pub codomain: FunctionCodomainInfo,
+}
+
+/// Codomain info for function initialization
+#[derive(Clone, Debug)]
+pub enum FunctionCodomainInfo {
+    /// Base sort codomain (local): values are Slids within this structure
+    Local(SortId),
+    /// Base sort codomain (external): values are Luids from parent
+    External,
+    /// Product codomain: field names and sort IDs
+    Product { field_names: Vec<String>, field_sorts: Vec<SortId> },
 }
 
 impl Structure {
@@ -882,6 +988,55 @@ impl Structure {
                     FunctionColumn::ProductLocal {
                         storage: ProductStorage::new(&carrier_sizes),
                         field_sorts: field_sort_ids.clone(),
+                    }
+                }
+            })
+            .collect();
+    }
+
+    /// Initialize function storage with complete info (domain AND codomain types).
+    /// This supports product codomains in addition to product domains.
+    pub fn init_functions_complete(&mut self, funcs: &[FunctionFullInfo]) {
+        self.functions = funcs
+            .iter()
+            .map(|info| {
+                match (&info.domain, &info.codomain) {
+                    // Base domain, base local codomain
+                    (FunctionDomainInfo::Base(domain_sort), FunctionCodomainInfo::Local(_)) => {
+                        FunctionColumn::Local(vec![None; self.carrier_size(*domain_sort)])
+                    }
+                    // Base domain, external codomain
+                    (FunctionDomainInfo::Base(domain_sort), FunctionCodomainInfo::External) => {
+                        FunctionColumn::External(vec![None; self.carrier_size(*domain_sort)])
+                    }
+                    // Base domain, product codomain
+                    (FunctionDomainInfo::Base(domain_sort), FunctionCodomainInfo::Product { field_names, field_sorts }) => {
+                        let size = self.carrier_size(*domain_sort);
+                        FunctionColumn::ProductCodomain {
+                            field_columns: vec![vec![None; size]; field_names.len()],
+                            field_names: field_names.clone(),
+                            field_sorts: field_sorts.clone(),
+                            domain_sort: *domain_sort,
+                        }
+                    }
+                    // Product domain, local codomain
+                    (FunctionDomainInfo::Product(field_sort_ids), FunctionCodomainInfo::Local(_)) => {
+                        let carrier_sizes: Vec<usize> = field_sort_ids
+                            .iter()
+                            .map(|&sort_id| self.carrier_size(sort_id))
+                            .collect();
+                        FunctionColumn::ProductLocal {
+                            storage: ProductStorage::new(&carrier_sizes),
+                            field_sorts: field_sort_ids.clone(),
+                        }
+                    }
+                    // Product domain with external or product codomain - not yet supported
+                    (FunctionDomainInfo::Product(_), _) => {
+                        // Fall back to ProductLocal with empty storage
+                        FunctionColumn::ProductLocal {
+                            storage: ProductStorage::new_general(),
+                            field_sorts: Vec::new(),
+                        }
                     }
                 }
             })
@@ -1001,6 +1156,10 @@ impl Structure {
                 "func {} has product domain, use define_function_product",
                 func_id
             )),
+            FunctionColumn::ProductCodomain { .. } => Err(format!(
+                "func {} has product codomain, use define_function_product_codomain",
+                func_id
+            )),
         }
     }
 
@@ -1042,6 +1201,10 @@ impl Structure {
                 "func {} has product domain, use define_function_product",
                 func_id
             )),
+            FunctionColumn::ProductCodomain { .. } => Err(format!(
+                "func {} has product codomain, use define_function_product_codomain",
+                func_id
+            )),
         }
     }
 
@@ -1079,6 +1242,68 @@ impl Structure {
                 "func {} has external codomain, use define_function_ext",
                 func_id
             )),
+            FunctionColumn::ProductCodomain { .. } => Err(format!(
+                "func {} has product codomain, use define_function_product_codomain",
+                func_id
+            )),
+        }
+    }
+
+    /// Define a function value for a product codomain (Slid → tuple of Slids).
+    /// Used for functions like `f : A -> [x: B, y: C]`.
+    ///
+    /// The codomain_values is a slice of (field_name, Slid) pairs.
+    pub fn define_function_product_codomain(
+        &mut self,
+        func_id: FuncId,
+        domain_slid: Slid,
+        codomain_values: &[(&str, Slid)],
+    ) -> Result<(), String> {
+        let domain_sort_slid = self.sort_local_id(domain_slid);
+        let idx = domain_sort_slid.index();
+
+        match &mut self.functions[func_id] {
+            FunctionColumn::ProductCodomain { field_columns, field_names, domain_sort, .. } => {
+                // Grow columns if needed
+                for col in field_columns.iter_mut() {
+                    if idx >= col.len() {
+                        col.resize(idx + 1, None);
+                    }
+                }
+
+                // Set each field value
+                for (field_name, slid) in codomain_values {
+                    let field_idx = field_names.iter()
+                        .position(|n| n == field_name)
+                        .ok_or_else(|| format!(
+                            "unknown field '{}' in product codomain (available: {:?})",
+                            field_name, field_names
+                        ))?;
+
+                    if let Some(existing) = get_slid(field_columns[field_idx][idx])
+                        && existing != *slid {
+                            return Err(format!(
+                                "conflicting definition: func {}(slid {}).{} already defined as slid {}, cannot redefine as slid {}",
+                                func_id, domain_slid, field_name, existing, slid
+                            ));
+                        }
+                    field_columns[field_idx][idx] = some_slid(*slid);
+                }
+                let _ = domain_sort; // silence unused warning
+                Ok(())
+            }
+            FunctionColumn::Local(_) => Err(format!(
+                "func {} has local codomain, use define_function",
+                func_id
+            )),
+            FunctionColumn::External(_) => Err(format!(
+                "func {} has external codomain, use define_function_ext",
+                func_id
+            )),
+            FunctionColumn::ProductLocal { .. } => Err(format!(
+                "func {} has product domain, use define_function_product",
+                func_id
+            )),
         }
     }
 
@@ -1087,7 +1312,31 @@ impl Structure {
         let idx = domain_sort_slid.index();
         match &self.functions[func_id] {
             FunctionColumn::Local(col) => col.get(idx).and_then(|&opt| get_slid(opt)),
-            FunctionColumn::External(_) | FunctionColumn::ProductLocal { .. } => None,
+            FunctionColumn::External(_)
+            | FunctionColumn::ProductLocal { .. }
+            | FunctionColumn::ProductCodomain { .. } => None,
+        }
+    }
+
+    /// Get function value for product codomain.
+    /// Returns a Vec of (field_name, Slid) pairs, or None if not fully defined.
+    pub fn get_function_product_codomain(
+        &self,
+        func_id: FuncId,
+        domain_sort_slid: SortSlid,
+    ) -> Option<Vec<(String, Slid)>> {
+        let idx = domain_sort_slid.index();
+        match &self.functions[func_id] {
+            FunctionColumn::ProductCodomain { field_columns, field_names, .. } => {
+                // All fields must be defined
+                let mut result = Vec::with_capacity(field_names.len());
+                for (i, name) in field_names.iter().enumerate() {
+                    let slid = get_slid(*field_columns[i].get(idx)?)?;
+                    result.push((name.clone(), slid));
+                }
+                Some(result)
+            }
+            _ => None,
         }
     }
 
@@ -1097,7 +1346,9 @@ impl Structure {
         let idx = domain_sort_slid.index();
         match &self.functions[func_id] {
             FunctionColumn::External(col) => col.get(idx).and_then(|&opt| get_luid(opt)),
-            FunctionColumn::Local(_) | FunctionColumn::ProductLocal { .. } => None,
+            FunctionColumn::Local(_)
+            | FunctionColumn::ProductLocal { .. }
+            | FunctionColumn::ProductCodomain { .. } => None,
         }
     }
 
@@ -1112,7 +1363,9 @@ impl Structure {
 
         match &self.functions[func_id] {
             FunctionColumn::ProductLocal { storage, .. } => storage.get(&local_indices),
-            FunctionColumn::Local(_) | FunctionColumn::External(_) => None,
+            FunctionColumn::Local(_)
+            | FunctionColumn::External(_)
+            | FunctionColumn::ProductCodomain { .. } => None,
         }
     }
 
@@ -1168,10 +1421,6 @@ impl Structure {
     }
 }
 
-// ============ Display implementations for debugging ============
-
-// Unit tests moved to tests/proptest_structure.rs
-
 impl std::fmt::Display for DerivedSort {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -1188,5 +1437,75 @@ impl std::fmt::Display for DerivedSort {
                 write!(f, "]")
             }
         }
+    }
+}
+
+// ============ Display implementations for debugging ============
+
+// Main unit tests moved to tests/proptest_structure.rs
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_derived_sort_cardinality_base() {
+        let mut structure = Structure::new(2);
+        // Add elements to sort 0: 3 elements
+        structure.carriers[0].insert(0);
+        structure.carriers[0].insert(1);
+        structure.carriers[0].insert(2);
+        // Add elements to sort 1: 2 elements
+        structure.carriers[1].insert(0);
+        structure.carriers[1].insert(1);
+
+        let base0 = DerivedSort::Base(0);
+        let base1 = DerivedSort::Base(1);
+
+        assert_eq!(base0.cardinality(&structure), 3);
+        assert_eq!(base1.cardinality(&structure), 2);
+    }
+
+    #[test]
+    fn test_derived_sort_cardinality_product() {
+        let mut structure = Structure::new(2);
+        // Sort 0: 3 elements
+        structure.carriers[0].insert(0);
+        structure.carriers[0].insert(1);
+        structure.carriers[0].insert(2);
+        // Sort 1: 2 elements
+        structure.carriers[1].insert(0);
+        structure.carriers[1].insert(1);
+
+        // Product [x: A, y: B] where |A| = 3, |B| = 2 should have cardinality 6
+        let product = DerivedSort::Product(vec![
+            ("x".to_string(), DerivedSort::Base(0)),
+            ("y".to_string(), DerivedSort::Base(1)),
+        ]);
+        assert_eq!(product.cardinality(&structure), 6);
+    }
+
+    #[test]
+    fn test_derived_sort_cardinality_unit() {
+        let structure = Structure::new(1);
+
+        // Unit type (empty product) has cardinality 1
+        let unit = DerivedSort::unit();
+        assert_eq!(unit.cardinality(&structure), 1);
+    }
+
+    #[test]
+    fn test_derived_sort_cardinality_empty_carrier() {
+        let structure = Structure::new(1);
+
+        // Empty carrier has cardinality 0
+        let base = DerivedSort::Base(0);
+        assert_eq!(base.cardinality(&structure), 0);
+
+        // Product with empty carrier has cardinality 0
+        let product = DerivedSort::Product(vec![
+            ("x".to_string(), DerivedSort::Base(0)),
+        ]);
+        assert_eq!(product.cardinality(&structure), 0);
     }
 }

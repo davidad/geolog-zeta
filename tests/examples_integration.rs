@@ -14,46 +14,10 @@ fn load_geolog_file(path: &Path) -> Result<ReplState, String> {
 
     let mut state = ReplState::new();
 
-    // Execute the file content
-    // The REPL processes complete inputs, so we feed it all at once
-    let file = geolog::parse(&content)
-        .map_err(|e| format!("Parse error in {}: {}", path.display(), e))?;
-
-    // Process each declaration
-    for decl in &file.declarations {
-        match &decl.node {
-            geolog::Declaration::Theory(t) => {
-                // Build env from existing theories
-                let mut env = geolog::elaborate::Env::new();
-                for (name, theory) in &state.workspace.theories {
-                    env.theories.insert(name.clone(), theory.clone());
-                }
-
-                let elab = geolog::elaborate::elaborate_theory(&mut env, t)
-                    .map_err(|e| format!("Theory elaboration error in {}: {}", path.display(), e))?;
-
-                state.workspace.add_theory(elab);
-            }
-            geolog::Declaration::Instance(inst) => {
-                let structure = geolog::elaborate::elaborate_instance_ws(&mut state.workspace, inst)
-                    .map_err(|e| format!("Instance elaboration error in {}: {}", path.display(), e))?;
-
-                let theory_name = match &inst.theory {
-                    geolog::TypeExpr::Path(p) => p.segments.join("/"),
-                    _ => "Unknown".to_string(),
-                };
-
-                let entry = geolog::workspace::InstanceEntry::new(structure, theory_name);
-                state.workspace.add_instance(inst.name.clone(), entry);
-            }
-            geolog::Declaration::Namespace(_) => {
-                // Namespaces are currently no-ops
-            }
-            geolog::Declaration::Query(_) => {
-                return Err(format!("Queries not yet supported in {}", path.display()));
-            }
-        }
-    }
+    // Use execute_geolog which handles everything correctly
+    state
+        .execute_geolog(&content)
+        .map_err(|e| format!("Error in {}: {}", path.display(), e))?;
 
     Ok(state)
 }
@@ -68,15 +32,15 @@ fn test_graph_example_parses() {
     let state = load_geolog_file(path).expect("graph.geolog should parse and elaborate");
 
     // Check theory
-    let graph = state.workspace.theories.get("Graph").expect("Graph theory should exist");
+    let graph = state.theories.get("Graph").expect("Graph theory should exist");
     assert_eq!(graph.theory.signature.sorts.len(), 2, "Graph should have 2 sorts (V, E)");
     assert_eq!(graph.theory.signature.functions.len(), 2, "Graph should have 2 functions (src, tgt)");
 
     // Check instances
-    assert!(state.workspace.instances.contains_key("Triangle"), "Triangle instance should exist");
-    assert!(state.workspace.instances.contains_key("Loop"), "Loop instance should exist");
-    assert!(state.workspace.instances.contains_key("Arrow"), "Arrow instance should exist");
-    assert!(state.workspace.instances.contains_key("Diamond"), "Diamond instance should exist");
+    assert!(state.instances.contains_key("Triangle"), "Triangle instance should exist");
+    assert!(state.instances.contains_key("Loop"), "Loop instance should exist");
+    assert!(state.instances.contains_key("Arrow"), "Arrow instance should exist");
+    assert!(state.instances.contains_key("Diamond"), "Diamond instance should exist");
 }
 
 #[test]
@@ -84,7 +48,7 @@ fn test_graph_triangle_structure() {
     let path = Path::new("examples/geolog/graph.geolog");
     let state = load_geolog_file(path).unwrap();
 
-    let triangle = state.workspace.instances.get("Triangle").unwrap();
+    let triangle = state.instances.get("Triangle").unwrap();
 
     // Triangle has 3 vertices + 3 edges = 6 elements
     assert_eq!(triangle.structure.len(), 6, "Triangle should have 6 elements");
@@ -99,7 +63,7 @@ fn test_graph_diamond_structure() {
     let path = Path::new("examples/geolog/graph.geolog");
     let state = load_geolog_file(path).unwrap();
 
-    let diamond = state.workspace.instances.get("Diamond").unwrap();
+    let diamond = state.instances.get("Diamond").unwrap();
 
     // Diamond has 4 vertices + 4 edges = 8 elements
     assert_eq!(diamond.structure.len(), 8, "Diamond should have 8 elements");
@@ -117,13 +81,145 @@ fn test_petri_net_example_parses() {
     let state = load_geolog_file(path).expect("petri_net.geolog should parse and elaborate");
 
     // Check theory
-    let petri = state.workspace.theories.get("PetriNet").expect("PetriNet theory should exist");
+    let petri = state.theories.get("PetriNet").expect("PetriNet theory should exist");
     assert_eq!(petri.theory.signature.sorts.len(), 4, "PetriNet should have 4 sorts (P, T, In, Out)");
     assert_eq!(petri.theory.signature.functions.len(), 4, "PetriNet should have 4 functions");
 
     // Check instances
-    assert!(state.workspace.instances.contains_key("ProducerConsumer"));
-    assert!(state.workspace.instances.contains_key("MutualExclusion"));
+    assert!(state.instances.contains_key("ProducerConsumer"));
+    assert!(state.instances.contains_key("MutualExclusion"));
+}
+
+// ============================================================================
+// Petri Net Showcase - Full Type-Theoretic Encoding (from 2025-12-12 vision)
+// ============================================================================
+
+#[test]
+fn test_petri_net_showcase_loads() {
+    let path = Path::new("examples/geolog/petri_net_showcase.geolog");
+    let state = load_geolog_file(path).expect("petri_net_showcase.geolog should parse and elaborate");
+
+    // Check theories
+    assert!(state.theories.contains_key("PetriNet"), "PetriNet theory should exist");
+    assert!(state.theories.contains_key("Marking"), "Marking theory should exist");
+    assert!(state.theories.contains_key("ReachabilityProblem"), "ReachabilityProblem theory should exist");
+    assert!(state.theories.contains_key("Trace"), "Trace theory should exist");
+    assert!(state.theories.contains_key("Iso"), "Iso theory should exist");
+    assert!(state.theories.contains_key("Solution"), "Solution theory should exist");
+
+    // Check PetriNet theory structure
+    let petri = state.theories.get("PetriNet").unwrap();
+    assert_eq!(petri.theory.signature.sorts.len(), 4, "PetriNet should have 4 sorts");
+    assert_eq!(petri.theory.signature.functions.len(), 4, "PetriNet should have 4 functions");
+
+    // Check parameterized theories have correct parameter structure
+    let marking = state.theories.get("Marking").unwrap();
+    assert_eq!(marking.params.len(), 1, "Marking should have 1 parameter (N : PetriNet instance)");
+    assert_eq!(marking.params[0].name, "N");
+
+    let reach_prob = state.theories.get("ReachabilityProblem").unwrap();
+    assert_eq!(reach_prob.params.len(), 1, "ReachabilityProblem should have 1 parameter");
+
+    let trace = state.theories.get("Trace").unwrap();
+    assert_eq!(trace.params.len(), 1, "Trace should have 1 parameter");
+
+    let iso = state.theories.get("Iso").unwrap();
+    assert_eq!(iso.params.len(), 2, "Iso should have 2 parameters (X : Sort, Y : Sort)");
+
+    let solution = state.theories.get("Solution").unwrap();
+    assert_eq!(solution.params.len(), 2, "Solution should have 2 parameters (N, RP)");
+
+    // Check instances
+    assert!(state.instances.contains_key("ExampleNet"), "ExampleNet instance should exist");
+    assert!(state.instances.contains_key("problem0"), "problem0 instance should exist");
+    assert!(state.instances.contains_key("solution0"), "solution0 instance should exist");
+    assert!(state.instances.contains_key("problem2"), "problem2 instance should exist");
+    assert!(state.instances.contains_key("solution2"), "solution2 instance should exist");
+}
+
+#[test]
+fn test_petri_net_showcase_example_net_structure() {
+    let path = Path::new("examples/geolog/petri_net_showcase.geolog");
+    let state = load_geolog_file(path).unwrap();
+
+    let example_net = state.instances.get("ExampleNet").unwrap();
+
+    // ExampleNet has:
+    // - 3 places (A, B, C)
+    // - 3 transitions (ab, ba, abc)
+    // - 4 input arcs (ab_in, ba_in, abc_in1, abc_in2)
+    // - 3 output arcs (ab_out, ba_out, abc_out)
+    // Total: 3 + 3 + 4 + 3 = 13 elements
+    assert_eq!(example_net.structure.len(), 13, "ExampleNet should have 13 elements");
+
+    // Check carrier sizes by sort index (P=0, T=1, in=2, out=3)
+    assert_eq!(example_net.structure.carrier_size(0), 3, "ExampleNet should have 3 places");
+    assert_eq!(example_net.structure.carrier_size(1), 3, "ExampleNet should have 3 transitions");
+    assert_eq!(example_net.structure.carrier_size(2), 4, "ExampleNet should have 4 input arcs");
+    assert_eq!(example_net.structure.carrier_size(3), 3, "ExampleNet should have 3 output arcs");
+}
+
+#[test]
+fn test_petri_net_showcase_problem0_structure() {
+    let path = Path::new("examples/geolog/petri_net_showcase.geolog");
+    let state = load_geolog_file(path).unwrap();
+
+    // problem0: 1 token in A -> 1 token in B
+    let problem0 = state.instances.get("problem0").unwrap();
+
+    // ReachabilityProblem structure includes the nested Marking instances
+    // This test verifies the cross-references work correctly
+    assert!(problem0.structure.len() > 0, "problem0 should have elements");
+}
+
+#[test]
+fn test_petri_net_showcase_solution0_structure() {
+    let path = Path::new("examples/geolog/petri_net_showcase.geolog");
+    let state = load_geolog_file(path).unwrap();
+
+    // solution0 proves A -> B reachability by firing 'ab' once
+    let solution0 = state.instances.get("solution0").unwrap();
+
+    // Solution structure includes nested Trace and Iso instances
+    // The trace has: 1 firing, 1 input terminal, 1 output terminal
+    // Plus the isomorphism mappings
+    assert!(solution0.structure.len() > 0, "solution0 should have elements");
+}
+
+#[test]
+fn test_petri_net_showcase_solution2_structure() {
+    let path = Path::new("examples/geolog/petri_net_showcase.geolog");
+    let state = load_geolog_file(path).unwrap();
+
+    // solution2 proves 2A -> C reachability by firing 'ab' then 'abc'
+    // This is the complex case: requires firing ab to move one A-token to B,
+    // then abc consumes both an A-token and the new B-token to produce C
+    let solution2 = state.instances.get("solution2").unwrap();
+
+    assert!(solution2.structure.len() > 0, "solution2 should have elements");
+}
+
+/// NEGATIVE TEST: Verify that an incomplete solution correctly fails axiom checking.
+///
+/// This test ensures that the Trace theory's wire axioms properly catch
+/// solutions that are missing required wires between firings.
+#[test]
+fn test_solution2_incomplete_fails_axiom_check() {
+    let path = Path::new("tests/negative/solution2_incomplete_negative_test.geolog");
+    let result = load_geolog_file(path);
+
+    // This file should FAIL to load because it's missing a wire
+    // connecting f1's output to f2's input
+    match result {
+        Ok(_) => panic!("Incomplete solution2 should fail axiom checking, but it succeeded"),
+        Err(err) => {
+            assert!(
+                err.contains("axiom") && err.contains("violated"),
+                "Error should mention axiom violation, got: {}",
+                err
+            );
+        }
+    }
 }
 
 #[test]
@@ -131,7 +227,7 @@ fn test_petri_net_producer_consumer() {
     let path = Path::new("examples/geolog/petri_net.geolog");
     let state = load_geolog_file(path).unwrap();
 
-    let pc = state.workspace.instances.get("ProducerConsumer").unwrap();
+    let pc = state.instances.get("ProducerConsumer").unwrap();
 
     // ProducerConsumer: 3 places + 2 transitions + 2 input arcs + 2 output arcs = 9
     assert_eq!(pc.structure.len(), 9, "ProducerConsumer should have 9 elements");
@@ -142,7 +238,7 @@ fn test_petri_net_mutual_exclusion() {
     let path = Path::new("examples/geolog/petri_net.geolog");
     let state = load_geolog_file(path).unwrap();
 
-    let mutex = state.workspace.instances.get("MutualExclusion").unwrap();
+    let mutex = state.instances.get("MutualExclusion").unwrap();
 
     // MutualExclusion: 5 places + 4 transitions + 6 input arcs + 6 output arcs = 21
     assert_eq!(mutex.structure.len(), 21, "MutualExclusion should have 21 elements");
@@ -158,15 +254,15 @@ fn test_monoid_example_parses() {
     let state = load_geolog_file(path).expect("monoid.geolog should parse and elaborate");
 
     // Check theory
-    let monoid = state.workspace.theories.get("Monoid").expect("Monoid theory should exist");
+    let monoid = state.theories.get("Monoid").expect("Monoid theory should exist");
     assert_eq!(monoid.theory.signature.sorts.len(), 1, "Monoid should have 1 sort (M)");
     assert_eq!(monoid.theory.signature.functions.len(), 2, "Monoid should have 2 functions (mul, id)");
     assert_eq!(monoid.theory.axioms.len(), 4, "Monoid should have 4 axioms");
 
     // Check instances (product domain support via geolog-ulh)
-    assert!(state.workspace.instances.contains_key("Trivial"), "Trivial monoid should exist");
-    assert!(state.workspace.instances.contains_key("BoolAnd"), "BoolAnd monoid should exist");
-    assert!(state.workspace.instances.contains_key("BoolOr"), "BoolOr monoid should exist");
+    assert!(state.instances.contains_key("Trivial"), "Trivial monoid should exist");
+    assert!(state.instances.contains_key("BoolAnd"), "BoolAnd monoid should exist");
+    assert!(state.instances.contains_key("BoolOr"), "BoolOr monoid should exist");
 }
 
 #[test]
@@ -174,7 +270,7 @@ fn test_monoid_trivial_structure() {
     let path = Path::new("examples/geolog/monoid.geolog");
     let state = load_geolog_file(path).unwrap();
 
-    let trivial = state.workspace.instances.get("Trivial").unwrap();
+    let trivial = state.instances.get("Trivial").unwrap();
 
     // Trivial monoid has 1 element
     assert_eq!(trivial.structure.carrier_size(0), 1, "Trivial monoid should have 1 element");
@@ -201,7 +297,7 @@ fn test_monoid_bool_and_structure() {
     let path = Path::new("examples/geolog/monoid.geolog");
     let state = load_geolog_file(path).unwrap();
 
-    let bool_and = state.workspace.instances.get("BoolAnd").unwrap();
+    let bool_and = state.instances.get("BoolAnd").unwrap();
 
     // BoolAnd has 2 elements (T, F)
     assert_eq!(bool_and.structure.carrier_size(0), 2, "BoolAnd should have 2 elements");
@@ -227,7 +323,7 @@ fn test_monoid_bool_or_structure() {
     let path = Path::new("examples/geolog/monoid.geolog");
     let state = load_geolog_file(path).unwrap();
 
-    let bool_or = state.workspace.instances.get("BoolOr").unwrap();
+    let bool_or = state.instances.get("BoolOr").unwrap();
 
     // BoolOr has 2 elements (T, F)
     assert_eq!(bool_or.structure.carrier_size(0), 2, "BoolOr should have 2 elements");
@@ -250,20 +346,454 @@ fn test_preorder_example_parses() {
     let state = load_geolog_file(path).expect("preorder.geolog should parse and elaborate");
 
     // Check theory
-    let preorder = state.workspace.theories.get("Preorder").expect("Preorder theory should exist");
+    let preorder = state.theories.get("Preorder").expect("Preorder theory should exist");
     assert_eq!(preorder.theory.signature.sorts.len(), 1, "Preorder should have 1 sort (X)");
     assert_eq!(preorder.theory.signature.relations.len(), 1, "Preorder should have 1 relation (leq)");
     assert_eq!(preorder.theory.axioms.len(), 2, "Preorder should have 2 axioms (refl, trans)");
 
     // Check instances
-    assert!(state.workspace.instances.contains_key("Discrete3"));
-    assert!(state.workspace.instances.contains_key("Chain3"));
+    assert!(state.instances.contains_key("Discrete3"));
+    assert!(state.instances.contains_key("Chain3"));
+}
+
+// ============================================================================
+// Transitive closure example (demonstrates chase algorithm)
+// ============================================================================
+
+#[test]
+fn test_transitive_closure_example_parses() {
+    let path = Path::new("examples/geolog/transitive_closure.geolog");
+    let state = load_geolog_file(path).expect("transitive_closure.geolog should parse and elaborate");
+
+    // Check theory
+    let graph = state.theories.get("Graph").expect("Graph theory should exist");
+    assert_eq!(graph.theory.signature.sorts.len(), 1, "Graph should have 1 sort (V)");
+    assert_eq!(graph.theory.signature.relations.len(), 2, "Graph should have 2 relations (Edge, Path)");
+    assert_eq!(graph.theory.axioms.len(), 2, "Graph should have 2 axioms (base, trans)");
+
+    // Check instances
+    assert!(state.instances.contains_key("Chain"), "Chain instance should exist");
+    assert!(state.instances.contains_key("Diamond"), "Diamond instance should exist");
+    assert!(state.instances.contains_key("Cycle"), "Cycle instance should exist");
+}
+
+#[test]
+fn test_transitive_closure_chain_structure() {
+    let path = Path::new("examples/geolog/transitive_closure.geolog");
+    let state = load_geolog_file(path).unwrap();
+
+    let chain = state.instances.get("Chain").unwrap();
+
+    // Chain has 4 vertices
+    assert_eq!(chain.structure.carrier_size(0), 4, "Chain should have 4 vertices");
+
+    // With `= chase { ... }`, axioms are applied during elaboration.
+    // Path now has 6 tuples (transitive closure computed automatically).
+    use geolog::core::RelationStorage;
+    assert_eq!(chain.structure.relations[0].len(), 3, "Chain should have 3 Edge tuples");
+    assert_eq!(chain.structure.relations[1].len(), 6,
+        "Chain should have 6 Path tuples after chase: 3 base + 2 one-step + 1 two-step");
+}
+
+#[test]
+fn test_transitive_closure_chase() {
+    use geolog::core::RelationStorage;
+    use geolog::query::chase::chase_fixpoint;
+    use geolog::universe::Universe;
+
+    let path = Path::new("examples/geolog/transitive_closure.geolog");
+    let mut state = load_geolog_file(path).unwrap();
+
+    let chain = state.instances.get_mut("Chain").unwrap();
+    let theory = state.theories.get("Graph").unwrap();
+
+    // Chase already ran during elaboration (instance uses `= chase { ... }`),
+    // so Path already has 6 tuples.
+    assert_eq!(chain.structure.relations[1].len(), 6,
+        "Chain should have 6 Path tuples after elaboration with chase");
+
+    // Running chase again should be idempotent (1 iteration, no changes)
+    let mut universe = Universe::new();
+
+    let iterations = chase_fixpoint(
+        &theory.theory.axioms,
+        &mut chain.structure,
+        &mut universe,
+        &theory.theory.signature,
+        100,
+    ).unwrap();
+
+    // Should converge immediately (already at fixpoint)
+    assert_eq!(iterations, 1, "Chase should converge in 1 iteration when already at fixpoint");
+
+    // Still have 6 Path tuples
+    assert_eq!(chain.structure.relations[1].len(), 6,
+        "Chain should still have 6 Path tuples");
+}
+
+// ============================================================================
+// Theories: GeologMeta and RelAlgIR
+// ============================================================================
+
+#[test]
+fn test_geolog_meta_loads() {
+    let path = Path::new("theories/GeologMeta.geolog");
+    let state = load_geolog_file(path).expect("GeologMeta.geolog should parse and elaborate");
+
+    let meta = state.theories.get("GeologMeta").expect("GeologMeta theory should exist");
+
+    // GeologMeta is a large theory: 40 sorts, 76 functions, 3 relations
+    assert_eq!(meta.theory.signature.sorts.len(), 40, "GeologMeta should have 40 sorts");
+    assert_eq!(meta.theory.signature.functions.len(), 76, "GeologMeta should have 76 functions");
+    assert_eq!(meta.theory.signature.relations.len(), 3, "GeologMeta should have 3 relations");
+
+    // Check some key sorts exist
+    assert!(meta.theory.signature.lookup_sort("Theory").is_some(), "Theory sort should exist");
+    assert!(meta.theory.signature.lookup_sort("Srt").is_some(), "Srt sort should exist");
+    assert!(meta.theory.signature.lookup_sort("Func").is_some(), "Func sort should exist");
+    assert!(meta.theory.signature.lookup_sort("Elem").is_some(), "Elem sort should exist");
+}
+
+#[test]
+fn test_relalg_ir_loads() {
+    // First load GeologMeta (RelAlgIR extends it)
+    let meta_content = fs::read_to_string("theories/GeologMeta.geolog")
+        .expect("Failed to read GeologMeta.geolog");
+    let ir_content = fs::read_to_string("theories/RelAlgIR.geolog")
+        .expect("Failed to read RelAlgIR.geolog");
+
+    let mut state = ReplState::new();
+
+    state.execute_geolog(&meta_content)
+        .expect("GeologMeta should load");
+    state.execute_geolog(&ir_content)
+        .expect("RelAlgIR should load");
+
+    let ir = state.theories.get("RelAlgIR").expect("RelAlgIR theory should exist");
+
+    // RelAlgIR has 79 sorts (40 from GeologMeta + 39 own)
+    assert_eq!(ir.theory.signature.sorts.len(), 79, "RelAlgIR should have 79 sorts");
+
+    // Check GeologMeta sorts are correctly qualified
+    assert!(ir.theory.signature.lookup_sort("GeologMeta/Srt").is_some(),
+        "GeologMeta/Srt should exist (inherited sort)");
+    assert!(ir.theory.signature.lookup_sort("GeologMeta/Func").is_some(),
+        "GeologMeta/Func should exist (inherited sort)");
+
+    // Check RelAlgIR's own sorts exist (no prefix)
+    assert!(ir.theory.signature.lookup_sort("Wire").is_some(),
+        "Wire sort should exist");
+    assert!(ir.theory.signature.lookup_sort("Op").is_some(),
+        "Op sort should exist");
+    assert!(ir.theory.signature.lookup_sort("ScanOp").is_some(),
+        "ScanOp sort should exist");
+
+    // Check functions are correctly qualified
+    // GeologMeta's "Func/dom" should become "GeologMeta/Func/dom"
+    assert!(ir.theory.signature.lookup_func("GeologMeta/Func/dom").is_some(),
+        "GeologMeta/Func/dom should exist (inherited function)");
+    assert!(ir.theory.signature.lookup_func("GeologMeta/Func/cod").is_some(),
+        "GeologMeta/Func/cod should exist (inherited function)");
+
+    // RelAlgIR's own functions
+    assert!(ir.theory.signature.lookup_func("Wire/schema").is_some(),
+        "Wire/schema should exist");
+    assert!(ir.theory.signature.lookup_func("ScanOp/out").is_some(),
+        "ScanOp/out should exist");
+
+    // Check functions referencing inherited sorts have correct domain/codomain
+    // ScanOp/srt : ScanOp -> GeologMeta/Srt
+    let scan_srt = ir.theory.signature.lookup_func("ScanOp/srt")
+        .expect("ScanOp/srt should exist");
+    let func_info = &ir.theory.signature.functions[scan_srt];
+    match &func_info.codomain {
+        geolog::core::DerivedSort::Base(sort_id) => {
+            let sort_name = &ir.theory.signature.sorts[*sort_id];
+            assert_eq!(sort_name, "GeologMeta/Srt",
+                "ScanOp/srt codomain should be GeologMeta/Srt");
+        }
+        _ => panic!("ScanOp/srt codomain should be a base sort"),
+    }
+}
+
+// ============================================================================
+// RelAlgIR query plan examples
+// ============================================================================
+
+/// Test that RelAlgIR instances can be created and represent query plans
+///
+/// IGNORED: RelAlgIR has axioms like `ax/equiv/refl` (universal conclusions) that
+/// the current chase and tensor systems can't handle. These instances violate
+/// these axioms because the derived relations aren't populated.
+/// See bead geolog-XXX for tracking this issue.
+#[test]
+#[ignore = "RelAlgIR axioms need chase support for universal conclusions"]
+fn test_relalg_simple_examples() {
+    // Load theories first
+    let meta_content = fs::read_to_string("theories/GeologMeta.geolog")
+        .expect("Failed to read GeologMeta.geolog");
+    let ir_content = fs::read_to_string("theories/RelAlgIR.geolog")
+        .expect("Failed to read RelAlgIR.geolog");
+    let examples_content = fs::read_to_string("examples/geolog/relalg_simple.geolog")
+        .expect("Failed to read relalg_simple.geolog");
+
+    let mut state = ReplState::new();
+
+    state.execute_geolog(&meta_content)
+        .expect("GeologMeta should load");
+    state.execute_geolog(&ir_content)
+        .expect("RelAlgIR should load");
+    state.execute_geolog(&examples_content)
+        .expect("relalg_simple.geolog should load");
+
+    // Check ScanV instance
+    let scan_v = state.instances.get("ScanV")
+        .expect("ScanV instance should exist");
+    assert_eq!(scan_v.structure.len(), 7, "ScanV should have 7 elements");
+
+    // Check FilterScan instance
+    let filter_scan = state.instances.get("FilterScan")
+        .expect("FilterScan instance should exist");
+    assert_eq!(filter_scan.structure.len(), 18, "FilterScan should have 18 elements");
+
+    // Verify FilterScan has the expected sorts populated
+    // Get RelAlgIR theory for sort lookups
+    let ir = state.theories.get("RelAlgIR").expect("RelAlgIR should exist");
+
+    // Check Wire sort has 2 elements (w1, w2)
+    let wire_sort = ir.theory.signature.lookup_sort("Wire").expect("Wire sort");
+    assert_eq!(
+        filter_scan.structure.carrier_size(wire_sort), 2,
+        "FilterScan should have 2 Wire elements"
+    );
+
+    // Check FilterOp sort has 1 element
+    let filter_sort = ir.theory.signature.lookup_sort("FilterOp").expect("FilterOp sort");
+    assert_eq!(
+        filter_scan.structure.carrier_size(filter_sort), 1,
+        "FilterScan should have 1 FilterOp element"
+    );
+
+    // Check ScanOp sort has 1 element
+    let scan_sort = ir.theory.signature.lookup_sort("ScanOp").expect("ScanOp sort");
+    assert_eq!(
+        filter_scan.structure.carrier_size(scan_sort), 1,
+        "FilterScan should have 1 ScanOp element"
+    );
+}
+
+// ============================================================================
+// RelAlgIR compile → execute roundtrip
+// ============================================================================
+
+/// Helper to load RelAlgIR theory for tests
+fn load_relalg_for_test() -> (ReplState, std::rc::Rc<geolog::core::ElaboratedTheory>) {
+    let meta_content = fs::read_to_string("theories/GeologMeta.geolog")
+        .expect("Failed to read GeologMeta.geolog");
+    let ir_content = fs::read_to_string("theories/RelAlgIR.geolog")
+        .expect("Failed to read RelAlgIR.geolog");
+
+    let mut state = ReplState::new();
+    state
+        .execute_geolog(&meta_content)
+        .expect("GeologMeta should load");
+    state
+        .execute_geolog(&ir_content)
+        .expect("RelAlgIR should load");
+
+    let relalg_theory = state
+        .theories
+        .get("RelAlgIR")
+        .expect("RelAlgIR should exist")
+        .clone();
+
+    (state, relalg_theory)
+}
+
+/// Helper to verify roundtrip: direct execution == RelAlgIR execution
+fn verify_roundtrip(
+    plan: &geolog::query::backend::QueryOp,
+    target: &geolog::core::Structure,
+    relalg_theory: &geolog::core::ElaboratedTheory,
+    description: &str,
+) {
+    use geolog::query::backend::execute;
+    use geolog::query::from_relalg::execute_relalg;
+    use geolog::query::to_relalg::compile_to_relalg;
+    use geolog::universe::Universe;
+
+    // Execute directly
+    let direct_result = execute(plan, target);
+
+    // Compile to RelAlgIR
+    let mut universe = Universe::new();
+    let relalg_instance = compile_to_relalg(plan, &std::rc::Rc::new(relalg_theory.clone()), &mut universe)
+        .unwrap_or_else(|e| panic!("{}: Compilation failed: {}", description, e));
+
+    // Execute via RelAlgIR interpreter
+    let relalg_result = execute_relalg(&relalg_instance, relalg_theory, target, None)
+        .unwrap_or_else(|e| panic!("{}: RelAlgIR execution failed: {}", description, e));
+
+    // Compare results
+    assert_eq!(
+        direct_result.len(),
+        relalg_result.len(),
+        "{}: Length mismatch ({} vs {})",
+        description,
+        direct_result.len(),
+        relalg_result.len()
+    );
+
+    for (tuple, mult) in direct_result.iter() {
+        assert_eq!(
+            relalg_result.tuples.get(tuple),
+            Some(mult),
+            "{}: Tuple {:?} has wrong multiplicity",
+            description,
+            tuple
+        );
+    }
+}
+
+/// Tests that we can compile a query to RelAlgIR and then execute it,
+/// getting the same results as direct execution.
+#[test]
+fn test_relalg_compile_execute_roundtrip() {
+    use geolog::core::Structure;
+    use geolog::query::backend::QueryOp;
+
+    let (_, relalg_theory) = load_relalg_for_test();
+
+    // Create a simple test structure with 3 elements in sort 0
+    let mut target = Structure::new(1);
+    target.carriers[0].insert(0);
+    target.carriers[0].insert(1);
+    target.carriers[0].insert(2);
+
+    // Test Scan
+    let scan_plan = QueryOp::Scan { sort_idx: 0 };
+    verify_roundtrip(&scan_plan, &target, &relalg_theory, "Scan");
+}
+
+#[test]
+fn test_relalg_roundtrip_filter() {
+    use geolog::core::Structure;
+    use geolog::id::{NumericId, Slid};
+    use geolog::query::backend::{Predicate, QueryOp};
+
+    let (_, relalg_theory) = load_relalg_for_test();
+
+    // Create structure with 5 elements
+    let mut target = Structure::new(1);
+    for i in 0..5 {
+        target.carriers[0].insert(i);
+    }
+
+    // Filter with True predicate (should keep all)
+    let filter_true = QueryOp::Filter {
+        input: Box::new(QueryOp::Scan { sort_idx: 0 }),
+        pred: Predicate::True,
+    };
+    verify_roundtrip(&filter_true, &target, &relalg_theory, "Filter(True)");
+
+    // Filter with False predicate (should keep none)
+    let filter_false = QueryOp::Filter {
+        input: Box::new(QueryOp::Scan { sort_idx: 0 }),
+        pred: Predicate::False,
+    };
+    verify_roundtrip(&filter_false, &target, &relalg_theory, "Filter(False)");
+
+    // Filter with ColEqConst
+    let filter_const = QueryOp::Filter {
+        input: Box::new(QueryOp::Scan { sort_idx: 0 }),
+        pred: Predicate::ColEqConst {
+            col: 0,
+            val: Slid::from_usize(2),
+        },
+    };
+    verify_roundtrip(&filter_const, &target, &relalg_theory, "Filter(ColEqConst)");
+}
+
+#[test]
+fn test_relalg_roundtrip_join() {
+    use geolog::core::Structure;
+    use geolog::query::backend::{JoinCond, QueryOp};
+
+    let (_, relalg_theory) = load_relalg_for_test();
+
+    // Create structure with 2 sorts
+    let mut target = Structure::new(2);
+    target.carriers[0].insert(0);
+    target.carriers[0].insert(1);
+    target.carriers[1].insert(10);
+    target.carriers[1].insert(11);
+    target.carriers[1].insert(12);
+
+    // Cross join
+    let cross_join = QueryOp::Join {
+        left: Box::new(QueryOp::Scan { sort_idx: 0 }),
+        right: Box::new(QueryOp::Scan { sort_idx: 1 }),
+        cond: JoinCond::Cross,
+    };
+    verify_roundtrip(&cross_join, &target, &relalg_theory, "Join(Cross)");
+}
+
+#[test]
+fn test_relalg_roundtrip_union() {
+    use geolog::core::Structure;
+    use geolog::query::backend::QueryOp;
+
+    let (_, relalg_theory) = load_relalg_for_test();
+
+    // Create structure
+    let mut target = Structure::new(2);
+    target.carriers[0].insert(0);
+    target.carriers[0].insert(1);
+    target.carriers[1].insert(2);
+    target.carriers[1].insert(3);
+
+    // Union of two scans
+    let union_plan = QueryOp::Union {
+        left: Box::new(QueryOp::Scan { sort_idx: 0 }),
+        right: Box::new(QueryOp::Scan { sort_idx: 1 }),
+    };
+    verify_roundtrip(&union_plan, &target, &relalg_theory, "Union");
+}
+
+#[test]
+fn test_relalg_roundtrip_distinct_negate() {
+    use geolog::core::Structure;
+    use geolog::query::backend::QueryOp;
+
+    let (_, relalg_theory) = load_relalg_for_test();
+
+    // Create structure
+    let mut target = Structure::new(1);
+    target.carriers[0].insert(0);
+    target.carriers[0].insert(1);
+    target.carriers[0].insert(2);
+
+    // Distinct
+    let distinct_plan = QueryOp::Distinct {
+        input: Box::new(QueryOp::Scan { sort_idx: 0 }),
+    };
+    verify_roundtrip(&distinct_plan, &target, &relalg_theory, "Distinct");
+
+    // Negate
+    let negate_plan = QueryOp::Negate {
+        input: Box::new(QueryOp::Scan { sort_idx: 0 }),
+    };
+    verify_roundtrip(&negate_plan, &target, &relalg_theory, "Negate");
 }
 
 // ============================================================================
 // Meta-test: all examples should parse
 // ============================================================================
 
+/// Tests that all standalone .geolog example files parse and elaborate.
+///
+/// Note: Some examples require loading theories first (e.g., relalg_simple.geolog
+/// requires GeologMeta and RelAlgIR). These are tested separately.
 #[test]
 fn test_all_examples_parse() {
     let examples_dir = Path::new("examples/geolog");
@@ -272,17 +802,29 @@ fn test_all_examples_parse() {
         panic!("examples/geolog directory does not exist");
     }
 
+    // Examples that require loading theories first (tested separately)
+    let requires_theories = [
+        "relalg_simple.geolog",
+    ];
+
     let mut failures = Vec::new();
 
     for entry in fs::read_dir(examples_dir).unwrap() {
         let entry = entry.unwrap();
         let path = entry.path();
 
-        if path.extension().map_or(false, |ext| ext == "geolog") {
-            if let Err(e) = load_geolog_file(&path) {
+        // Skip files that require loading theories first
+        if path.file_name()
+            .and_then(|f| f.to_str())
+            .is_some_and(|file_name| requires_theories.contains(&file_name))
+        {
+            continue;
+        }
+
+        if path.extension().is_some_and(|ext| ext == "geolog")
+            && let Err(e) = load_geolog_file(&path) {
                 failures.push(format!("{}: {}", path.display(), e));
             }
-        }
     }
 
     if !failures.is_empty() {

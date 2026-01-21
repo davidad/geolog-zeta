@@ -5,7 +5,7 @@ use std::collections::{BTreeSet, HashMap};
 use crate::core::{Context, DerivedSort, Formula, RelId, Signature, Structure, Term};
 use crate::id::{NumericId, Slid};
 
-use super::builder::{conjunction_all, disjunction_all, exists};
+use super::builder::{conjunction, conjunction_all, disjunction_all, exists};
 use super::expr::TensorExpr;
 use super::sparse::SparseTensor;
 
@@ -76,6 +76,50 @@ pub fn build_carrier_index(structure: &Structure, sort_id: usize) -> HashMap<Sli
         .enumerate()
         .map(|(idx, slid_u64)| (Slid::from_usize(slid_u64 as usize), idx))
         .collect()
+}
+
+/// Convert a function's graph (extent) to a SparseTensor.
+///
+/// For function f : A → B, builds a 2D tensor where (i, j) is present
+/// iff f(a_i) = b_j (where a_i is the i-th element of A, b_j is j-th of B).
+pub fn function_to_tensor(
+    structure: &Structure,
+    func_id: usize,
+    domain_sort_id: usize,
+    codomain_sort_id: usize,
+) -> SparseTensor {
+    use crate::id::{NumericId, Slid};
+    use std::collections::BTreeSet;
+
+    let domain_carrier = &structure.carriers[domain_sort_id];
+    let codomain_carrier = &structure.carriers[codomain_sort_id];
+
+    let domain_size = domain_carrier.len() as usize;
+    let codomain_size = codomain_carrier.len() as usize;
+
+    // Build reverse index for codomain (Slid -> position)
+    let codomain_index: HashMap<Slid, usize> = codomain_carrier
+        .iter()
+        .enumerate()
+        .map(|(idx, slid_u64)| (Slid::from_usize(slid_u64 as usize), idx))
+        .collect();
+
+    // Iterate over function's extent
+    let mut extent = BTreeSet::new();
+    for (domain_idx, domain_slid_u64) in domain_carrier.iter().enumerate() {
+        let domain_slid = Slid::from_usize(domain_slid_u64 as usize);
+        let sort_slid = structure.sort_local_id(domain_slid);
+
+        if let Some(codomain_slid) = structure.get_function(func_id, sort_slid)
+            && let Some(&codomain_idx) = codomain_index.get(&codomain_slid) {
+                extent.insert(vec![domain_idx, codomain_idx]);
+            }
+    }
+
+    SparseTensor {
+        dims: vec![domain_size, codomain_size],
+        extent,
+    }
 }
 
 /// Convert a VecRelation to a SparseTensor.
@@ -159,6 +203,122 @@ fn relation_column_sorts(sig: &Signature, rel_id: RelId) -> Vec<usize> {
     }
 }
 
+/// Compile a term to a tensor expression.
+///
+/// Returns (expr, vars, value_var) where:
+/// - expr is a tensor over vars (including value_var)
+/// - vars are all free variables in alphabetical order
+/// - value_var is the internal name for the term's value dimension
+///
+/// The tensor represents: for each assignment to free variables,
+/// what is the value of the term?
+fn compile_term(
+    term: &Term,
+    structure: &Structure,
+    sig: &Signature,
+    fresh_counter: &mut usize,
+) -> (TensorExpr, Vec<String>, String) {
+    match term {
+        Term::Var(name, sort) => {
+            // Variable x evaluates to itself
+            // Tensor is identity: (x, value) where value = x
+            // This is the diagonal tensor
+            let DerivedSort::Base(sort_id) = sort else {
+                panic!("Product sort in variable term not yet supported");
+            };
+            let size = structure.carriers[*sort_id].len() as usize;
+
+            // Create diagonal tensor: extent = {(i, i) | i < size}
+            let extent: BTreeSet<Vec<usize>> = (0..size).map(|i| vec![i, i]).collect();
+            let tensor = SparseTensor {
+                dims: vec![size, size],
+                extent,
+            };
+
+            // Value variable is the same as the input variable
+            // Actually we need a fresh name to track the "output" dimension
+            let value_var = format!("_val{}", *fresh_counter);
+            *fresh_counter += 1;
+
+            // The tensor has dimensions [name, value_var]
+            // We need them in alphabetical order
+            let vars = if name < &value_var {
+                vec![name.clone(), value_var.clone()]
+            } else {
+                vec![value_var.clone(), name.clone()]
+            };
+
+            let expr = if name < &value_var {
+                TensorExpr::leaf(tensor)
+            } else {
+                // Need to transpose
+                TensorExpr::Contract {
+                    inner: Box::new(TensorExpr::leaf(tensor)),
+                    index_map: vec![1, 0],
+                    output: (0..2).collect(),
+                }
+            };
+
+            (expr, vars, value_var)
+        }
+
+        Term::App(func_id, arg) => {
+            // f(arg): first compile arg, then apply function
+            let (arg_expr, arg_vars, arg_value_var) =
+                compile_term(arg.as_ref(), structure, sig, fresh_counter);
+
+            // Get function info
+            let func_sym = &sig.functions[*func_id];
+            let DerivedSort::Base(domain_sort_id) = &func_sym.domain else {
+                panic!("Function with product domain not yet supported in term compilation");
+            };
+            let DerivedSort::Base(codomain_sort_id) = &func_sym.codomain else {
+                panic!("Function with product codomain not yet supported in term compilation");
+            };
+
+            // Build function tensor: (domain, codomain) pairs
+            let func_tensor = function_to_tensor(structure, *func_id, *domain_sort_id, *codomain_sort_id);
+
+            // Fresh variable for output
+            let result_var = format!("_val{}", *fresh_counter);
+            *fresh_counter += 1;
+
+            // Function tensor has vars [arg_value_var, result_var] (we need to match arg's value)
+            let func_vars = if arg_value_var < result_var {
+                vec![arg_value_var.clone(), result_var.clone()]
+            } else {
+                vec![result_var.clone(), arg_value_var.clone()]
+            };
+
+            let func_expr = if arg_value_var < result_var {
+                TensorExpr::leaf(func_tensor)
+            } else {
+                TensorExpr::Contract {
+                    inner: Box::new(TensorExpr::leaf(func_tensor)),
+                    index_map: vec![1, 0],
+                    output: (0..2).collect(),
+                }
+            };
+
+            // Join arg_expr and func_expr on arg_value_var
+            let (joined_expr, joined_vars) = conjunction(arg_expr, &arg_vars, func_expr, &func_vars);
+
+            // Existentially quantify out arg_value_var (the intermediate value)
+            let (result_expr, result_vars) = exists(joined_expr, &joined_vars, &arg_value_var);
+
+            (result_expr, result_vars, result_var)
+        }
+
+        Term::Record(_) => {
+            panic!("Record terms in equality not yet supported");
+        }
+
+        Term::Project(_, _) => {
+            panic!("Projection terms in equality not yet supported");
+        }
+    }
+}
+
 /// Compile a formula to a tensor expression.
 ///
 /// Returns the expression and the list of free variables in order.
@@ -237,66 +397,185 @@ pub fn compile_formula(
                 return (TensorExpr::scalar(false), vec![]);
             }
 
-            let compiled: Vec<(TensorExpr, Vec<String>)> = formulas
+            let mut compiled: Vec<(TensorExpr, Vec<String>)> = formulas
                 .iter()
                 .map(|f| compile_formula(f, _ctx, structure, sig))
                 .collect();
 
+            // Collect all variables across all disjuncts
+            let all_vars: std::collections::HashSet<&String> = compiled
+                .iter()
+                .flat_map(|(_, vars)| vars.iter())
+                .collect();
+
+            // If all disjuncts have the same variables, we're good
+            let need_extension = compiled.iter().any(|(_, vars)| {
+                let var_set: std::collections::HashSet<_> = vars.iter().collect();
+                var_set != all_vars
+            });
+
+            if need_extension {
+                // Build a canonical variable ordering
+                let all_vars_vec: Vec<String> = {
+                    let mut v: Vec<_> = all_vars.iter().cloned().cloned().collect();
+                    v.sort(); // Canonical ordering
+                    v
+                };
+
+                // Extend each disjunct with missing variables
+                for (expr, vars) in &mut compiled {
+                    let var_set: std::collections::HashSet<_> = vars.iter().collect();
+                    let missing: Vec<_> = all_vars_vec
+                        .iter()
+                        .filter(|v| !var_set.contains(*v))
+                        .collect();
+
+                    if !missing.is_empty() {
+                        // Create full-domain tensors for missing variables and take product
+                        let mut full_domain_tensors = Vec::new();
+                        let mut new_vars = vars.clone();
+
+                        for var in missing {
+                            // Look up the variable's sort in the context
+                            if let Some(idx) = _ctx.vars.iter().position(|v| v == var) {
+                                let sort = &_ctx.sorts[idx];
+                                let card = derived_sort_cardinality(structure, sort);
+
+                                // Create a 1D tensor with all values [0..card)
+                                let mut extent = BTreeSet::new();
+                                for i in 0..card {
+                                    extent.insert(vec![i]);
+                                }
+                                let full_tensor = SparseTensor {
+                                    dims: vec![card],
+                                    extent,
+                                };
+                                full_domain_tensors.push(TensorExpr::leaf(full_tensor));
+                                new_vars.push(var.clone());
+                            } else {
+                                // Variable not in context - this is an error
+                                panic!(
+                                    "Variable '{}' in disjunction not found in context. \
+                                     Context has: {:?}",
+                                    var, _ctx.vars
+                                );
+                            }
+                        }
+
+                        // Take product: original × full_domain_1 × full_domain_2 × ...
+                        if !full_domain_tensors.is_empty() {
+                            let mut product_parts = vec![std::mem::replace(
+                                expr,
+                                TensorExpr::scalar(false),
+                            )];
+                            product_parts.extend(full_domain_tensors);
+                            *expr = TensorExpr::Product(product_parts);
+                            *vars = new_vars;
+                        }
+                    }
+                }
+            }
+
             disjunction_all(compiled)
         }
 
-        Formula::Exists(var_name, _sort, inner) => {
+        Formula::Exists(var_name, sort, inner) => {
             // Compile inner formula
             let (inner_expr, inner_vars) = compile_formula(inner, _ctx, structure, sig);
+
+            // Check if the quantified variable appears in the inner formula
+            if !inner_vars.contains(var_name) {
+                // The variable doesn't appear free in the inner formula.
+                // For example: ∃x. True  or  ∃x. (y = y)
+                //
+                // In this case, the existential is:
+                // - FALSE if the domain is empty (no witness exists)
+                // - Equal to the inner formula otherwise (witness exists vacuously)
+                let domain_card = derived_sort_cardinality(structure, sort);
+                if domain_card == 0 {
+                    // Empty domain: existential is false
+                    return (TensorExpr::scalar(false), inner_vars);
+                }
+                // Non-empty domain: the existential is equivalent to the inner formula
+                return (inner_expr, inner_vars);
+            }
 
             // Apply existential (sum over the variable)
             exists(inner_expr, &inner_vars, var_name)
         }
 
         Formula::Eq(t1, t2) => {
-            // Handle equality - for now, only simple variable equality
-            match (t1, t2) {
-                (Term::Var(name1, sort1), Term::Var(name2, _sort2)) => {
-                    if name1 == name2 {
-                        // x = x is always true
-                        (TensorExpr::scalar(true), vec![])
-                    } else {
-                        // x = y: diagonal tensor
-                        // Both variables must have the same sort
-                        let DerivedSort::Base(sort_id) = sort1 else {
-                            panic!("Equality on non-base sorts not yet supported");
-                        };
-                        let card = sort_cardinality(structure, *sort_id);
+            // Handle equality using recursive term compilation
+            // This supports arbitrary term expressions including nested function applications
+            //
+            // Strategy: compile both terms to tensors, join on value dimensions,
+            // then project out the internal value variables
 
-                        // Create diagonal: (x, y) where x == y
-                        let mut extent = std::collections::BTreeSet::new();
-                        for i in 0..card {
-                            extent.insert(vec![i, i]);
-                        }
-
-                        let tensor = SparseTensor {
-                            dims: vec![card, card],
-                            extent,
-                        };
-
-                        // Order: alphabetically for consistency
-                        let vars = if name1 < name2 {
-                            vec![name1.clone(), name2.clone()]
-                        } else {
-                            vec![name2.clone(), name1.clone()]
-                        };
-
-                        // If we swapped order, we need to reorder tensor dimensions
-                        // But for diagonal, it's symmetric!
-                        (TensorExpr::leaf(tensor), vars)
-                    }
-                }
-                _ => {
-                    // More complex term equality not yet implemented
-                    // For now, panic; later could compile to more complex expressions
-                    panic!("Complex term equality not yet supported");
+            // Special case: x = x is trivially true
+            if let (Term::Var(name1, _), Term::Var(name2, _)) = (t1, t2) {
+                if name1 == name2 {
+                    return (TensorExpr::scalar(true), vec![]);
                 }
             }
+
+            let mut fresh_counter = 0;
+
+            // Compile both terms
+            let (expr1, vars1, val1) = compile_term(t1, structure, sig, &mut fresh_counter);
+            let (expr2, vars2, val2) = compile_term(t2, structure, sig, &mut fresh_counter);
+
+            // t1 = t2 means their values are equal
+            // We need to:
+            // 1. Join expr1 and expr2 on their value dimensions (val1 = val2)
+            // 2. Project out the value dimensions
+
+            // First, rename val2 to val1 in vars2 so they join on the same variable
+            let vars2_renamed: Vec<String> = vars2
+                .iter()
+                .map(|v| if v == &val2 { val1.clone() } else { v.clone() })
+                .collect();
+
+            // Rename val2 to val1 in expr2 by reordering dimensions
+            // The vars are sorted alphabetically, so we need to figure out where val2 was
+            // and where val1 should go
+            let val2_pos = vars2.iter().position(|v| v == &val2).unwrap();
+
+            // Where should val1 go in the sorted vars2_renamed?
+            let mut sorted_vars2: Vec<String> = vars2_renamed.clone();
+            sorted_vars2.sort();
+            let val1_pos_in_sorted = sorted_vars2.iter().position(|v| v == &val1).unwrap();
+
+            // Build index map for reordering
+            let expr2_reordered = if val2_pos != val1_pos_in_sorted {
+                // Need to reorder dimensions
+                let mut index_map: Vec<usize> = (0..vars2.len()).collect();
+                // The dimension at val2_pos needs to go to val1_pos_in_sorted
+                index_map.remove(val2_pos);
+                index_map.insert(val1_pos_in_sorted, val2_pos);
+
+                // Actually, we need the inverse mapping for Contract
+                let mut inverse_map = vec![0; vars2.len()];
+                for (new_pos, &old_pos) in index_map.iter().enumerate() {
+                    inverse_map[old_pos] = new_pos;
+                }
+
+                TensorExpr::Contract {
+                    inner: Box::new(expr2),
+                    index_map: inverse_map,
+                    output: (0..vars2.len()).collect(),
+                }
+            } else {
+                expr2
+            };
+
+            // Now join on val1
+            let (joined_expr, joined_vars) =
+                conjunction(expr1, &vars1, expr2_reordered, &sorted_vars2);
+
+            // Project out the internal value variable val1
+            let (result_expr, result_vars) = exists(joined_expr, &joined_vars, &val1);
+
+            (result_expr, result_vars)
         }
     }
 }
@@ -525,5 +804,217 @@ mod tests {
         assert!(vars.is_empty());
         assert_eq!(result.len(), 1); // scalar true
         assert!(result.contains(&[]));
+    }
+
+    #[test]
+    fn test_compile_formula_func_app_equality() {
+        // Test: f(x) = y where f is a function
+        let mut sig = Signature::new();
+        let node_id = sig.add_sort("Node".to_string());
+
+        // Add function f : Node -> Node
+        sig.add_function("f".to_string(), DerivedSort::Base(node_id), DerivedSort::Base(node_id));
+
+        let mut universe = Universe::new();
+        let mut structure = Structure::new(1);
+
+        // Add 3 nodes
+        for _ in 0..3 {
+            structure.add_element(&mut universe, node_id);
+        }
+
+        // Define f: 0 -> 1, 1 -> 2, 2 -> 0
+        structure.init_functions(&[Some(0)]); // f has domain sort 0
+        structure.define_function(0, Slid::from_usize(0), Slid::from_usize(1)).unwrap();
+        structure.define_function(0, Slid::from_usize(1), Slid::from_usize(2)).unwrap();
+        structure.define_function(0, Slid::from_usize(2), Slid::from_usize(0)).unwrap();
+
+        let ctx = CompileContext::new();
+
+        // Build: f(x) = y
+        let formula = Formula::Eq(
+            Term::App(0, Box::new(Term::Var("x".to_string(), DerivedSort::Base(0)))),
+            Term::Var("y".to_string(), DerivedSort::Base(0)),
+        );
+
+        let (expr, vars) = compile_formula(&formula, &ctx, &structure, &sig);
+        let result = expr.materialize();
+
+        // Variables should be x and y (alphabetical order)
+        assert_eq!(vars.len(), 2);
+        assert!(vars.contains(&"x".to_string()));
+        assert!(vars.contains(&"y".to_string()));
+
+        // Result should have exactly 3 tuples: (0,1), (1,2), (2,0)
+        // representing f(0)=1, f(1)=2, f(2)=0
+        // But order depends on alphabetical sort of variable names
+        assert_eq!(result.len(), 3);
+    }
+
+    #[test]
+    fn test_compile_formula_two_func_apps_equality() {
+        // Test: f(x) = g(y) where f, g are functions
+        let mut sig = Signature::new();
+        let node_id = sig.add_sort("Node".to_string());
+
+        // Add functions f, g : Node -> Node
+        sig.add_function("f".to_string(), DerivedSort::Base(node_id), DerivedSort::Base(node_id));
+        sig.add_function("g".to_string(), DerivedSort::Base(node_id), DerivedSort::Base(node_id));
+
+        let mut universe = Universe::new();
+        let mut structure = Structure::new(1);
+
+        // Add 3 nodes
+        for _ in 0..3 {
+            structure.add_element(&mut universe, node_id);
+        }
+
+        // Define f: 0 -> 1, 1 -> 1, 2 -> 2
+        // Define g: 0 -> 0, 1 -> 1, 2 -> 2
+        structure.init_functions(&[Some(0), Some(0)]); // Both have domain sort 0
+        structure.define_function(0, Slid::from_usize(0), Slid::from_usize(1)).unwrap();
+        structure.define_function(0, Slid::from_usize(1), Slid::from_usize(1)).unwrap();
+        structure.define_function(0, Slid::from_usize(2), Slid::from_usize(2)).unwrap();
+        structure.define_function(1, Slid::from_usize(0), Slid::from_usize(0)).unwrap();
+        structure.define_function(1, Slid::from_usize(1), Slid::from_usize(1)).unwrap();
+        structure.define_function(1, Slid::from_usize(2), Slid::from_usize(2)).unwrap();
+
+        let ctx = CompileContext::new();
+
+        // Build: f(x) = g(y)
+        // f(x) = g(y) when ∃z. f(x) = z ∧ g(y) = z
+        // f(0)=1, f(1)=1, f(2)=2
+        // g(0)=0, g(1)=1, g(2)=2
+        // So f(x)=g(y) holds for: (0,1), (1,1), (2,2) since f(0)=g(1)=1, f(1)=g(1)=1, f(2)=g(2)=2
+        let formula = Formula::Eq(
+            Term::App(0, Box::new(Term::Var("x".to_string(), DerivedSort::Base(0)))),
+            Term::App(1, Box::new(Term::Var("y".to_string(), DerivedSort::Base(0)))),
+        );
+
+        let (expr, vars) = compile_formula(&formula, &ctx, &structure, &sig);
+        let result = expr.materialize();
+
+        // Variables should be x and y
+        assert_eq!(vars.len(), 2);
+        assert!(vars.contains(&"x".to_string()));
+        assert!(vars.contains(&"y".to_string()));
+
+        // f(x) = g(y) holds for: (x=0,y=1), (x=1,y=1), (x=2,y=2)
+        assert_eq!(result.len(), 3);
+    }
+
+    #[test]
+    fn test_compile_formula_exists_empty_domain() {
+        // When the domain is empty, ∃x. φ should be false even if φ is true
+        // This is the case for ∃x. x = x on an empty structure
+        let mut sig = Signature::new();
+        let node_id = sig.add_sort("Node".to_string());
+
+        // Empty structure (no elements)
+        let structure = Structure::new(1);
+
+        let ctx = CompileContext::new();
+
+        // Build: ∃x. x = x
+        // Inner formula x = x compiles to scalar true (no variables)
+        // But since domain is empty, the existential should be false
+        let inner = Formula::Eq(
+            Term::Var("x".to_string(), DerivedSort::Base(node_id)),
+            Term::Var("x".to_string(), DerivedSort::Base(node_id)),
+        );
+        let formula = Formula::Exists("x".to_string(), DerivedSort::Base(node_id), Box::new(inner));
+
+        let (expr, vars) = compile_formula(&formula, &ctx, &structure, &sig);
+        let result = expr.materialize();
+
+        // Should be FALSE (empty) because there's no witness in empty domain
+        assert!(vars.is_empty());
+        assert!(result.is_empty(), "∃x. x = x should be false on empty domain");
+    }
+
+    #[test]
+    fn test_compile_formula_exists_nonempty_domain() {
+        // When the domain is non-empty, ∃x. x = x should be true
+        let mut sig = Signature::new();
+        let node_id = sig.add_sort("Node".to_string());
+
+        let mut universe = Universe::new();
+        let mut structure = Structure::new(1);
+        structure.add_element(&mut universe, node_id); // Add one element
+
+        let ctx = CompileContext::new();
+
+        // Build: ∃x. x = x
+        let inner = Formula::Eq(
+            Term::Var("x".to_string(), DerivedSort::Base(node_id)),
+            Term::Var("x".to_string(), DerivedSort::Base(node_id)),
+        );
+        let formula = Formula::Exists("x".to_string(), DerivedSort::Base(node_id), Box::new(inner));
+
+        let (expr, vars) = compile_formula(&formula, &ctx, &structure, &sig);
+        let result = expr.materialize();
+
+        // Should be TRUE because there's a witness
+        assert!(vars.is_empty());
+        assert!(result.contains(&[]), "∃x. x = x should be true on non-empty domain");
+    }
+
+    #[test]
+    fn test_compile_formula_disjunction_different_vars() {
+        // Test disjunction where each disjunct has different variables
+        // R(x) \/ S(y) - this used to panic, now should work
+        let mut sig = Signature::new();
+        let node_id = sig.add_sort("Node".to_string());
+
+        // Add two unary relations
+        sig.add_relation("R".to_string(), DerivedSort::Base(node_id));
+        sig.add_relation("S".to_string(), DerivedSort::Base(node_id));
+
+        let mut universe = Universe::new();
+        let mut structure = Structure::new(1);
+
+        // Add 3 nodes
+        for _ in 0..3 {
+            structure.add_element(&mut universe, node_id);
+        }
+
+        // Initialize relations
+        structure.init_relations(&[1, 1]); // Two unary relations
+
+        // R = {0}, S = {1}
+        structure.assert_relation(0, vec![Slid::from_usize(0)]);
+        structure.assert_relation(1, vec![Slid::from_usize(1)]);
+
+        // Need context with both x and y
+        let ctx = CompileContext {
+            vars: vec!["x".to_string(), "y".to_string()],
+            sorts: vec![DerivedSort::Base(node_id), DerivedSort::Base(node_id)],
+        };
+
+        // Build: R(x) \/ S(y)
+        let r_x = Formula::Rel(
+            0,
+            Term::Var("x".to_string(), DerivedSort::Base(0)),
+        );
+        let s_y = Formula::Rel(
+            1,
+            Term::Var("y".to_string(), DerivedSort::Base(0)),
+        );
+
+        let formula = Formula::Disj(vec![r_x, s_y]);
+
+        let (expr, vars) = compile_formula(&formula, &ctx, &structure, &sig);
+        let result = expr.materialize();
+
+        // Result should have both x and y
+        assert_eq!(vars.len(), 2);
+        assert!(vars.contains(&"x".to_string()));
+        assert!(vars.contains(&"y".to_string()));
+
+        // The result is the union of:
+        // - R(x) extended with all y: {(0,0), (0,1), (0,2)}
+        // - S(y) extended with all x: {(0,1), (1,1), (2,1)}
+        // Note: the tuple order depends on variable order
+        assert!(!result.is_empty());
     }
 }

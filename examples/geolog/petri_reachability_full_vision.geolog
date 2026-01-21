@@ -1,0 +1,72 @@
+// Full Petri Net Reachability Vision Test
+// From 2025-12-12_12:10_VanillaPetriNetRechability.md
+
+theory PetriNet {
+  P : Sort;
+  T : Sort;
+  in : Sort;
+  out : Sort;
+  in/src : in -> P;
+  in/tgt : in -> T;
+  out/src : out -> T;
+  out/tgt : out -> P;
+}
+
+theory (N : PetriNet instance) Marking {
+  token : Sort;
+  token/of : token -> N/P;
+}
+
+theory (N : PetriNet instance) ReachabilityProblem {
+  initial_marking : N Marking instance;
+  target_marking : N Marking instance;
+}
+
+// Simplified Trace theory without disjunctions for now
+theory (N : PetriNet instance) SimpleTrace {
+  F : Sort;
+  F/of : F -> N/T;
+
+  input_terminal : Sort;
+  output_terminal : Sort;
+  input_terminal/of : input_terminal -> N/P;
+  output_terminal/of : output_terminal -> N/P;
+  input_terminal/tgt : input_terminal -> [firing : F, arc : N/in];
+  output_terminal/src : output_terminal -> [firing : F, arc : N/out];
+
+  // Simplified ax5: every firing+arc gets an output terminal
+  ax5 : forall f : F, arc : N/out. |- exists o : output_terminal. o output_terminal/src = [firing: f, arc: arc];
+
+  // Simplified ax6: every firing+arc gets an input terminal
+  ax6 : forall f : F, arc : N/in. |- exists i : input_terminal. i input_terminal/tgt = [firing: f, arc: arc];
+}
+
+instance ExampleNet : PetriNet = {
+  A : P;
+  B : P;
+  ab : T;
+  ab_in : in;
+  ab_in in/src = A;
+  ab_in in/tgt = ab;
+  ab_out : out;
+  ab_out out/src = ab;
+  ab_out out/tgt = B;
+}
+
+// Test nested instance elaboration
+instance problem0 : ExampleNet ReachabilityProblem = {
+  initial_marking = {
+    tok : token;
+    tok token/of = ExampleNet/A;
+  };
+  target_marking = {
+    tok : token;
+    tok token/of = ExampleNet/B;
+  };
+}
+
+// Test chase with SimpleTrace
+instance trace0 : ExampleNet SimpleTrace = chase {
+  f1 : F;
+  f1 F/of = ExampleNet/ab;
+}

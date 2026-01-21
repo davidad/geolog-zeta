@@ -3,7 +3,7 @@
 use geolog::core::{RelationStorage, Structure, VecRelation};
 use geolog::id::{NumericId, Slid};
 use geolog::universe::Universe;
-use geolog::workspace::{load_structure, save_structure};
+use geolog::serialize::{load_structure, save_structure};
 use tempfile::tempdir;
 
 /// Helper to create Slid from integer
@@ -119,7 +119,7 @@ fn test_relation_serialization_roundtrip() {
     structure.assert_relation(0, vec![b, x]);
 
     // Serialize and deserialize via StructureData
-    let data = geolog::workspace::StructureData::from_structure(&structure);
+    let data = geolog::serialize::StructureData::from_structure(&structure);
     let restored = data.to_structure();
 
     // Check relation was preserved
