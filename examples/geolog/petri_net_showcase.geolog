@@ -54,22 +54,81 @@ theory (N : PetriNet instance) ReachabilityProblem {
 
 // ============================================================
 // THEORY: Trace (parameterized by N : PetriNet)
-// A trace records transition firings and token flow
+// A trace records transition firings and token flow via wires
 // ============================================================
 //
-// Note: The full version with wire axioms requires function
-// applications in premises (e.g., ax1-ax6 in the 2025-12-12 vision),
-// which isn't yet supported by the chase/tensor checker.
-// This simplified version captures the essential structure.
+// A trace is a diagrammatic proof of reachability:
+// - Firings represent transition occurrences
+// - Wires connect output arcs of firings to input arcs of other firings
+// - Terminals connect to the initial/target markings
+//
+// The completeness axiom (ax/must_be_fed) ensures every input arc
+// of every firing is accounted for - either wired from another firing
+// or fed by an input terminal.
 
 theory (N : PetriNet instance) Trace {
-  F : Sort;                         // Firings
-  F/of : F -> N/T;                  // Which transition each firing corresponds to
+  // Firings
+  F : Sort;
+  F/of : F -> N/T;
 
-  input_terminal : Sort;            // Entry points for initial marking tokens
-  output_terminal : Sort;           // Exit points for target marking tokens
+  // Wires connect output arcs of firings to input arcs of other firings
+  W : Sort;
+  W/src_firing : W -> F;
+  W/src_arc : W -> N/out;
+  W/tgt_firing : W -> F;
+  W/tgt_arc : W -> N/in;
+
+  // Wire coherence: source arc must belong to source firing's transition
+  ax/wire_src_coherent : forall w : W.
+    |- w W/src_arc N/out/src = w W/src_firing F/of;
+
+  // Wire coherence: target arc must belong to target firing's transition
+  ax/wire_tgt_coherent : forall w : W.
+    |- w W/tgt_arc N/in/tgt = w W/tgt_firing F/of;
+
+  // Wire place coherence: wire connects matching places
+  ax/wire_place_coherent : forall w : W.
+    |- w W/src_arc N/out/tgt = w W/tgt_arc N/in/src;
+
+  // Terminals
+  input_terminal : Sort;
+  output_terminal : Sort;
   input_terminal/of : input_terminal -> N/P;
   output_terminal/of : output_terminal -> N/P;
+
+  // Terminals connect to specific firings and arcs
+  input_terminal/tgt_firing : input_terminal -> F;
+  input_terminal/tgt_arc : input_terminal -> N/in;
+  output_terminal/src_firing : output_terminal -> F;
+  output_terminal/src_arc : output_terminal -> N/out;
+
+  // Terminal coherence axioms
+  ax/input_terminal_coherent : forall i : input_terminal.
+    |- i input_terminal/tgt_arc N/in/tgt = i input_terminal/tgt_firing F/of;
+
+  ax/output_terminal_coherent : forall o : output_terminal.
+    |- o output_terminal/src_arc N/out/src = o output_terminal/src_firing F/of;
+
+  // Terminal place coherence
+  ax/input_terminal_place : forall i : input_terminal.
+    |- i input_terminal/of = i input_terminal/tgt_arc N/in/src;
+
+  ax/output_terminal_place : forall o : output_terminal.
+    |- o output_terminal/of = o output_terminal/src_arc N/out/tgt;
+
+  // COMPLETENESS: Every arc of every firing must be accounted for.
+
+  // Input completeness: every input arc must be fed by a wire or input terminal
+  ax/input_complete : forall f : F, arc : N/in.
+    arc N/in/tgt = f F/of |-
+    (exists w : W. w W/tgt_firing = f, w W/tgt_arc = arc) \/
+    (exists i : input_terminal. i input_terminal/tgt_firing = f, i input_terminal/tgt_arc = arc);
+
+  // Output completeness: every output arc must be captured by a wire or output terminal
+  ax/output_complete : forall f : F, arc : N/out.
+    arc N/out/src = f F/of |-
+    (exists w : W. w W/src_firing = f, w W/src_arc = arc) \/
+    (exists o : output_terminal. o output_terminal/src_firing = f, o output_terminal/src_arc = arc);
 }
 
 // ============================================================
@@ -164,21 +223,28 @@ instance problem0 : ExampleNet ReachabilityProblem = {
 //
 // This Solution instance is a CONSTRUCTIVE PROOF:
 // - The trace contains one firing (f1) of transition 'ab'
-// - The input terminal witnesses that the initial token feeds into f1
-// - The output terminal witnesses that f1 produces the target token
+// - The input terminal feeds the A-token into f1's input arc
+// - The output terminal captures f1's B-token output
 // - The isomorphisms prove the token counts match exactly
 // ============================================================
 
 instance solution0 : ExampleNet problem0 Solution = {
   trace = {
+    // One firing of transition 'ab'
     f1 : F;
     f1 F/of = ExampleNet/ab;
 
+    // Input terminal: feeds the initial A-token into f1
     it : input_terminal;
     it input_terminal/of = ExampleNet/A;
+    it input_terminal/tgt_firing = f1;
+    it input_terminal/tgt_arc = ExampleNet/ab_in;
 
+    // Output terminal: captures f1's B-token output
     ot : output_terminal;
     ot output_terminal/of = ExampleNet/B;
+    ot output_terminal/src_firing = f1;
+    ot output_terminal/src_arc = ExampleNet/ab_out;
   };
 
   initial_iso = {
@@ -215,13 +281,18 @@ instance problem2 : ExampleNet ReachabilityProblem = {
 // ============================================================
 // SOLUTION 2: Yes! Fire 'ab' then 'abc'.
 //
-// Step 1: Fire 'ab' to move one token A -> B
-//         State: 1 token in A, 1 token in B
-// Step 2: Fire 'abc' consuming one A-token and one B-token
-//         State: 1 token in C
+// Token flow diagram:
 //
-// The trace has two firings, and the token bookkeeping is
-// witnessed by the terminal/token bijections.
+//   [it1]--A-->[f1: ab]--B--wire-->[f2: abc]--C-->[ot]
+//   [it2]--A-----------------^
+//
+// Step 1: Fire 'ab' to move one token A -> B
+//         - it1 feeds A-token into f1 via ab_in
+//         - f1 produces B-token via ab_out
+// Step 2: Fire 'abc' consuming one A-token and one B-token
+//         - it2 feeds A-token into f2 via abc_in1
+//         - Wire connects f1's ab_out to f2's abc_in2 (the B-input)
+//         - f2 produces C-token via abc_out
 // ============================================================
 
 instance solution2 : ExampleNet problem2 Solution = {
@@ -230,12 +301,31 @@ instance solution2 : ExampleNet problem2 Solution = {
     f1 : F; f1 F/of = ExampleNet/ab;   // First: A -> B
     f2 : F; f2 F/of = ExampleNet/abc;  // Second: A + B -> C
 
-    // Two input terminals (one for each initial A-token)
-    it1 : input_terminal; it1 input_terminal/of = ExampleNet/A;
-    it2 : input_terminal; it2 input_terminal/of = ExampleNet/A;
+    // Wire connecting f1's B-output to f2's B-input
+    // This is the crucial connection that makes the trace valid!
+    w1 : W;
+    w1 W/src_firing = f1;
+    w1 W/src_arc = ExampleNet/ab_out;
+    w1 W/tgt_firing = f2;
+    w1 W/tgt_arc = ExampleNet/abc_in2;
 
-    // One output terminal (for the final C-token)
-    ot : output_terminal; ot output_terminal/of = ExampleNet/C;
+    // Input terminal 1: feeds first A-token into f1
+    it1 : input_terminal;
+    it1 input_terminal/of = ExampleNet/A;
+    it1 input_terminal/tgt_firing = f1;
+    it1 input_terminal/tgt_arc = ExampleNet/ab_in;
+
+    // Input terminal 2: feeds second A-token into f2
+    it2 : input_terminal;
+    it2 input_terminal/of = ExampleNet/A;
+    it2 input_terminal/tgt_firing = f2;
+    it2 input_terminal/tgt_arc = ExampleNet/abc_in1;
+
+    // Output terminal: captures f2's C-token output
+    ot : output_terminal;
+    ot output_terminal/of = ExampleNet/C;
+    ot output_terminal/src_firing = f2;
+    ot output_terminal/src_arc = ExampleNet/abc_out;
   };
 
   // Bijection: 2 input terminals <-> 2 initial tokens

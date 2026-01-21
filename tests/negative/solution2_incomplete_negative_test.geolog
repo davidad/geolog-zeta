@@ -1,0 +1,214 @@
+// NEGATIVE TEST: This file contains an INTENTIONALLY INCOMPLETE solution.
+//
+// The trace for problem2 is missing the wire connecting f1's output to f2's input.
+// When Trace theory has proper wire axioms, this should FAIL axiom checking.
+//
+// This file serves as a regression test: if this ever starts passing,
+// either the axioms are broken or the solver has a bug.
+
+// ============================================================
+// THEORY: PetriNet
+// ============================================================
+
+theory PetriNet {
+  P : Sort;
+  T : Sort;
+  in : Sort;
+  out : Sort;
+
+  in/src : in -> P;
+  in/tgt : in -> T;
+  out/src : out -> T;
+  out/tgt : out -> P;
+}
+
+// ============================================================
+// THEORY: Marking
+// ============================================================
+
+theory (N : PetriNet instance) Marking {
+  token : Sort;
+  token/of : token -> N/P;
+}
+
+// ============================================================
+// THEORY: ReachabilityProblem
+// ============================================================
+
+theory (N : PetriNet instance) ReachabilityProblem {
+  initial_marking : N Marking instance;
+  target_marking : N Marking instance;
+}
+
+// ============================================================
+// THEORY: Trace (with Wire axioms)
+//
+// A trace records transition firings and token flow via wires.
+// The completeness axioms (ax5, ax6) ensure every arc is accounted for.
+// ============================================================
+
+theory (N : PetriNet instance) Trace {
+  // Firings
+  F : Sort;
+  F/of : F -> N/T;
+
+  // Wires connect output arcs of firings to input arcs of other firings
+  W : Sort;
+  W/src_firing : W -> F;
+  W/src_arc : W -> N/out;
+  W/tgt_firing : W -> F;
+  W/tgt_arc : W -> N/in;
+
+  // Wire coherence: source arc must belong to source firing's transition
+  ax/wire_src_coherent : forall w : W.
+    |- w W/src_arc N/out/src = w W/src_firing F/of;
+
+  // Wire coherence: target arc must belong to target firing's transition
+  ax/wire_tgt_coherent : forall w : W.
+    |- w W/tgt_arc N/in/tgt = w W/tgt_firing F/of;
+
+  // Wire place coherence: wire connects matching places
+  ax/wire_place_coherent : forall w : W.
+    |- w W/src_arc N/out/tgt = w W/tgt_arc N/in/src;
+
+  // Terminals
+  input_terminal : Sort;
+  output_terminal : Sort;
+  input_terminal/of : input_terminal -> N/P;
+  output_terminal/of : output_terminal -> N/P;
+
+  // Terminals connect to specific firings and arcs
+  input_terminal/tgt_firing : input_terminal -> F;
+  input_terminal/tgt_arc : input_terminal -> N/in;
+  output_terminal/src_firing : output_terminal -> F;
+  output_terminal/src_arc : output_terminal -> N/out;
+
+  // Terminal coherence axioms
+  ax/input_terminal_coherent : forall i : input_terminal.
+    |- i input_terminal/tgt_arc N/in/tgt = i input_terminal/tgt_firing F/of;
+
+  ax/output_terminal_coherent : forall o : output_terminal.
+    |- o output_terminal/src_arc N/out/src = o output_terminal/src_firing F/of;
+
+  // Terminal place coherence
+  ax/input_terminal_place : forall i : input_terminal.
+    |- i input_terminal/of = i input_terminal/tgt_arc N/in/src;
+
+  ax/output_terminal_place : forall o : output_terminal.
+    |- o output_terminal/of = o output_terminal/src_arc N/out/tgt;
+
+  // COMPLETENESS: Every arc of every firing must be accounted for.
+
+  // Input completeness: catches the missing wire in solution2!
+  ax/input_complete : forall f : F, arc : N/in.
+    arc N/in/tgt = f F/of |-
+    (exists w : W. w W/tgt_firing = f, w W/tgt_arc = arc) \/
+    (exists i : input_terminal. i input_terminal/tgt_firing = f, i input_terminal/tgt_arc = arc);
+
+  // Output completeness: every output arc must be captured
+  ax/output_complete : forall f : F, arc : N/out.
+    arc N/out/src = f F/of |-
+    (exists w : W. w W/src_firing = f, w W/src_arc = arc) \/
+    (exists o : output_terminal. o output_terminal/src_firing = f, o output_terminal/src_arc = arc);
+}
+
+// ============================================================
+// THEORY: Iso
+// ============================================================
+
+theory (X : Sort) (Y : Sort) Iso {
+  fwd : X -> Y;
+  bwd : Y -> X;
+}
+
+// ============================================================
+// THEORY: Solution
+// ============================================================
+
+theory (N : PetriNet instance) (RP : N ReachabilityProblem instance) Solution {
+  trace : N Trace instance;
+  initial_iso : (trace/input_terminal) (RP/initial_marking/token) Iso instance;
+  target_iso : (trace/output_terminal) (RP/target_marking/token) Iso instance;
+}
+
+// ============================================================
+// INSTANCE: ExampleNet
+// ============================================================
+
+instance ExampleNet : PetriNet = {
+  A : P; B : P; C : P;
+  ab : T; ba : T; abc : T;
+
+  ab_in : in;  ab_in in/src = A; ab_in in/tgt = ab;
+  ab_out : out; ab_out out/src = ab; ab_out out/tgt = B;
+
+  ba_in : in;  ba_in in/src = B; ba_in in/tgt = ba;
+  ba_out : out; ba_out out/src = ba; ba_out out/tgt = A;
+
+  abc_in1 : in; abc_in1 in/src = A; abc_in1 in/tgt = abc;
+  abc_in2 : in; abc_in2 in/src = B; abc_in2 in/tgt = abc;
+  abc_out : out; abc_out out/src = abc; abc_out out/tgt = C;
+}
+
+// ============================================================
+// PROBLEM 2: Can we reach C from two A-tokens?
+// ============================================================
+
+instance problem2 : ExampleNet ReachabilityProblem = {
+  initial_marking = {
+    t1 : token; t1 token/of = ExampleNet/A;
+    t2 : token; t2 token/of = ExampleNet/A;
+  };
+  target_marking = {
+    t : token;
+    t token/of = ExampleNet/C;
+  };
+}
+
+// ============================================================
+// INCOMPLETE SOLUTION 2: This should FAIL!
+//
+// The trace has two firings (f1: ab, f2: abc) but NO WIRE
+// connecting f1's output to f2's B-input. The axiom
+// ax/must_be_fed should catch this: f2's abc_in2 arc
+// is neither wired nor terminal-fed.
+// ============================================================
+
+instance solution2_incomplete : ExampleNet problem2 Solution = {
+  trace = {
+    f1 : F; f1 F/of = ExampleNet/ab;
+    f2 : F; f2 F/of = ExampleNet/abc;
+
+    // Input terminals for the two initial A-tokens
+    it1 : input_terminal;
+    it1 input_terminal/of = ExampleNet/A;
+    it1 input_terminal/tgt_firing = f1;
+    it1 input_terminal/tgt_arc = ExampleNet/ab_in;
+
+    it2 : input_terminal;
+    it2 input_terminal/of = ExampleNet/A;
+    it2 input_terminal/tgt_firing = f2;
+    it2 input_terminal/tgt_arc = ExampleNet/abc_in1;
+
+    // Output terminal for the final C-token
+    ot : output_terminal;
+    ot output_terminal/of = ExampleNet/C;
+    ot output_terminal/src_firing = f2;
+    ot output_terminal/src_arc = ExampleNet/abc_out;
+
+    // INTENTIONALLY MISSING: The wire from f1's ab_out to f2's abc_in2!
+    // This means f2's abc_in2 (the B-input) is not fed by anything.
+  };
+
+  initial_iso = {
+    trace/it1 fwd = problem2/initial_marking/t1;
+    trace/it2 fwd = problem2/initial_marking/t2;
+    problem2/initial_marking/t1 bwd = trace/it1;
+    problem2/initial_marking/t2 bwd = trace/it2;
+  };
+
+  target_iso = {
+    trace/ot fwd = problem2/target_marking/t;
+    problem2/target_marking/t bwd = trace/ot;
+  };
+}

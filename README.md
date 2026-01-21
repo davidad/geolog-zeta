@@ -1,9 +1,7 @@
 # Geolog
 
-<!-- ================================================================
-     This README was synthesized automatically by Claude Opus 4.5.
-     As was this entire project, really.
-     ================================================================ -->
+> This README was synthesized automatically by Claude Opus 4.5.
+> As was this entire project, really.
 
 **Geometric Logic REPL** - A language and runtime for formal specifications using geometric logic.
 
@@ -91,17 +89,60 @@ theory (N : PetriNet instance) ReachabilityProblem {
 
 // ============================================================
 // THEORY: Trace (parameterized by N : PetriNet)
-// A trace records transition firings and token flow
+// A trace records transition firings and token flow via wires
 // ============================================================
 
 theory (N : PetriNet instance) Trace {
   F : Sort;                         // Firings
   F/of : F -> N/T;                  // Which transition each firing corresponds to
 
-  input_terminal : Sort;            // Entry points for initial marking tokens
-  output_terminal : Sort;           // Exit points for target marking tokens
+  // Wires connect output arcs of firings to input arcs of other firings
+  W : Sort;
+  W/src_firing : W -> F;
+  W/src_arc : W -> N/out;
+  W/tgt_firing : W -> F;
+  W/tgt_arc : W -> N/in;
+
+  // Wire coherence axioms (source/target arcs must match firing transitions)
+  ax/wire_src_coherent : forall w : W. |- w W/src_arc N/out/src = w W/src_firing F/of;
+  ax/wire_tgt_coherent : forall w : W. |- w W/tgt_arc N/in/tgt = w W/tgt_firing F/of;
+  ax/wire_place_coherent : forall w : W. |- w W/src_arc N/out/tgt = w W/tgt_arc N/in/src;
+
+  // Terminals connect initial/target markings to firings
+  input_terminal : Sort;
+  output_terminal : Sort;
   input_terminal/of : input_terminal -> N/P;
   output_terminal/of : output_terminal -> N/P;
+  input_terminal/tgt_firing : input_terminal -> F;
+  input_terminal/tgt_arc : input_terminal -> N/in;
+  output_terminal/src_firing : output_terminal -> F;
+  output_terminal/src_arc : output_terminal -> N/out;
+
+  // Terminal coherence axioms
+  ax/input_terminal_coherent : forall i : input_terminal.
+    |- i input_terminal/tgt_arc N/in/tgt = i input_terminal/tgt_firing F/of;
+  ax/output_terminal_coherent : forall o : output_terminal.
+    |- o output_terminal/src_arc N/out/src = o output_terminal/src_firing F/of;
+
+  // Terminal place coherence
+  ax/input_terminal_place : forall i : input_terminal.
+    |- i input_terminal/of = i input_terminal/tgt_arc N/in/src;
+  ax/output_terminal_place : forall o : output_terminal.
+    |- o output_terminal/of = o output_terminal/src_arc N/out/tgt;
+
+  // COMPLETENESS: Every arc of every firing must be accounted for.
+
+  // Input completeness: every input arc must be fed by a wire or input terminal
+  ax/input_complete : forall f : F, arc : N/in.
+    arc N/in/tgt = f F/of |-
+    (exists w : W. w W/tgt_firing = f, w W/tgt_arc = arc) \/
+    (exists i : input_terminal. i input_terminal/tgt_firing = f, i input_terminal/tgt_arc = arc);
+
+  // Output completeness: every output arc must be captured by a wire or output terminal
+  ax/output_complete : forall f : F, arc : N/out.
+    arc N/out/src = f F/of |-
+    (exists w : W. w W/src_firing = f, w W/src_arc = arc) \/
+    (exists o : output_terminal. o output_terminal/src_firing = f, o output_terminal/src_arc = arc);
 }
 
 // ============================================================
@@ -184,11 +225,17 @@ instance solution0 : ExampleNet problem0 Solution = {
     f1 : F;
     f1 F/of = ExampleNet/ab;
 
+    // Input terminal feeds A-token into f1's ab_in arc
     it : input_terminal;
     it input_terminal/of = ExampleNet/A;
+    it input_terminal/tgt_firing = f1;
+    it input_terminal/tgt_arc = ExampleNet/ab_in;
 
+    // Output terminal captures f1's B-token via ab_out arc
     ot : output_terminal;
     ot output_terminal/of = ExampleNet/B;
+    ot output_terminal/src_firing = f1;
+    ot output_terminal/src_arc = ExampleNet/ab_out;
   };
 
   initial_iso = {
@@ -205,7 +252,7 @@ instance solution0 : ExampleNet problem0 Solution = {
 
 ### Problem 2: Can we reach C from two A-tokens?
 
-This is the interesting case: the only path to C is via `abc`, which requires
+This is a more interesting case: the only path to C is via `abc`, which requires
 tokens in BOTH A and B simultaneously. Starting with 2 tokens in A, we must
 first move one to B, then fire `abc`.
 
@@ -225,10 +272,12 @@ instance problem2 : ExampleNet ReachabilityProblem = {
 // ============================================================
 // SOLUTION 2: Fire 'ab' then 'abc'.
 //
+// Token flow diagram:
+//   [it1]--A-->[f1: ab]--B--wire-->[f2: abc]--C-->[ot]
+//   [it2]--A-----------------^
+//
 // Step 1: Fire 'ab' to move one token A -> B
-//         State: 1 token in A, 1 token in B
 // Step 2: Fire 'abc' consuming one A-token and one B-token
-//         State: 1 token in C
 // ============================================================
 
 instance solution2 : ExampleNet problem2 Solution = {
@@ -237,12 +286,30 @@ instance solution2 : ExampleNet problem2 Solution = {
     f1 : F; f1 F/of = ExampleNet/ab;   // First: A -> B
     f2 : F; f2 F/of = ExampleNet/abc;  // Second: A + B -> C
 
-    // Two input terminals (one for each initial A-token)
-    it1 : input_terminal; it1 input_terminal/of = ExampleNet/A;
-    it2 : input_terminal; it2 input_terminal/of = ExampleNet/A;
+    // Wire connecting f1's B-output to f2's B-input
+    w1 : W;
+    w1 W/src_firing = f1;
+    w1 W/src_arc = ExampleNet/ab_out;
+    w1 W/tgt_firing = f2;
+    w1 W/tgt_arc = ExampleNet/abc_in2;
 
-    // One output terminal (for the final C-token)
-    ot : output_terminal; ot output_terminal/of = ExampleNet/C;
+    // Input terminal 1: feeds first A-token into f1
+    it1 : input_terminal;
+    it1 input_terminal/of = ExampleNet/A;
+    it1 input_terminal/tgt_firing = f1;
+    it1 input_terminal/tgt_arc = ExampleNet/ab_in;
+
+    // Input terminal 2: feeds second A-token into f2
+    it2 : input_terminal;
+    it2 input_terminal/of = ExampleNet/A;
+    it2 input_terminal/tgt_firing = f2;
+    it2 input_terminal/tgt_arc = ExampleNet/abc_in1;
+
+    // Output terminal: captures f2's C-token output
+    ot : output_terminal;
+    ot output_terminal/of = ExampleNet/C;
+    ot output_terminal/src_firing = f2;
+    ot output_terminal/src_arc = ExampleNet/abc_out;
   };
 
   // Bijection: 2 input terminals <-> 2 initial tokens
@@ -493,8 +560,9 @@ instance SampleTodos : TodoList = {
   // Assert unary relation: cook_dinner is high priority
   cook_dinner high_priority;
 
-  // Assert binary relation: cook_dinner depends on buy_groceries
-  [item: cook_dinner, on: buy_groceries] depends;
+  // Binary relation using mixed positional/named syntax:
+  // First positional arg maps to 'item' field, named arg for 'on'
+  [cook_dinner, on: buy_groceries] depends;
 }
 ```
 
@@ -900,17 +968,17 @@ geolog> :inspect Chain3
 theory TodoList {
   Item : Sort;
 
-  // Status relations
+  // Status relations (unary, simple arrow syntax)
   completed : Item -> Prop;
   high_priority : Item -> Prop;
   blocked : Item -> Prop;
 
-  // Dependencies
-  depends_on : [x: Item, y: Item] -> Prop;
+  // Dependencies (binary, with named fields)
+  depends : [item: Item, on: Item] -> Prop;
 
   // Axiom: blocked items depend on incomplete items
   ax/dep_blocked : forall x : Item, y : Item.
-    [x: x, y: y] depends_on |- [item: x] blocked \/ [item: y] completed;
+    [item: x, on: y] depends |- x blocked \/ y completed;
 }
 
 instance SampleTodos : TodoList = {
@@ -919,14 +987,13 @@ instance SampleTodos : TodoList = {
   do_laundry : Item;
   clean_house : Item;
 
-  // Mark buy_groceries as completed
+  // Unary relations: simple syntax
   buy_groceries completed;
-
-  // Mark cook_dinner as high priority
   cook_dinner high_priority;
 
-  // cook_dinner depends on buy_groceries
-  [x: cook_dinner, y: buy_groceries] depends_on;
+  // Binary relation: mixed positional/named syntax
+  // First positional arg -> 'item', named arg for 'on'
+  [cook_dinner, on: buy_groceries] depends;
 }
 ```
 
@@ -1102,7 +1169,9 @@ elem relation;
 
 ## Architecture
 
-Geolog is built on several key components:
+> TODO: greatly expand this section
+
+Geolog is built with several key components:
 
 - **Parser**: Converts `.geolog` source to AST
 - **Elaborator**: Type-checks and converts AST to core representations

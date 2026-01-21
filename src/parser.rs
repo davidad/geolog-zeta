@@ -20,6 +20,28 @@ fn to_span(span: Span) -> crate::ast::Span {
     crate::ast::Span::new(span.start, span.end)
 }
 
+/// Assign positional names ("0", "1", ...) to unnamed fields in a record
+/// Only unnamed fields consume positional indices, so named fields can be reordered freely:
+/// `[a, on: b, c]` → `[("0", a), ("on", b), ("1", c)]`
+/// `[on: b, a, c]` → `[("on", b), ("0", a), ("1", c)]`
+fn assign_positional_names<T>(fields: Vec<(Option<String>, T)>) -> Vec<(String, T)> {
+    let mut positional_idx = 0usize;
+    fields
+        .into_iter()
+        .map(|(name, val)| {
+            let field_name = match name {
+                Some(n) => n,
+                None => {
+                    let n = positional_idx.to_string();
+                    positional_idx += 1;
+                    n
+                }
+            };
+            (field_name, val)
+        })
+        .collect()
+}
+
 // ============================================================================
 // Helpers
 // ============================================================================
@@ -67,16 +89,20 @@ fn type_expr_impl() -> impl Parser<Token, TypeExpr, Error = Simple<Token>> + Clo
         let instance = just(Token::Instance).to(TypeToken::Instance);
         let path_tok = path().map(TypeToken::Path);
 
-        // Record type: [field : Type, ...]
-        // Fields contain full type expressions (recursive)
-        let record_field = ident()
+        // Record type: [field: Type, ...] or [Type, ...] or mixed
+        // Named field: `name: Type`
+        let named_type_field = ident()
             .then_ignore(just(Token::Colon))
-            .then(type_expr_rec.clone());
+            .then(type_expr_rec.clone())
+            .map(|(name, ty)| (Some(name), ty));
+        // Positional field: `Type`
+        let positional_type_field = type_expr_rec.clone().map(|ty| (None, ty));
+        let record_field = choice((named_type_field, positional_type_field));
 
         let record = record_field
             .separated_by(just(Token::Comma))
             .delimited_by(just(Token::LBracket), just(Token::RBracket))
-            .map(TypeToken::Record);
+            .map(|fields| TypeToken::Record(assign_positional_names(fields)));
 
         // Single atomic token
         let single_token = choice((sort, prop, instance, record, path_tok)).map(|t| vec![t]);
@@ -153,15 +179,20 @@ fn type_expr_no_arrow() -> impl Parser<Token, TypeExpr, Error = Simple<Token>> +
         let instance = just(Token::Instance).to(TypeToken::Instance);
         let path_tok = path().map(TypeToken::Path);
 
-        // Record type with nested full type expressions
-        let record_field = ident()
+        // Record type: [field: Type, ...] or [Type, ...] or mixed
+        // Named field: `name: Type`
+        let named_type_field = ident()
             .then_ignore(just(Token::Colon))
-            .then(type_expr_impl()); // Use full type_expr for nested contexts
+            .then(type_expr_impl())
+            .map(|(name, ty)| (Some(name), ty));
+        // Positional field: `Type`
+        let positional_type_field = type_expr_impl().map(|ty| (None, ty));
+        let record_field = choice((named_type_field, positional_type_field));
 
         let record = record_field
             .separated_by(just(Token::Comma))
             .delimited_by(just(Token::LBracket), just(Token::RBracket))
-            .map(TypeToken::Record);
+            .map(|fields| TypeToken::Record(assign_positional_names(fields)));
 
         // Single atomic token
         let single_token = choice((sort, prop, instance, record, path_tok)).map(|t| vec![t]);
@@ -194,13 +225,20 @@ fn term() -> impl Parser<Token, Term, Error = Simple<Token>> + Clone {
     recursive(|term| {
         let path_term = path().map(Term::Path);
 
-        // Record literal: [field: term, ...]
-        let record_field = ident().then_ignore(just(Token::Colon)).then(term.clone());
+        // Record literal: [field: term, ...] or [term, ...] or mixed
+        // Named field: `name: value`
+        // Positional field: `value` (gets name "0", "1", etc.)
+        let named_field = ident()
+            .then_ignore(just(Token::Colon))
+            .then(term.clone())
+            .map(|(name, val)| (Some(name), val));
+        let positional_field = term.clone().map(|val| (None, val));
+        let record_field = choice((named_field, positional_field));
 
         let record_term = record_field
             .separated_by(just(Token::Comma))
             .delimited_by(just(Token::LBracket), just(Token::RBracket))
-            .map(Term::Record);
+            .map(|fields| Term::Record(assign_positional_names(fields)));
 
         // Parenthesized term
         let paren_term = term
@@ -237,25 +275,26 @@ enum TermPostfix {
     App(Term),
 }
 
-/// Parse a record term specifically: [field: term, ...]
+/// Parse a record term specifically: [field: term, ...] or [term, ...] or mixed
 /// Used for relation assertions where we need a standalone record parser.
 fn record_term() -> impl Parser<Token, Term, Error = Simple<Token>> + Clone {
     recursive(|rec_term| {
         let path_term = path().map(Term::Path);
+        let inner_term = choice((rec_term.clone(), path_term.clone()));
 
-        // Record literal: [field: term, ...]
-        // Note: field values can themselves be records
-        let record_field = ident()
+        // Named field: `name: value`
+        let named_field = ident()
             .then_ignore(just(Token::Colon))
-            .then(choice((
-                rec_term.clone(),
-                path_term.clone(),
-            )));
+            .then(inner_term.clone())
+            .map(|(name, val)| (Some(name), val));
+        // Positional field: `value`
+        let positional_field = inner_term.map(|val| (None, val));
+        let record_field = choice((named_field, positional_field));
 
         record_field
             .separated_by(just(Token::Comma))
             .delimited_by(just(Token::LBracket), just(Token::RBracket))
-            .map(Term::Record)
+            .map(|fields| Term::Record(assign_positional_names(fields)))
     })
 }
 

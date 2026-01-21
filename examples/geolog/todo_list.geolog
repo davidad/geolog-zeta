@@ -39,5 +39,6 @@ instance SampleTodos : TodoList = {
   cook_dinner high_priority;
 
   // Dependencies: cook_dinner depends on buy_groceries
-  [item: cook_dinner, on: buy_groceries] depends;
+  // Mixed syntax: first positional arg maps to 'item' field
+  [cook_dinner, on: buy_groceries] depends;
 }

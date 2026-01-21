@@ -945,13 +945,21 @@ impl ReplState {
         &self,
         entry: &InstanceEntry,
         signature: &crate::core::Signature,
-    ) -> Vec<(String, Vec<Vec<String>>)> {
+    ) -> Vec<(String, Vec<String>, Vec<Vec<String>>)> {
         let mut result = Vec::new();
 
         for (rel_id, rel_sym) in signature.relations.iter().enumerate() {
             if rel_id >= entry.structure.relations.len() {
                 continue;
             }
+
+            // Extract field names from the relation's domain type
+            let field_names: Vec<String> = match &rel_sym.domain {
+                crate::core::DerivedSort::Base(_) => vec![], // Unary relation, no field names
+                crate::core::DerivedSort::Product(fields) => {
+                    fields.iter().map(|(name, _)| name.clone()).collect()
+                }
+            };
 
             let relation = &entry.structure.relations[rel_id];
             let mut tuples: Vec<Vec<String>> = Vec::new();
@@ -970,7 +978,7 @@ impl ReplState {
             }
 
             if !tuples.is_empty() {
-                result.push((rel_sym.name.clone(), tuples));
+                result.push((rel_sym.name.clone(), field_names, tuples));
             }
         }
 
@@ -1512,8 +1520,8 @@ pub struct InstanceDetail {
     pub theory_name: String,
     pub elements: Vec<(String, Vec<String>)>,
     pub functions: Vec<(String, Vec<String>)>,
-    /// Relations: (name, list of tuples-as-element-names)
-    pub relations: Vec<(String, Vec<Vec<String>>)>,
+    /// Relations: (name, field_names, list of tuples-as-element-names)
+    pub relations: Vec<(String, Vec<String>, Vec<Vec<String>>)>,
     /// Nested instances: (field_name, element_count)
     pub nested: Vec<(String, usize)>,
 }
@@ -1549,17 +1557,22 @@ pub fn format_instance_detail(detail: &InstanceDetail) -> String {
     }
 
     // Relations
-    for (rel_name, tuples) in &detail.relations {
+    for (rel_name, field_names, tuples) in &detail.relations {
         if !tuples.is_empty() {
             out.push_str(&format!("  // {} ({} tuples):\n", rel_name, tuples.len()));
             for tuple in tuples {
-                // Format as [field1: val1, field2: val2] rel_name;
-                // For simplicity, show as positional for now
-                out.push_str(&format!(
-                    "  [{}] {};\n",
-                    tuple.join(", "),
-                    rel_name
-                ));
+                if field_names.is_empty() {
+                    // Unary relation: just the element name
+                    out.push_str(&format!("  {} {};\n", tuple.join(", "), rel_name));
+                } else {
+                    // Multi-ary relation: format as [field1: val1, field2: val2] rel_name;
+                    let formatted: Vec<String> = field_names
+                        .iter()
+                        .zip(tuple.iter())
+                        .map(|(fname, val)| format!("{}: {}", fname, val))
+                        .collect();
+                    out.push_str(&format!("  [{}] {};\n", formatted.join(", "), rel_name));
+                }
             }
         }
     }

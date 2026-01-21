@@ -133,7 +133,8 @@ identifier '=' '{' instance_item* '}' ';'
 type_expr := 'Sort' | 'Prop' | path | record_type | app_type | arrow_type | instance_type
 
 record_type := '[' (field (',' field)*)? ']'
-field := identifier ':' type_expr
+field := identifier ':' type_expr    // Named field
+       | type_expr                   // Positional: gets name "0", "1", etc.
 
 app_type := type_expr type_expr          // Juxtaposition
 arrow_type := type_expr '->' type_expr
@@ -145,7 +146,9 @@ Examples:
 Sort                    // The universe of sorts
 Prop                    // Propositions
 V                       // A named sort
-[x: M, y: M]           // Product type (record)
+[x: M, y: M]           // Product type with named fields
+[M, M]                 // Product type with positional fields ("0", "1")
+[M, on: M]             // Mixed: first positional, second named
 M -> M                  // Function type
 PetriNet instance      // Instance of a theory
 N PetriNet instance    // Parameterized: N is a PetriNet instance
@@ -157,7 +160,8 @@ N PetriNet instance    // Parameterized: N is a PetriNet instance
 term := path | record | paren_term | application | projection
 
 record := '[' (entry (',' entry)*)? ']'
-entry := identifier ':' term
+entry := identifier ':' term         // Named entry
+       | term                        // Positional: gets name "0", "1", etc.
 
 paren_term := '(' term ')'
 application := term term           // Postfix! 'x f' means 'f(x)'
@@ -178,10 +182,17 @@ Examples:
 ```
 A                       // Variable/element reference
 ab src                  // Apply src to ab
-[x: a, y: b] mul       // Apply mul to record
+[x: a, y: b] mul       // Apply mul to record (named fields)
+[a, b] mul             // Apply mul to record (positional)
+[a, on: b] rel         // Mixed: positional first, named second
 x f g                   // Composition: g(f(x))
 r .field               // Project field from record r
 ```
+
+**Note on positional fields**: Positional fields are assigned names "0", "1", etc.
+When matching against a relation defined with named fields (e.g., `rel : [x: M, y: M] -> Prop`),
+positional fields are matched by position: "0" matches the first field, "1" the second, etc.
+This allows mixing positional and named syntax: `[a, y: b] rel` is equivalent to `[x: a, y: b] rel`.
 
 ## Formulas
 

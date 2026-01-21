@@ -199,6 +199,29 @@ fn test_petri_net_showcase_solution2_structure() {
     assert!(solution2.structure.len() > 0, "solution2 should have elements");
 }
 
+/// NEGATIVE TEST: Verify that an incomplete solution correctly fails axiom checking.
+///
+/// This test ensures that the Trace theory's wire axioms properly catch
+/// solutions that are missing required wires between firings.
+#[test]
+fn test_solution2_incomplete_fails_axiom_check() {
+    let path = Path::new("tests/negative/solution2_incomplete_negative_test.geolog");
+    let result = load_geolog_file(path);
+
+    // This file should FAIL to load because it's missing a wire
+    // connecting f1's output to f2's input
+    match result {
+        Ok(_) => panic!("Incomplete solution2 should fail axiom checking, but it succeeded"),
+        Err(err) => {
+            assert!(
+                err.contains("axiom") && err.contains("violated"),
+                "Error should mention axiom violation, got: {}",
+                err
+            );
+        }
+    }
+}
+
 #[test]
 fn test_petri_net_producer_consumer() {
     let path = Path::new("examples/geolog/petri_net.geolog");

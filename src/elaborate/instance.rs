@@ -738,15 +738,28 @@ fn elaborate_instance_ctx_inner(
                     }
 
                     // Build tuple in the correct field order
+                    // Supports both named fields and positional fields:
+                    // - Named: `[item: a, on: b]` matches by field name
+                    // - Positional: `[a, b]` maps "0" to first field, "1" to second, etc.
+                    // - Mixed: `[a, on: b]` uses position for "0", name for "on"
                     let mut tuple = Vec::with_capacity(expected_fields.len());
-                    for (expected_name, expected_sort) in expected_fields {
+                    for (idx, (expected_name, expected_sort)) in expected_fields.iter().enumerate()
+                    {
                         let field_value = fields
                             .iter()
-                            .find(|(name, _)| name == expected_name.as_str())
+                            .find(|(name, _)| {
+                                // Positional fields (named "0", "1", etc.) match by index
+                                if let Ok(pos_idx) = name.parse::<usize>() {
+                                    pos_idx == idx
+                                } else {
+                                    // Named fields match by name
+                                    name == expected_name.as_str()
+                                }
+                            })
                             .ok_or_else(|| {
                                 ElabError::UnsupportedFeature(format!(
-                                    "missing field '{}' in relation assertion",
-                                    expected_name
+                                    "missing field '{}' (position {}) in relation assertion",
+                                    expected_name, idx
                                 ))
                             })?;
 
