@@ -930,13 +930,6 @@ impl Store {
             .map(|(idx, info)| (info.slid, idx))
             .collect();
 
-        // Build Rel Slid -> rel index mapping
-        let rel_to_idx: HashMap<Slid, usize> = rel_infos
-            .iter()
-            .enumerate()
-            .map(|(idx, info)| (info.slid, idx))
-            .collect();
-
         // Populate function values
         let func_vals = self.query_instance_func_vals(instance_slid);
         for fv in func_vals {
@@ -951,28 +944,44 @@ impl Store {
                     }
         }
 
-        // Populate relation tuples
-        // NOTE: Currently only reconstructs unary relations.
-        // Product domain relations are skipped during persistence.
-        let rel_tuples = self.query_instance_rel_tuples(instance_slid);
-        for rt in rel_tuples {
-            if let (Some(rel_slid), Some(arg_slid)) = (rt.rel_slid, rt.arg_slid)
-                && let Some(&rel_idx) = rel_to_idx.get(&rel_slid) {
-                    // Check if this is a product-domain relation
-                    let is_product = rel_infos
-                        .get(rel_idx)
-                        .map(|r| r.domain.arity() > 1)
-                        .unwrap_or(false);
+        // Populate relation tuples from columnar batches
+        // Build UUID -> Structure Slid mapping for elements
+        let elem_uuid_to_structure: HashMap<crate::id::Uuid, Slid> = elem_infos
+            .iter()
+            .filter_map(|info| {
+                let uuid = self.get_element_uuid(info.slid);
+                elem_to_structure_slid.get(&info.slid).map(|&s| (uuid, s))
+            })
+            .collect();
 
-                    if is_product {
-                        // Skip - product domain relations not yet supported
-                        continue;
-                    }
+        // Build Rel UUID -> rel index mapping
+        let rel_uuid_to_idx: HashMap<crate::id::Uuid, usize> = rel_infos
+            .iter()
+            .enumerate()
+            .map(|(idx, info)| (self.get_element_uuid(info.slid), idx))
+            .collect();
 
-                    if let Some(&arg_struct) = elem_to_structure_slid.get(&arg_slid) {
-                        structure.assert_relation(rel_idx, vec![arg_struct]);
+        // Load columnar batches for this instance
+        let instance_uuid = self.get_element_uuid(instance_slid);
+        if let Ok(batches) = self.load_instance_data_batches(instance_uuid) {
+            for batch in batches {
+                for rel_batch in &batch.relation_tuples {
+                    if let Some(&rel_idx) = rel_uuid_to_idx.get(&rel_batch.rel) {
+                        // Convert each tuple's UUIDs to Structure Slids
+                        for tuple_uuids in rel_batch.iter() {
+                            let tuple_slids: Vec<Slid> = tuple_uuids
+                                .iter()
+                                .filter_map(|uuid| elem_uuid_to_structure.get(uuid).copied())
+                                .collect();
+
+                            // Only assert if all elements were found
+                            if tuple_slids.len() == tuple_uuids.len() {
+                                structure.assert_relation(rel_idx, tuple_slids);
+                            }
+                        }
                     }
                 }
+            }
         }
 
         Some(ReconstructedInstance {

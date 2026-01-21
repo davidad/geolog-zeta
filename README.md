@@ -82,11 +82,26 @@ Theories:
 Instances:
   G : Graph (5 elements)
 
-geolog> :query G V
-Elements of V in G:
-  c
-  a
-  b
+geolog> :inspect G
+instance G : Graph = {
+  // V (3):
+  a : V;
+  b : V;
+  c : V;
+  // E (2):
+  e1 : E;
+  e2 : E;
+  // src:
+  e1 src = a;
+  e2 src = b;
+  // tgt:
+  e1 tgt = b;
+  e2 tgt = c;
+  // reachable (3 tuples):
+  [from: a, to: b] reachable;
+  [from: b, to: c] reachable;
+  [from: a, to: c] reachable;
+}
 ```
 
 ## Features
