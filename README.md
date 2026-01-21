@@ -27,7 +27,7 @@ geolog> theory Graph {
   reachable : [from: V, to: V] -> Prop;
 
   ax/edge : forall e : E. |- [from: e src, to: e tgt] reachable;
-  ax/trans : forall x : V, y : V, z : V.
+  ax/trans : forall x,y,z : V.
     [from: x, to: y] reachable, [from: y, to: z] reachable
     |- [from: x, to: z] reachable;
 }
