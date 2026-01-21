@@ -465,16 +465,16 @@ theory TodoList {
 theory Preorder {
   X : Sort;
 
-  // Binary relation: x ≤ y
-  leq : [x: X, y: X] -> Prop;
+  // Binary relation: x ≤ y (field names document the relation)
+  leq : [lo: X, hi: X] -> Prop;
 
   // Reflexivity axiom: x ≤ x
   ax/refl : forall x : X.
-    |- [x: x, y: x] leq;
+    |- [lo: x, hi: x] leq;
 
   // Transitivity axiom: x ≤ y ∧ y ≤ z → x ≤ z
   ax/trans : forall x : X, y : X, z : X.
-    [x: x, y: y] leq, [x: y, y: z] leq |- [x: x, y: z] leq;
+    [lo: x, hi: y] leq, [lo: y, hi: z] leq |- [lo: x, hi: z] leq;
 }
 ```
 
@@ -494,7 +494,7 @@ instance SampleTodos : TodoList = {
   cook_dinner high_priority;
 
   // Assert binary relation: cook_dinner depends on buy_groceries
-  [x: cook_dinner, y: buy_groceries] depends_on;
+  [item: cook_dinner, on: buy_groceries] depends;
 }
 ```
 
@@ -516,8 +516,8 @@ instance SampleTodos : TodoList = {
   [buy_groceries] completed;
   // high_priority (1 tuples):
   [cook_dinner] high_priority;
-  // depends_on (1 tuples):
-  [cook_dinner, buy_groceries] depends_on;
+  // depends (1 tuples):
+  [cook_dinner, buy_groceries] depends;
 }
 
 geolog> :assert SampleTodos completed cook_dinner
@@ -535,8 +535,8 @@ instance SampleTodos : TodoList = {
   [cook_dinner] completed;
   // high_priority (1 tuples):
   [cook_dinner] high_priority;
-  // depends_on (1 tuples):
-  [cook_dinner, buy_groceries] depends_on;
+  // depends (1 tuples):
+  [cook_dinner, buy_groceries] depends;
 }
 ```
 

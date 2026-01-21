@@ -12,13 +12,13 @@ theory TodoList {
   high_priority : Item -> Prop;
   blocked : Item -> Prop;
 
-  // Binary relation for dependencies (product domain syntax)
-  depends_on : [x: Item, y: Item] -> Prop;
+  // Binary relation for dependencies
+  depends : [item: Item, on: Item] -> Prop;
 
-  // Axiom: if an item depends on another, either the dependent is blocked
+  // Axiom: if an item depends on another, either it is blocked
   // or the dependency is completed
   ax/dep_blocked : forall x : Item, y : Item.
-    [x: x, y: y] depends_on |- x blocked \/ y completed;
+    [item: x, on: y] depends |- x blocked \/ y completed;
 }
 
 // Example: An empty todo list ready for interactive use
@@ -39,5 +39,5 @@ instance SampleTodos : TodoList = {
   cook_dinner high_priority;
 
   // Dependencies: cook_dinner depends on buy_groceries
-  [x: cook_dinner, y: buy_groceries] depends_on;
+  [item: cook_dinner, on: buy_groceries] depends;
 }
