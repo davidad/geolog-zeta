@@ -44,23 +44,6 @@ geolog> instance G : Graph = chase {
 }
 Defined instance G : Graph (5 elements) [chase: 3 iterations]
 
-geolog> :commit "graph with reachability"
-Committed: "graph with reachability" (commit #17)
-
-geolog> :quit
-Goodbye!
-
-~/dev/geolog$ geolog -d foo
-geolog v0.1.0 - Geometric Logic REPL
-Type :help for help, :quit to exit
-
-Workspace: foo
-geolog> :list
-Theories:
-  Graph (2 sorts, 2 functions, 1 relations)
-Instances:
-  G : Graph (5 elements)
-
 geolog> :inspect G
 instance G : Graph = {
   // V (3):
@@ -82,11 +65,28 @@ instance G : Graph = {
   [from: a, to: c] reachable;
 }
 
+geolog> :commit "graph with reachability"
+Committed: "graph with reachability" (commit #17)
+
+geolog> :quit
+Goodbye!
+
+~/dev/geolog$ geolog -d foo
+geolog v0.1.0 - Geometric Logic REPL
+Type :help for help, :quit to exit
+
+Workspace: foo
+geolog> :list
+Theories:
+  Graph (2 sorts, 2 functions, 1 relations)
+Instances:
+  G : Graph (5 elements)
+
 geolog> :query G V
 Elements of V in G:
+  c
   a
   b
-  c
 ```
 
 ## Features
