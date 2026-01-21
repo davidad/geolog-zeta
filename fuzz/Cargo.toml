@@ -1,0 +1,30 @@
+[package]
+name = "geolog-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer_sys = "0.4"
+
+[dependencies.geolog]
+path = ".."
+
+# Parser fuzzer - tests lexer/parser robustness
+[[bin]]
+name = "fuzz_parser"
+path = "fuzz_targets/fuzz_parser.rs"
+test = false
+doc = false
+bench = false
+
+# REPL fuzzer - tests full execution pipeline
+[[bin]]
+name = "fuzz_repl"
+path = "fuzz_targets/fuzz_repl.rs"
+test = false
+doc = false
+bench = false
