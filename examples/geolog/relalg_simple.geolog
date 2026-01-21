@@ -19,7 +19,7 @@
 // Query: "scan all elements of sort V"
 // Plan:  () --[ScanOp]--> Wire
 
-instance ScanV : RelAlgIR = {
+instance ScanV : RelAlgIR = chase {
   // -- Schema (target theory) --
   target_theory : GeologMeta/Theory;
   target_theory GeologMeta/Theory/parent = target_theory;

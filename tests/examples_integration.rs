@@ -523,12 +523,10 @@ fn test_relalg_ir_loads() {
 
 /// Test that RelAlgIR instances can be created and represent query plans
 ///
-/// IGNORED: RelAlgIR has axioms like `ax/equiv/refl` (universal conclusions) that
-/// the current chase and tensor systems can't handle. These instances violate
-/// these axioms because the derived relations aren't populated.
-/// See bead geolog-ltk for tracking this issue.
+/// These instances use `= chase { ... }` to derive relations from axioms.
+/// The chase handles function applications in premises (e.g., `s ScanOp/out = w`)
+/// and universal conclusions (e.g., `forall x. |- R(x,x)`).
 #[test]
-#[ignore = "RelAlgIR axioms need chase support for universal conclusions"]
 fn test_relalg_simple_examples() {
     // Load theories first
     let meta_content = fs::read_to_string("theories/GeologMeta.geolog")
