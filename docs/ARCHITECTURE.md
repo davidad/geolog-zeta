@@ -71,6 +71,9 @@ Geolog is a language for geometric logic with semantics in topoi. This document 
 ├─────────────────────────────────────────────────────────────────────────────┤
 │  query/                                                                     │
 │    ├── mod.rs         Re-exports and overview                               │
+│    ├── chase.rs       Chase algorithm for existential/equality conclusions  │
+│    │                  - chase_fixpoint_with_cc(): main entry point          │
+│    │                  - Integrates CongruenceClosure for equality saturation│
 │    ├── compile.rs     Query → QueryOp plan compilation                      │
 │    ├── backend.rs     Naive QueryOp executor (reference impl)               │
 │    ├── optimize.rs    Algebraic law rewriting (filter fusion, etc.)         │
@@ -85,12 +88,16 @@ Geolog is a language for geometric logic with semantics in topoi. This document 
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                         SOLVING LAYER (frontier)                             │
 ├─────────────────────────────────────────────────────────────────────────────┤
+│  cc.rs            Congruence closure (shared by solver + chase)             │
+│                   - Element equivalence tracking with union-find            │
+│                   - Used for equality conclusion axioms                     │
+│                                                                             │
 │  solver/                                                                    │
 │    ├── mod.rs     Unified model enumeration API + re-exports                │
 │    │              - enumerate_models(): core unified function               │
 │    │              - solve(): find models from scratch                       │
 │    │              - query(): extend existing models                         │
-│    ├── types.rs   SearchNode, Obligation, NodeStatus, CongruenceClosure     │
+│    ├── types.rs   SearchNode, Obligation, NodeStatus (re-exports cc::*)     │
 │    ├── tree.rs    Explicit search tree with from_base() for extensions      │
 │    └── tactics.rs Automated search tactics:                                 │
 │                   - CheckTactic: axiom checking, obligation reporting       │
@@ -233,3 +240,16 @@ See `bd ready` for current work items. Key frontiers:
 
 - **Geometric logic solver complete** (`geolog-xj2`): Forward chaining, equation propagation,
   existential body processing, derivation search for False. Interactive via `:solve`.
+
+- **Chase with equality saturation** (`2026-01-21`): Chase algorithm now integrates congruence
+  closure (CC) for handling equality conclusion axioms like `R(x,y) |- x = y`. CC tracks
+  element equivalences and canonicalizes structures after chase converges. This enables
+  Category theory to terminate correctly: unit law axioms collapse infinite `id;id;...`
+  compositions. Added `src/cc.rs` as shared module for both solver and chase.
+
+- **Chase proptests** (`2026-01-21`): Added property-based tests for reflexivity, transitivity,
+  existential conclusions, and equality conclusions. Multi-session persistence tests verify
+  chase results survive REPL restart.
+
+- **Fuzzing infrastructure** (`2026-01-21`): Added `fuzz/` directory with `fuzz_parser` and
+  `fuzz_repl` targets for finding edge cases. Requires nightly Rust.
