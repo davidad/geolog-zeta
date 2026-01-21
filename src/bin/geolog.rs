@@ -340,7 +340,7 @@ fn print_help(topic: Option<&str>) {
             println!("Query:");
             println!("  :query <inst> <sort>        List all elements of a sort");
             println!("  :explain <inst> <sort>      Show query execution plan");
-            println!("  :compile <inst> <sort>      Show RelAlgIR compilation");
+            println!("  :compile <inst> <sort>      Compile and execute via TensorIR");
             println!("  :chase <inst> [max_iter]    Run chase on instance axioms");
             println!();
             println!("Solver:");
