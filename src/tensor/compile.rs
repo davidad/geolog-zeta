@@ -358,7 +358,10 @@ fn compile_rel_with_func_apps(
 }
 
 /// Get the base sort IDs from a relation's domain.
-fn relation_column_sorts(sig: &Signature, rel_id: RelId) -> Vec<usize> {
+///
+/// For a unary relation over sort S, returns `[S]`.
+/// For a relation over a product sort `(A × B × C)`, returns `[A, B, C]`.
+pub fn relation_column_sorts(sig: &Signature, rel_id: RelId) -> Vec<usize> {
     let rel_sym = &sig.relations[rel_id];
     match &rel_sym.domain {
         DerivedSort::Base(sort_id) => vec![*sort_id],

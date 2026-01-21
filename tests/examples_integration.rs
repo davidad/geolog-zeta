@@ -786,6 +786,169 @@ fn test_relalg_roundtrip_distinct_negate() {
 }
 
 // ============================================================================
+// DBSP operator tests (compile → parse roundtrip, but NOT execution comparison)
+// ============================================================================
+//
+// DBSP operators (Delay, Diff, Integrate) require StreamContext for proper
+// execution in the backend, and from_relalg treats them as identity in
+// non-streaming mode. So we can't compare execution results directly.
+//
+// Instead, we verify:
+// 1. QueryOp compiles to RelAlgIR without error (to_relalg works)
+// 2. The RelAlgIR instance can be parsed (from_relalg recognizes the ops)
+// 3. Non-streaming execution doesn't crash (from_relalg handles identity case)
+
+/// Helper to verify DBSP operators compile and parse correctly through RelAlgIR.
+///
+/// Unlike `verify_roundtrip`, this doesn't compare execution results because:
+/// - backend::execute() panics on DBSP operators (needs StreamContext)
+/// - from_relalg treats DBSP as identity in non-streaming mode
+///
+/// This test verifies the pipeline works (compile + parse + execute don't crash).
+fn verify_dbsp_compiles_and_parses(
+    plan: &geolog::query::backend::QueryOp,
+    target: &geolog::core::Structure,
+    relalg_theory: &geolog::core::ElaboratedTheory,
+    description: &str,
+) {
+    use geolog::query::from_relalg::execute_relalg;
+    use geolog::query::to_relalg::compile_to_relalg;
+    use geolog::universe::Universe;
+
+    // Compile to RelAlgIR
+    let mut universe = Universe::new();
+    let relalg_instance = compile_to_relalg(plan, &std::rc::Rc::new(relalg_theory.clone()), &mut universe)
+        .unwrap_or_else(|e| panic!("{}: Compilation failed: {}", description, e));
+
+    // Verify some structure was created
+    assert!(
+        relalg_instance.structure.len() > 0,
+        "{}: RelAlgIR instance should have elements",
+        description
+    );
+
+    // Execute via RelAlgIR interpreter (DBSP ops are identity in non-streaming mode)
+    let result = execute_relalg(&relalg_instance, relalg_theory, target, None)
+        .unwrap_or_else(|e| panic!("{}: RelAlgIR execution failed: {}", description, e));
+
+    // The result should be the same as the underlying Scan (since DBSP is identity)
+    // We just verify it doesn't crash and returns something reasonable
+    // len() is usize so always >= 0, this is effectively assert(true) but documents intent
+    let _ = result.len(); // Acknowledge the result was computed successfully
+}
+
+#[test]
+fn test_relalg_roundtrip_dbsp_delay() {
+    use geolog::core::Structure;
+    use geolog::query::backend::QueryOp;
+
+    let (_, relalg_theory) = load_relalg_for_test();
+
+    // Create structure
+    let mut target = Structure::new(1);
+    target.carriers[0].insert(0);
+    target.carriers[0].insert(1);
+    target.carriers[0].insert(2);
+
+    // Delay wrapping a Scan
+    let delay_plan = QueryOp::Delay {
+        input: Box::new(QueryOp::Scan { sort_idx: 0 }),
+        state_id: 0,
+    };
+    verify_dbsp_compiles_and_parses(&delay_plan, &target, &relalg_theory, "Delay");
+}
+
+#[test]
+fn test_relalg_roundtrip_dbsp_diff() {
+    use geolog::core::Structure;
+    use geolog::query::backend::QueryOp;
+
+    let (_, relalg_theory) = load_relalg_for_test();
+
+    // Create structure
+    let mut target = Structure::new(1);
+    target.carriers[0].insert(0);
+    target.carriers[0].insert(1);
+    target.carriers[0].insert(2);
+
+    // Diff wrapping a Scan
+    let diff_plan = QueryOp::Diff {
+        input: Box::new(QueryOp::Scan { sort_idx: 0 }),
+        state_id: 0,
+    };
+    verify_dbsp_compiles_and_parses(&diff_plan, &target, &relalg_theory, "Diff");
+}
+
+#[test]
+fn test_relalg_roundtrip_dbsp_integrate() {
+    use geolog::core::Structure;
+    use geolog::query::backend::QueryOp;
+
+    let (_, relalg_theory) = load_relalg_for_test();
+
+    // Create structure
+    let mut target = Structure::new(1);
+    target.carriers[0].insert(0);
+    target.carriers[0].insert(1);
+    target.carriers[0].insert(2);
+
+    // Integrate wrapping a Scan
+    let integrate_plan = QueryOp::Integrate {
+        input: Box::new(QueryOp::Scan { sort_idx: 0 }),
+        state_id: 0,
+    };
+    verify_dbsp_compiles_and_parses(&integrate_plan, &target, &relalg_theory, "Integrate");
+}
+
+#[test]
+fn test_relalg_roundtrip_dbsp_combined() {
+    use geolog::core::Structure;
+    use geolog::query::backend::QueryOp;
+
+    let (_, relalg_theory) = load_relalg_for_test();
+
+    // Create structure
+    let mut target = Structure::new(1);
+    target.carriers[0].insert(0);
+    target.carriers[0].insert(1);
+    target.carriers[0].insert(2);
+
+    // The classic DBSP pattern: ∫(δ(input))
+    // In DBSP theory: integrate(diff(x)) = x for stable inputs
+    let integrate_diff_plan = QueryOp::Integrate {
+        input: Box::new(QueryOp::Diff {
+            input: Box::new(QueryOp::Scan { sort_idx: 0 }),
+            state_id: 0,
+        }),
+        state_id: 1,
+    };
+    verify_dbsp_compiles_and_parses(&integrate_diff_plan, &target, &relalg_theory, "Integrate(Diff)");
+
+    // More complex: Filter inside DBSP operators
+    let delay_filter_plan = QueryOp::Delay {
+        input: Box::new(QueryOp::Filter {
+            input: Box::new(QueryOp::Scan { sort_idx: 0 }),
+            pred: geolog::query::backend::Predicate::True,
+        }),
+        state_id: 2,
+    };
+    verify_dbsp_compiles_and_parses(&delay_filter_plan, &target, &relalg_theory, "Delay(Filter)");
+
+    // Union of DBSP streams
+    let union_dbsp_plan = QueryOp::Union {
+        left: Box::new(QueryOp::Diff {
+            input: Box::new(QueryOp::Scan { sort_idx: 0 }),
+            state_id: 3,
+        }),
+        right: Box::new(QueryOp::Diff {
+            input: Box::new(QueryOp::Scan { sort_idx: 0 }),
+            state_id: 4,
+        }),
+    };
+    verify_dbsp_compiles_and_parses(&union_dbsp_plan, &target, &relalg_theory, "Union(Diff, Diff)");
+}
+
+// ============================================================================
 // Meta-test: all examples should parse
 // ============================================================================
 

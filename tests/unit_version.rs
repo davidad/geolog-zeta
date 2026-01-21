@@ -1,8 +1,8 @@
 //! Unit tests for version control (commits, checkout, patches)
 
-use geolog::core::Structure;
+use geolog::core::{Context, DerivedSort, Formula, Sequent, Signature, Structure, Term};
 use geolog::naming::NamingIndex;
-use geolog::version::VersionedState;
+use geolog::version::{CheckoutError, VersionedState};
 use std::fs;
 use std::path::PathBuf;
 use tempfile::tempdir;
@@ -129,5 +129,110 @@ fn test_save_and_load_patches() {
     }
 
     // Clean up
+    let _ = fs::remove_dir_all(&dir);
+}
+
+// ============================================================================
+// Incremental Axiom Checking Tests
+// ============================================================================
+
+/// Build a simple reflexivity axiom: ∀x. x edge x
+/// (every node has a self-loop)
+fn build_reflexivity_theory() -> (Signature, Vec<Sequent>) {
+    let mut sig = Signature::new();
+    let node_sort = sig.add_sort("Node".to_string());
+
+    // Add binary edge relation
+    sig.add_relation(
+        "edge".to_string(),
+        DerivedSort::Product(vec![
+            ("from".to_string(), DerivedSort::Base(node_sort)),
+            ("to".to_string(), DerivedSort::Base(node_sort)),
+        ]),
+    );
+
+    // Axiom: ∀x:Node. edge(x,x)
+    // As a sequent: True ⊢ edge(x,x) [in context x:Node]
+    let context = Context {
+        vars: vec![("x".to_string(), DerivedSort::Base(node_sort))],
+    };
+    let conclusion = Formula::Rel(
+        0, // edge relation
+        Term::Record(vec![
+            ("from".to_string(), Term::Var("x".to_string(), DerivedSort::Base(node_sort))),
+            ("to".to_string(), Term::Var("x".to_string(), DerivedSort::Base(node_sort))),
+        ]),
+    );
+    let reflexivity_axiom = Sequent {
+        context,
+        premise: Formula::True,
+        conclusion,
+    };
+
+    (sig, vec![reflexivity_axiom])
+}
+
+#[test]
+fn test_checkout_checked_valid_structure() {
+    let dir = temp_dir();
+    let mut state = VersionedState::new(&dir);
+    let mut naming = NamingIndex::new();
+    let (sig, axioms) = build_reflexivity_theory();
+
+    // Create a valid structure: one node with self-loop
+    let mut s = Structure::new(1);
+    let (slid1, luid1) = s.add_element(&mut state.universe, 0);
+
+    // Initialize relation and add self-loop
+    s.init_relations(&[2]); // binary relation
+    s.assert_relation(0, vec![slid1, slid1]); // edge(node1, node1)
+
+    let uuid1 = state.universe.get(luid1).unwrap();
+    naming.insert(uuid1, vec!["node1".to_string()]);
+
+    // Commit
+    let commit = state.commit(&s, &naming).expect("commit");
+
+    // checkout_checked should succeed (structure satisfies reflexivity)
+    let result = state.checkout_checked(commit, &axioms, &sig);
+    assert!(result.is_ok(), "checkout_checked should succeed for valid structure");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn test_checkout_checked_invalid_structure() {
+    let dir = temp_dir();
+    let mut state = VersionedState::new(&dir);
+    let mut naming = NamingIndex::new();
+    let (sig, axioms) = build_reflexivity_theory();
+
+    // Create an INVALID structure: one node WITHOUT self-loop
+    let mut s = Structure::new(1);
+    let (_, luid1) = s.add_element(&mut state.universe, 0);
+    s.init_relations(&[2]); // binary relation, but NO tuples
+
+    let uuid1 = state.universe.get(luid1).unwrap();
+    naming.insert(uuid1, vec!["node1".to_string()]);
+
+    // Commit (commit itself doesn't validate)
+    let commit = state.commit(&s, &naming).expect("commit");
+
+    // checkout_checked should FAIL (structure violates reflexivity)
+    let result = state.checkout_checked(commit, &axioms, &sig);
+    match result {
+        Err(CheckoutError::PatchFailed { error, .. }) => {
+            // Expected: axiom violation
+            let error_str = error.to_string();
+            assert!(
+                error_str.contains("violated") || error_str.contains("Axiom"),
+                "Error should mention axiom violation: {}",
+                error_str
+            );
+        }
+        Ok(_) => panic!("checkout_checked should fail for invalid structure"),
+        Err(e) => panic!("Unexpected error type: {:?}", e),
+    }
+
     let _ = fs::remove_dir_all(&dir);
 }

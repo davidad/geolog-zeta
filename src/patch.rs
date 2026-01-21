@@ -685,4 +685,95 @@ pub fn to_initial_patch(structure: &Structure, universe: &Universe, naming: &Nam
     diff(&empty, structure, universe, &empty_naming, naming)
 }
 
+// ============ Incremental Axiom Checking ============
+
+use crate::core::Sequent;
+use crate::tensor::{
+    check_theory_axioms_incremental, extract_dimension_changes, DimensionDelta, Violation,
+};
+
+/// Error type for apply_patch_checked
+#[derive(Clone, Debug)]
+pub enum ApplyPatchError {
+    /// Patch application failed
+    ApplyFailed(String),
+    /// Axiom violations found
+    AxiomViolations {
+        axiom_index: usize,
+        violations: Vec<Violation>,
+    },
+}
+
+impl std::fmt::Display for ApplyPatchError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ApplyPatchError::ApplyFailed(msg) => write!(f, "Apply failed: {}", msg),
+            ApplyPatchError::AxiomViolations { axiom_index, violations } => {
+                write!(f, "Axiom {} violated with {} counterexamples", axiom_index, violations.len())
+            }
+        }
+    }
+}
+
+impl std::error::Error for ApplyPatchError {}
+
+/// Apply a patch with incremental axiom checking.
+///
+/// This is the main entry point for loading commits from other workspaces.
+/// It applies the patch and then incrementally checks that the new structure
+/// still satisfies all axioms (only checking tuples involving new elements).
+///
+/// # Arguments
+/// - `base`: The structure before the patch
+/// - `patch`: The changes to apply
+/// - `universe`: For UUID resolution (will be modified)
+/// - `naming`: For name resolution (will be modified)
+/// - `axioms`: The theory's axioms to check
+/// - `sig`: The theory's signature
+///
+/// # Returns
+/// - `Ok(Structure)` if patch applies and all axioms are satisfied
+/// - `Err(ApplyPatchError)` if application fails or axioms are violated
+pub fn apply_patch_checked(
+    base: &Structure,
+    patch: &Patch,
+    universe: &mut Universe,
+    naming: &mut NamingIndex,
+    axioms: &[Sequent],
+    sig: &crate::core::Signature,
+) -> Result<Structure, ApplyPatchError> {
+    // Extract dimension delta BEFORE applying the patch
+    // (so we know which elements are "old" vs "new")
+    let dim_delta = extract_dimension_changes(&patch.elements, base, patch.num_sorts);
+
+    // Apply the patch
+    let new_structure = apply_patch(base, patch, universe, naming)
+        .map_err(ApplyPatchError::ApplyFailed)?;
+
+    // If no new elements, skip axiom checking (nothing could have changed)
+    if dim_delta.is_empty() {
+        return Ok(new_structure);
+    }
+
+    // Incrementally check axioms
+    let violations = check_theory_axioms_incremental(axioms, &new_structure, sig, &dim_delta);
+
+    if !violations.is_empty() {
+        let (axiom_idx, violation_list) = violations.into_iter().next().unwrap();
+        return Err(ApplyPatchError::AxiomViolations {
+            axiom_index: axiom_idx,
+            violations: violation_list,
+        });
+    }
+
+    Ok(new_structure)
+}
+
+/// Compute dimension delta from a patch without applying it.
+///
+/// Useful for previewing what would change.
+pub fn compute_dimension_delta(patch: &Patch, base: &Structure) -> DimensionDelta {
+    extract_dimension_changes(&patch.elements, base, patch.num_sorts)
+}
+
 // Unit tests moved to tests/proptest_patch.rs

@@ -1,8 +1,18 @@
 //! Sequent checking using tensor expressions.
+//!
+//! This module provides both full and incremental axiom checking:
+//! - `check_sequent`: Full check of a sequent against a structure
+//! - `check_sequent_incremental`: Check only "new" tuples after dimension growth
+//!
+//! The incremental approach leverages the MonotoneSubmodel property:
+//! - Old structure satisfied axioms (invariant)
+//! - Only new tuples can violate (from element additions)
+//! - Only need to check the "border" - tuples involving new indices
 
 use crate::core::{Sequent, Signature, Structure};
 
 use super::compile::{compile_formula, derived_sort_cardinality, CompileContext, CompileError};
+use super::delta::DimensionDelta;
 use super::sparse::DomainIterator;
 
 /// A violation of a sequent: a variable assignment where the premise holds but conclusion doesn't.
@@ -195,6 +205,191 @@ pub fn check_theory_axioms(
                     // axioms via a different code path (eval_term_to_slid).
                     None
                 }
+            }
+        })
+        .collect()
+}
+
+// ============================================================================
+// INCREMENTAL CHECKING
+// ============================================================================
+
+/// Check a sequent incrementally: only check tuples involving new elements.
+///
+/// This leverages the MonotoneSubmodel property:
+/// - If the old structure satisfied the sequent, it still does (immutable)
+/// - Only new tuples (in the "border") can newly violate the axiom
+/// - The border consists of tuples where at least one index is >= old_dim
+///
+/// # Arguments
+/// - `sequent`: The axiom to check
+/// - `new_structure`: The structure after adding elements
+/// - `sig`: The theory signature
+/// - `dim_delta`: Dimension changes from element additions
+///
+/// # Returns
+/// - `Satisfied` if no new violations (border is clean)
+/// - `Violated` with only the NEW violations (from border tuples)
+pub fn check_sequent_incremental(
+    sequent: &Sequent,
+    new_structure: &Structure,
+    sig: &Signature,
+    dim_delta: &DimensionDelta,
+) -> Result<CheckResult, CompileError> {
+    // If no dimensions changed, no new violations possible
+    if dim_delta.is_empty() {
+        return Ok(CheckResult::Satisfied);
+    }
+
+    let ctx = CompileContext::from_context(&sequent.context);
+
+    // Compile premise and conclusion (using full new structure)
+    let (premise_expr, premise_vars) = compile_formula(&sequent.premise, &ctx, new_structure, sig)?;
+    let (conclusion_expr, conclusion_vars) =
+        compile_formula(&sequent.conclusion, &ctx, new_structure, sig)?;
+
+    // Materialize both
+    let premise_tensor = premise_expr.materialize();
+    let conclusion_tensor = conclusion_expr.materialize();
+
+    // Handle edge cases (same as full check)
+    if premise_tensor.is_empty() {
+        return Ok(CheckResult::Satisfied);
+    }
+
+    if conclusion_vars.is_empty() && conclusion_tensor.contains(&[]) {
+        return Ok(CheckResult::Satisfied);
+    }
+
+    // Build old dimensions for the context variables
+    let old_dims: Vec<usize> = sequent
+        .context
+        .vars
+        .iter()
+        .map(|(_, sort)| {
+            match sort {
+                crate::core::DerivedSort::Base(sort_id) => dim_delta.old_dim(*sort_id),
+                crate::core::DerivedSort::Product(fields) => {
+                    // Product cardinality is product of field cardinalities
+                    fields
+                        .iter()
+                        .map(|(_, s)| {
+                            if let crate::core::DerivedSort::Base(sid) = s {
+                                dim_delta.old_dim(*sid)
+                            } else {
+                                derived_sort_cardinality(new_structure, s)
+                            }
+                        })
+                        .product()
+                }
+            }
+        })
+        .collect();
+
+    // Handle special case: premise has no variables (scalar true) but conclusion has variables
+    // This means we need to check the conclusion for all new variable assignments
+    if premise_vars.is_empty() && !conclusion_vars.is_empty() && premise_tensor.contains(&[]) {
+        // Get domain sizes and old dimensions for conclusion variables
+        let domain_sizes: Vec<usize> = sequent
+            .context
+            .vars
+            .iter()
+            .filter(|(name, _)| conclusion_vars.contains(name))
+            .map(|(_, sort)| derived_sort_cardinality(new_structure, sort))
+            .collect();
+
+        let conclusion_old_dims: Vec<usize> = sequent
+            .context
+            .vars
+            .iter()
+            .filter(|(name, _)| conclusion_vars.contains(name))
+            .map(|(_, sort)| match sort {
+                crate::core::DerivedSort::Base(sort_id) => dim_delta.old_dim(*sort_id),
+                crate::core::DerivedSort::Product(_) => 0, // Treat products as all new
+            })
+            .collect();
+
+        let mut violations = Vec::new();
+
+        // Only check tuples in the "border" (involving new elements)
+        for tuple in DomainIterator::new(&domain_sizes) {
+            // Is this tuple in the border?
+            let in_border = tuple.iter().zip(&conclusion_old_dims).any(|(idx, old_dim)| {
+                *idx >= *old_dim
+            });
+
+            if in_border && !conclusion_tensor.contains(&tuple) {
+                violations.push(Violation::new(tuple, conclusion_vars.clone()));
+            }
+        }
+
+        return if violations.is_empty() {
+            Ok(CheckResult::Satisfied)
+        } else {
+            Ok(CheckResult::Violated(violations))
+        };
+    }
+
+    // Check only tuples in the "border" - those involving new elements
+    let mut violations = Vec::new();
+
+    for tuple in premise_tensor.iter() {
+        // Is this tuple in the border? (at least one index >= old_dim)
+        let in_border = tuple.iter().zip(&old_dims).any(|(idx, old_dim)| {
+            // If old_dim is 0, all indices are "new"
+            *idx >= *old_dim
+        });
+
+        if !in_border {
+            // This tuple existed in old structure, which satisfied the axiom
+            continue;
+        }
+
+        // Project premise tuple to conclusion vars (same logic as full check)
+        let conclusion_tuple: Vec<usize> = conclusion_vars
+            .iter()
+            .map(|cv| {
+                let premise_idx = premise_vars.iter().position(|pv| pv == cv).unwrap();
+                tuple[premise_idx]
+            })
+            .collect();
+
+        if !conclusion_tensor.contains(&conclusion_tuple) {
+            violations.push(Violation::new(tuple.clone(), premise_vars.clone()));
+        }
+    }
+
+    if violations.is_empty() {
+        Ok(CheckResult::Satisfied)
+    } else {
+        Ok(CheckResult::Violated(violations))
+    }
+}
+
+/// Incrementally check multiple axioms.
+///
+/// Only checks the "border" of each axiom, skipping tuples that
+/// existed in the old structure (which was already verified).
+pub fn check_theory_axioms_incremental(
+    axioms: &[Sequent],
+    new_structure: &Structure,
+    sig: &Signature,
+    dim_delta: &DimensionDelta,
+) -> Vec<(usize, Vec<Violation>)> {
+    // If no dimensions changed, nothing to check
+    if dim_delta.is_empty() {
+        return vec![];
+    }
+
+    axioms
+        .iter()
+        .enumerate()
+        .filter_map(|(i, seq)| {
+            match check_sequent_incremental(seq, new_structure, sig, dim_delta) {
+                Ok(CheckResult::Satisfied) => None,
+                Ok(CheckResult::Violated(vs)) if !vs.is_empty() => Some((i, vs)),
+                Ok(CheckResult::Violated(_)) => None, // Empty violations
+                Err(_) => None, // Skip unsupported axioms
             }
         })
         .collect()
@@ -576,5 +771,237 @@ mod tests {
         assert_eq!(violations.len(), 1);
         assert_eq!(violations[0].0, 1); // Second axiom
         assert_eq!(violations[0].1.len(), 3); // All 3 nodes violate reflexivity
+    }
+
+    // ========================================================================
+    // Incremental Checking Tests
+    // ========================================================================
+
+    #[test]
+    fn test_incremental_check_no_changes() {
+        // If no dimensions changed, should immediately return Satisfied
+        let (structure, sig) = make_test_structure_with_relation();
+
+        let ctx = Context {
+            vars: vec![
+                ("x".to_string(), DerivedSort::Base(0)),
+                ("y".to_string(), DerivedSort::Base(0)),
+            ],
+        };
+
+        let edge_xy = Formula::Rel(
+            0,
+            Term::Record(vec![
+                ("from".to_string(), Term::Var("x".to_string(), DerivedSort::Base(0))),
+                ("to".to_string(), Term::Var("y".to_string(), DerivedSort::Base(0))),
+            ]),
+        );
+
+        let sequent = Sequent {
+            context: ctx,
+            premise: edge_xy.clone(),
+            conclusion: edge_xy,
+        };
+
+        let dim_delta = DimensionDelta::default(); // No changes
+
+        let result = check_sequent_incremental(&sequent, &structure, &sig, &dim_delta).unwrap();
+        assert!(result.is_satisfied());
+    }
+
+    #[test]
+    fn test_incremental_check_new_element_violates() {
+        // Test that incremental check catches violations from new elements
+        //
+        // Setup: 2 nodes (0, 1) with edge 0→1
+        // Add: node 2 with no edges
+        // Axiom: true ⊢ edge(x, x) (reflexivity) - should fail for node 2
+
+        let mut sig = Signature::new();
+        let node_id = sig.add_sort("Node".to_string());
+        sig.add_relation(
+            "edge".to_string(),
+            DerivedSort::Product(vec![
+                ("from".to_string(), DerivedSort::Base(node_id)),
+                ("to".to_string(), DerivedSort::Base(node_id)),
+            ]),
+        );
+
+        let mut universe = Universe::new();
+        let mut structure = Structure::new(1);
+
+        // Add 3 nodes (old was 2)
+        for _ in 0..3 {
+            structure.add_element(&mut universe, node_id);
+        }
+
+        structure.init_relations(&[2]);
+        structure.assert_relation(0, vec![slid(0), slid(1)]); // 0→1
+
+        let ctx = Context {
+            vars: vec![("x".to_string(), DerivedSort::Base(0))],
+        };
+
+        let premise = Formula::True;
+        let conclusion = Formula::Rel(
+            0,
+            Term::Record(vec![
+                ("from".to_string(), Term::Var("x".to_string(), DerivedSort::Base(0))),
+                ("to".to_string(), Term::Var("x".to_string(), DerivedSort::Base(0))),
+            ]),
+        );
+
+        let sequent = Sequent {
+            context: ctx,
+            premise,
+            conclusion,
+        };
+
+        // Dimension delta: sort 0 went from 2 to 3
+        let dim_delta = DimensionDelta::from_cardinalities(&[2], &[3]);
+
+        let result = check_sequent_incremental(&sequent, &structure, &sig, &dim_delta).unwrap();
+
+        // Should be violated only for the NEW element (index 2)
+        // Nodes 0 and 1 are "old" (index < 2), so we don't recheck them
+        assert!(!result.is_satisfied());
+        let violations = result.violations();
+        assert_eq!(violations.len(), 1);
+        assert_eq!(violations[0].assignment, vec![2]); // Only node 2 (new)
+    }
+
+    #[test]
+    fn test_incremental_check_new_element_satisfies() {
+        // Test that if new elements satisfy the axiom, no violations reported
+        //
+        // Setup: 2 nodes with self-loops
+        // Add: node 2 with self-loop
+        // Axiom: true ⊢ edge(x, x) - should pass
+
+        let mut sig = Signature::new();
+        let node_id = sig.add_sort("Node".to_string());
+        sig.add_relation(
+            "edge".to_string(),
+            DerivedSort::Product(vec![
+                ("from".to_string(), DerivedSort::Base(node_id)),
+                ("to".to_string(), DerivedSort::Base(node_id)),
+            ]),
+        );
+
+        let mut universe = Universe::new();
+        let mut structure = Structure::new(1);
+
+        // Add 3 nodes
+        for _ in 0..3 {
+            structure.add_element(&mut universe, node_id);
+        }
+
+        structure.init_relations(&[2]);
+        // Add self-loops for all nodes
+        structure.assert_relation(0, vec![slid(0), slid(0)]);
+        structure.assert_relation(0, vec![slid(1), slid(1)]);
+        structure.assert_relation(0, vec![slid(2), slid(2)]); // New node also has self-loop
+
+        let ctx = Context {
+            vars: vec![("x".to_string(), DerivedSort::Base(0))],
+        };
+
+        let sequent = Sequent {
+            context: ctx,
+            premise: Formula::True,
+            conclusion: Formula::Rel(
+                0,
+                Term::Record(vec![
+                    ("from".to_string(), Term::Var("x".to_string(), DerivedSort::Base(0))),
+                    ("to".to_string(), Term::Var("x".to_string(), DerivedSort::Base(0))),
+                ]),
+            ),
+        };
+
+        let dim_delta = DimensionDelta::from_cardinalities(&[2], &[3]);
+
+        let result = check_sequent_incremental(&sequent, &structure, &sig, &dim_delta).unwrap();
+        assert!(result.is_satisfied()); // New element 2 also has self-loop
+    }
+
+    #[test]
+    fn test_incremental_check_transitivity() {
+        // Test incremental check for transitivity axiom
+        //
+        // Old: nodes 0, 1 with edges 0→1 (no transitivity violations)
+        // New: add node 2, edges 1→2 (now 0→1→2 but no 0→2)
+        // Axiom: edge(x,y) ∧ edge(y,z) ⊢ edge(x,z)
+        // Violation: (0,1,2) where x=0, y=1, z=2
+
+        let mut sig = Signature::new();
+        let node_id = sig.add_sort("Node".to_string());
+        sig.add_relation(
+            "edge".to_string(),
+            DerivedSort::Product(vec![
+                ("from".to_string(), DerivedSort::Base(node_id)),
+                ("to".to_string(), DerivedSort::Base(node_id)),
+            ]),
+        );
+
+        let mut universe = Universe::new();
+        let mut structure = Structure::new(1);
+
+        // 3 nodes
+        for _ in 0..3 {
+            structure.add_element(&mut universe, node_id);
+        }
+
+        structure.init_relations(&[2]);
+        structure.assert_relation(0, vec![slid(0), slid(1)]); // 0→1
+        structure.assert_relation(0, vec![slid(1), slid(2)]); // 1→2 (involves new node)
+        // Note: NO 0→2 edge
+
+        let ctx = Context {
+            vars: vec![
+                ("x".to_string(), DerivedSort::Base(0)),
+                ("y".to_string(), DerivedSort::Base(0)),
+                ("z".to_string(), DerivedSort::Base(0)),
+            ],
+        };
+
+        let edge_xy = Formula::Rel(
+            0,
+            Term::Record(vec![
+                ("from".to_string(), Term::Var("x".to_string(), DerivedSort::Base(0))),
+                ("to".to_string(), Term::Var("y".to_string(), DerivedSort::Base(0))),
+            ]),
+        );
+        let edge_yz = Formula::Rel(
+            0,
+            Term::Record(vec![
+                ("from".to_string(), Term::Var("y".to_string(), DerivedSort::Base(0))),
+                ("to".to_string(), Term::Var("z".to_string(), DerivedSort::Base(0))),
+            ]),
+        );
+        let edge_xz = Formula::Rel(
+            0,
+            Term::Record(vec![
+                ("from".to_string(), Term::Var("x".to_string(), DerivedSort::Base(0))),
+                ("to".to_string(), Term::Var("z".to_string(), DerivedSort::Base(0))),
+            ]),
+        );
+
+        let sequent = Sequent {
+            context: ctx,
+            premise: Formula::Conj(vec![edge_xy, edge_yz]),
+            conclusion: edge_xz,
+        };
+
+        // Old: 2 nodes, New: 3 nodes
+        let dim_delta = DimensionDelta::from_cardinalities(&[2], &[3]);
+
+        let result = check_sequent_incremental(&sequent, &structure, &sig, &dim_delta).unwrap();
+
+        // The tuple (0, 1, 2) involves new element z=2, so it's in the border
+        // and should be checked
+        assert!(!result.is_satisfied());
+        let violations = result.violations();
+        assert_eq!(violations.len(), 1);
+        assert_eq!(violations[0].assignment, vec![0, 1, 2]);
     }
 }

@@ -69,7 +69,7 @@ impl DerivedSort {
 }
 
 /// A function symbol with its domain and codomain
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FunctionSymbol {
     pub name: String,
     pub domain: DerivedSort,
@@ -77,7 +77,7 @@ pub struct FunctionSymbol {
 }
 
 /// A relation symbol with its domain (relations have no codomain — they're predicates)
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RelationSymbol {
     pub name: String,
     pub domain: DerivedSort,
@@ -85,7 +85,7 @@ pub struct RelationSymbol {
 
 /// An instance field declaration (a field that holds a sub-instance)
 /// e.g., `initial_marking : N Marking instance;`
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct InstanceFieldSymbol {
     pub name: String,
     /// The theory type expression (e.g., "N Marking" as a string for now)
@@ -94,7 +94,7 @@ pub struct InstanceFieldSymbol {
 }
 
 /// A signature: sorts + function symbols + relation symbols + instance fields
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Signature {
     /// Sort names, indexed by SortId
     pub sorts: Vec<String>,
@@ -304,7 +304,7 @@ impl RelationStorage for VecRelation {
 }
 
 /// A typing context: a list of (variable_name, sort) pairs
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Context {
     /// Variables in scope, with their sorts
     pub vars: Vec<(String, DerivedSort)>,
@@ -332,7 +332,7 @@ impl Context {
 }
 
 /// A well-typed term
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Term {
     /// Variable reference (de Bruijn index would be cleaner, but names are more debuggable)
     Var(String, DerivedSort),
@@ -372,7 +372,7 @@ impl Term {
 }
 
 /// A well-typed geometric formula
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Formula {
     /// Relation application: R(t) where R is a relation symbol and t is a term
     Rel(RelId, Term),
@@ -391,7 +391,7 @@ pub enum Formula {
 }
 
 /// A sequent: premise ⊢ conclusion (both in the same context)
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Sequent {
     /// The context (bound variables)
     pub context: Context,
@@ -402,7 +402,7 @@ pub struct Sequent {
 }
 
 /// A theory: a signature plus a set of axioms (sequents)
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Theory {
     pub name: String,
     pub signature: Signature,
@@ -414,7 +414,7 @@ pub struct Theory {
 /// A theory can have parameters (other theories it depends on)
 /// Note: This is forward-declared; the actual type is `Rc<ElaboratedTheory>`
 /// but we can't reference it here due to ordering. We use a type alias.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TheoryParam {
     pub name: String,
     // This will be an Rc<ElaboratedTheory> in practice
@@ -422,7 +422,7 @@ pub struct TheoryParam {
 }
 
 /// An elaborated theory with its parameters
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ElaboratedTheory {
     pub params: Vec<TheoryParam>,
     pub theory: Theory,
