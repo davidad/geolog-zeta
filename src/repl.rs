@@ -670,12 +670,13 @@ impl ReplState {
                 let sorts = self.store.query_theory_sorts(slid);
                 let funcs = self.store.query_theory_funcs(slid);
                 let rels = self.store.query_theory_rels(slid);
+                let axioms = self.store.query_theory_sequents(slid);
                 result.push(TheoryInfo {
                     name,
                     num_sorts: sorts.len(),
                     num_functions: funcs.len(),
                     num_relations: rels.len(),
-                    num_axioms: 0,  // TODO: persist axioms
+                    num_axioms: axioms.len(),
                 });
             }
         }
