@@ -278,7 +278,7 @@ fn fire_conclusion(
 
         Formula::Rel(rel_id, term) => {
             // Add tuple to relation
-            let tuple = eval_term_to_tuple(term, binding)?;
+            let tuple = eval_term_to_tuple(term, binding, structure)?;
 
             // Check if already present
             if structure.relations[*rel_id].contains(&tuple) {
@@ -318,7 +318,11 @@ fn fire_conclusion(
 }
 
 /// Evaluate a term to a tuple of Slids (for relation arguments)
-fn eval_term_to_tuple(term: &Term, binding: &Binding) -> Result<Vec<Slid>, ChaseError> {
+fn eval_term_to_tuple(
+    term: &Term,
+    binding: &Binding,
+    structure: &Structure,
+) -> Result<Vec<Slid>, ChaseError> {
     match term {
         Term::Var(name, _) => {
             let slid = binding.get(name)
@@ -328,13 +332,18 @@ fn eval_term_to_tuple(term: &Term, binding: &Binding) -> Result<Vec<Slid>, Chase
         Term::Record(fields) => {
             let mut tuple = Vec::new();
             for (_, field_term) in fields {
-                tuple.extend(eval_term_to_tuple(field_term, binding)?);
+                tuple.extend(eval_term_to_tuple(field_term, binding, structure)?);
             }
             Ok(tuple)
         }
-        Term::App(_, _) | Term::Project(_, _) => {
+        Term::App(_, _) => {
+            // Delegate to eval_term_to_slid which handles function application
+            let result = eval_term_to_slid(term, binding, structure)?;
+            Ok(vec![result])
+        }
+        Term::Project(_, _) => {
             Err(ChaseError::UnsupportedConclusion(
-                "Function application in relation argument".to_string()
+                "Projection in relation argument".to_string()
             ))
         }
     }

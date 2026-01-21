@@ -82,10 +82,11 @@ instance G : Graph = {
   [from: a, to: c] reachable;
 }
 
-geolog> :query G reachable a
-Tuples matching reachable(a, _) in G:
-  [from: a, to: b]
-  [from: a, to: c]
+geolog> :query G V
+Elements of V in G:
+  a
+  b
+  c
 ```
 
 ## Features

@@ -185,6 +185,134 @@ fn extract_term_vars(term: &Term) -> Vec<(usize, String, DerivedSort)> {
     }
 }
 
+/// Check if a term contains any function applications
+fn term_has_func_app(term: &Term) -> bool {
+    match term {
+        Term::Var(_, _) => false,
+        Term::App(_, _) => true,
+        Term::Project(base, _) => term_has_func_app(base),
+        Term::Record(fields) => fields.iter().any(|(_, t)| term_has_func_app(t)),
+    }
+}
+
+/// Compile a simple relation formula (no function applications in term)
+fn compile_rel_simple(
+    rel_id: RelId,
+    term: &Term,
+    structure: &Structure,
+    sig: &Signature,
+) -> (TensorExpr, Vec<String>) {
+    let vars_info = extract_term_vars(term);
+    let column_sorts = relation_column_sorts(sig, rel_id);
+
+    // Build the tensor from the relation
+    let tensor = relation_to_tensor(structure, rel_id, &column_sorts);
+
+    // Build variable list (ordered by column position)
+    let mut var_info_sorted = vars_info.clone();
+    var_info_sorted.sort_by_key(|(pos, _, _)| *pos);
+
+    // Check for repeated variables (same variable in multiple columns)
+    // e.g., edge(x, x) should produce a diagonal tensor
+    let mut seen_vars: HashMap<String, usize> = HashMap::new();
+    let mut unique_vars: Vec<String> = Vec::new();
+    let mut index_map: Vec<usize> = Vec::new();
+
+    for (_, name, _) in &var_info_sorted {
+        if let Some(&existing_idx) = seen_vars.get(name) {
+            // Repeated variable: map to same target
+            index_map.push(existing_idx);
+        } else {
+            // New variable
+            let new_idx = unique_vars.len();
+            seen_vars.insert(name.clone(), new_idx);
+            unique_vars.push(name.clone());
+            index_map.push(new_idx);
+        }
+    }
+
+    // If all variables are unique, no contraction needed
+    if unique_vars.len() == var_info_sorted.len() {
+        (TensorExpr::leaf(tensor), unique_vars)
+    } else {
+        // Need to contract to handle repeated variables (diagonal)
+        let output: BTreeSet<usize> = (0..unique_vars.len()).collect();
+        let expr = TensorExpr::Contract {
+            inner: Box::new(TensorExpr::leaf(tensor)),
+            index_map,
+            output,
+        };
+        (expr, unique_vars)
+    }
+}
+
+/// Compile a relation formula with function applications in the term
+/// For `[from: e src, to: e tgt] reachable`:
+/// 1. Compile each field term (e src, e tgt) using compile_term
+/// 2. Join the resulting tensors
+/// 3. Join with the relation tensor
+/// 4. Project out the intermediate value variables
+fn compile_rel_with_func_apps(
+    rel_id: RelId,
+    term: &Term,
+    structure: &Structure,
+    sig: &Signature,
+) -> (TensorExpr, Vec<String>) {
+    let column_sorts = relation_column_sorts(sig, rel_id);
+    let rel_tensor = relation_to_tensor(structure, rel_id, &column_sorts);
+
+    // Get the relation's field info (unused for now but documents the structure)
+    let _rel = &sig.relations[rel_id];
+
+    let mut fresh_counter = 0;
+
+    // Compile each field term and collect their value variables
+    let field_terms: Vec<&Term> = match term {
+        Term::Record(fields) => fields.iter().map(|(_, t)| t).collect(),
+        _ => vec![term], // Single term for unary relation
+    };
+
+    // Compile all field terms
+    let mut all_compiled: Vec<(TensorExpr, Vec<String>, String)> = Vec::new();
+    for field_term in &field_terms {
+        let (expr, vars, value_var) = compile_term(field_term, structure, sig, &mut fresh_counter);
+        all_compiled.push((expr, vars, value_var));
+    }
+
+    // Join all field terms together
+    let mut joined_expr = all_compiled[0].0.clone();
+    let mut joined_vars = all_compiled[0].1.clone();
+
+    for (expr, vars, _) in all_compiled.iter().skip(1) {
+        let (new_expr, new_vars) = conjunction(joined_expr, &joined_vars, expr.clone(), vars);
+        joined_expr = new_expr;
+        joined_vars = new_vars;
+    }
+
+    // Build the relation tensor with value variables as dimensions
+    // The relation tensor has dimensions corresponding to the column sorts
+    // We need to rename the relation's dimensions to match the field value variables
+    let value_vars: Vec<&String> = all_compiled.iter().map(|(_, _, v)| v).collect();
+
+    // Build relation tensor variable names (one per column)
+    let rel_vars: Vec<String> = value_vars.iter().map(|&v| v.clone()).collect();
+
+    // Join with relation tensor
+    let (result_expr, result_vars) =
+        conjunction(joined_expr, &joined_vars, TensorExpr::leaf(rel_tensor), &rel_vars);
+
+    // Project out the value variables (they're internal)
+    let mut final_expr = result_expr;
+    let mut final_vars = result_vars;
+    for value_var in &value_vars {
+        let (new_expr, new_vars) = exists(final_expr, &final_vars, value_var);
+        final_expr = new_expr;
+        final_vars = new_vars;
+    }
+
+    (final_expr, final_vars)
+}
+
 /// Get the base sort IDs from a relation's domain.
 fn relation_column_sorts(sig: &Signature, rel_id: RelId) -> Vec<usize> {
     let rel_sym = &sig.relations[rel_id];
@@ -334,48 +462,13 @@ pub fn compile_formula(
         Formula::False => (TensorExpr::scalar(false), vec![]),
 
         Formula::Rel(rel_id, term) => {
-            // Extract variables from the term pattern
-            let vars_info = extract_term_vars(term);
-            let column_sorts = relation_column_sorts(sig, *rel_id);
-
-            // Build the tensor from the relation
-            let tensor = relation_to_tensor(structure, *rel_id, &column_sorts);
-
-            // Build variable list (ordered by column position)
-            let mut var_info_sorted = vars_info.clone();
-            var_info_sorted.sort_by_key(|(pos, _, _)| *pos);
-
-            // Check for repeated variables (same variable in multiple columns)
-            // e.g., edge(x, x) should produce a diagonal tensor
-            let mut seen_vars: HashMap<String, usize> = HashMap::new();
-            let mut unique_vars: Vec<String> = Vec::new();
-            let mut index_map: Vec<usize> = Vec::new();
-
-            for (_, name, _) in &var_info_sorted {
-                if let Some(&existing_idx) = seen_vars.get(name) {
-                    // Repeated variable: map to same target
-                    index_map.push(existing_idx);
-                } else {
-                    // New variable
-                    let new_idx = unique_vars.len();
-                    seen_vars.insert(name.clone(), new_idx);
-                    unique_vars.push(name.clone());
-                    index_map.push(new_idx);
-                }
-            }
-
-            // If all variables are unique, no contraction needed
-            if unique_vars.len() == var_info_sorted.len() {
-                (TensorExpr::leaf(tensor), unique_vars)
+            // Check if term contains function applications
+            if term_has_func_app(term) {
+                // Use compile_term for each field, then join with relation
+                compile_rel_with_func_apps(*rel_id, term, structure, sig)
             } else {
-                // Need to contract to handle repeated variables (diagonal)
-                let output: BTreeSet<usize> = (0..unique_vars.len()).collect();
-                let expr = TensorExpr::Contract {
-                    inner: Box::new(TensorExpr::leaf(tensor)),
-                    index_map,
-                    output,
-                };
-                (expr, unique_vars)
+                // Simple case: direct variable binding
+                compile_rel_simple(*rel_id, term, structure, sig)
             }
         }
 

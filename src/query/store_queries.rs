@@ -260,42 +260,17 @@ impl Store {
         infos
     }
 
-    /// Query all relation tuples in an instance (using compiled query engine).
+    /// Query all relation tuples in an instance.
     ///
-    /// This is equivalent to `query_instance_rel_tuples` in bootstrap_queries.rs,
-    /// but uses the Query compiler for the initial scan+filter.
-    pub fn query_instance_rel_tuples_compiled(&self, instance_slid: Slid) -> Vec<RelTupleInfo> {
-        let Some(rt_sort) = self.sort_ids.rel_tuple else {
-            return vec![];
-        };
-        let Some(instance_func) = self.func_ids.rel_tuple_instance else {
-            return vec![];
-        };
-        let Some(rel_func) = self.func_ids.rel_tuple_rel else {
-            return vec![];
-        };
-        let Some(arg_func) = self.func_ids.rel_tuple_arg else {
-            return vec![];
-        };
-
-        // Compile and execute the query
-        let plan = compile_simple_filter(rt_sort, instance_func, instance_slid);
-        let result = execute(&plan, &self.meta);
-
-        // Convert query results to RelTupleInfo
-        let mut infos = Vec::new();
-        for tuple in result.tuples.keys() {
-            if let Some(&rt_slid) = tuple.first() {
-                infos.push(RelTupleInfo {
-                    slid: rt_slid,
-                    rel_slid: self.get_func(rel_func, rt_slid),
-                    arg_slid: self.get_func(arg_func, rt_slid),
-                });
-            }
-        }
-        // Sort by UUID to preserve original creation order
-        infos.sort_by_key(|info| self.get_element_uuid(info.slid));
-        infos
+    /// NOTE: Relation tuples are now stored in columnar batches (see `store::columnar`),
+    /// not as individual GeologMeta elements. This function returns empty until
+    /// columnar batch loading is implemented.
+    ///
+    /// TODO: Implement columnar batch loading for relation tuples.
+    pub fn query_instance_rel_tuples_compiled(&self, _instance_slid: Slid) -> Vec<RelTupleInfo> {
+        // Relation tuples are stored in columnar batches, not GeologMeta elements.
+        // Return empty until columnar batch loading is implemented.
+        vec![]
     }
 }
 
