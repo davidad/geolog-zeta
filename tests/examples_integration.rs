@@ -526,7 +526,7 @@ fn test_relalg_ir_loads() {
 /// IGNORED: RelAlgIR has axioms like `ax/equiv/refl` (universal conclusions) that
 /// the current chase and tensor systems can't handle. These instances violate
 /// these axioms because the derived relations aren't populated.
-/// See bead geolog-XXX for tracking this issue.
+/// See bead geolog-ltk for tracking this issue.
 #[test]
 #[ignore = "RelAlgIR axioms need chase support for universal conclusions"]
 fn test_relalg_simple_examples() {
