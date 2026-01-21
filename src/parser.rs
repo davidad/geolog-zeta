@@ -24,22 +24,32 @@ fn to_span(span: Span) -> crate::ast::Span {
 /// Only unnamed fields consume positional indices, so named fields can be reordered freely:
 /// `[a, on: b, c]` → `[("0", a), ("on", b), ("1", c)]`
 /// `[on: b, a, c]` → `[("on", b), ("0", a), ("1", c)]`
-fn assign_positional_names<T>(fields: Vec<(Option<String>, T)>) -> Vec<(String, T)> {
+///
+/// Returns Err with the duplicate field name if duplicates are found.
+fn assign_positional_names_checked<T>(
+    fields: Vec<(Option<String>, T)>,
+) -> Result<Vec<(String, T)>, String> {
     let mut positional_idx = 0usize;
-    fields
-        .into_iter()
-        .map(|(name, val)| {
-            let field_name = match name {
-                Some(n) => n,
-                None => {
-                    let n = positional_idx.to_string();
-                    positional_idx += 1;
-                    n
-                }
-            };
-            (field_name, val)
-        })
-        .collect()
+    let mut seen = std::collections::HashSet::new();
+    let mut result = Vec::with_capacity(fields.len());
+
+    for (name, val) in fields {
+        let field_name = match name {
+            Some(n) => n,
+            None => {
+                let n = positional_idx.to_string();
+                positional_idx += 1;
+                n
+            }
+        };
+
+        if !seen.insert(field_name.clone()) {
+            return Err(field_name);
+        }
+        result.push((field_name, val));
+    }
+
+    Ok(result)
 }
 
 // ============================================================================
@@ -102,7 +112,11 @@ fn type_expr_impl() -> impl Parser<Token, TypeExpr, Error = Simple<Token>> + Clo
         let record = record_field
             .separated_by(just(Token::Comma))
             .delimited_by(just(Token::LBracket), just(Token::RBracket))
-            .map(|fields| TypeToken::Record(assign_positional_names(fields)));
+            .try_map(|fields, span| {
+                assign_positional_names_checked(fields)
+                    .map(TypeToken::Record)
+                    .map_err(|dup| Simple::custom(span, format!("duplicate field name: {}", dup)))
+            });
 
         // Single atomic token
         let single_token = choice((sort, prop, instance, record, path_tok)).map(|t| vec![t]);
@@ -192,7 +206,11 @@ fn type_expr_no_arrow() -> impl Parser<Token, TypeExpr, Error = Simple<Token>> +
         let record = record_field
             .separated_by(just(Token::Comma))
             .delimited_by(just(Token::LBracket), just(Token::RBracket))
-            .map(|fields| TypeToken::Record(assign_positional_names(fields)));
+            .try_map(|fields, span| {
+                assign_positional_names_checked(fields)
+                    .map(TypeToken::Record)
+                    .map_err(|dup| Simple::custom(span, format!("duplicate field name: {}", dup)))
+            });
 
         // Single atomic token
         let single_token = choice((sort, prop, instance, record, path_tok)).map(|t| vec![t]);
@@ -238,7 +256,11 @@ fn term() -> impl Parser<Token, Term, Error = Simple<Token>> + Clone {
         let record_term = record_field
             .separated_by(just(Token::Comma))
             .delimited_by(just(Token::LBracket), just(Token::RBracket))
-            .map(|fields| Term::Record(assign_positional_names(fields)));
+            .try_map(|fields, span| {
+                assign_positional_names_checked(fields)
+                    .map(Term::Record)
+                    .map_err(|dup| Simple::custom(span, format!("duplicate field name: {}", dup)))
+            });
 
         // Parenthesized term
         let paren_term = term
@@ -294,7 +316,11 @@ fn record_term() -> impl Parser<Token, Term, Error = Simple<Token>> + Clone {
         record_field
             .separated_by(just(Token::Comma))
             .delimited_by(just(Token::LBracket), just(Token::RBracket))
-            .map(|fields| Term::Record(assign_positional_names(fields)))
+            .try_map(|fields, span| {
+                assign_positional_names_checked(fields)
+                    .map(Term::Record)
+                    .map_err(|dup| Simple::custom(span, format!("duplicate field name: {}", dup)))
+            })
     })
 }
 

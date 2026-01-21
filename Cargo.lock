@@ -370,6 +370,7 @@ dependencies = [
  "memmap2",
  "nonminmax",
  "proptest",
+ "rand",
  "rkyv",
  "roaring",
  "rustyline",
