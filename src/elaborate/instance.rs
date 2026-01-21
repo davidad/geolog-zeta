@@ -774,6 +774,27 @@ fn elaborate_instance_ctx_inner(
                     tuple
                 }
 
+                // Unary relation with base sort domain: `element relation;`
+                // This handles `rel : Sort -> Prop` (without bracket syntax)
+                (ast::Term::Path(_), DerivedSort::Base(expected_sort_id)) => {
+                    let slid = resolve_instance_element(term, &name_to_slid)?;
+
+                    // Type check
+                    let elem_sort_id = structure.sorts[slid.index()];
+                    if elem_sort_id != *expected_sort_id {
+                        return Err(ElabError::DomainMismatch {
+                            func_name: rel_name.clone(),
+                            element_name: slid_to_name
+                                .get(&slid)
+                                .cloned()
+                                .unwrap_or_else(|| format!("slid_{}", slid)),
+                            expected_sort: theory.theory.signature.sorts[*expected_sort_id].clone(),
+                            actual_sort: theory.theory.signature.sorts[elem_sort_id].clone(),
+                        });
+                    }
+                    vec![slid]
+                }
+
                 // Mismatch: using simple element for non-unary relation
                 (ast::Term::Path(_), DerivedSort::Product(expected_fields)) => {
                     return Err(ElabError::UnsupportedFeature(format!(

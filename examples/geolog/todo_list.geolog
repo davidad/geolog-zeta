@@ -7,18 +7,18 @@ theory TodoList {
   // The sort of todo items
   Item : Sort;
 
-  // Unary relations for item status
-  completed : [item: Item] -> Prop;
-  high_priority : [item: Item] -> Prop;
-  blocked : [item: Item] -> Prop;
+  // Unary relations for item status (simple arrow syntax)
+  completed : Item -> Prop;
+  high_priority : Item -> Prop;
+  blocked : Item -> Prop;
 
-  // Binary relation for dependencies
-  depends_on : [x: Item, y: Item] -> Prop;  // x depends on y
+  // Binary relation for dependencies (product domain syntax)
+  depends_on : [x: Item, y: Item] -> Prop;
 
   // Axiom: if an item depends on another, either the dependent is blocked
   // or the dependency is completed
   ax/dep_blocked : forall x : Item, y : Item.
-    [x: x, y: y] depends_on |- [item: x] blocked \/ [item: y] completed;
+    [x: x, y: y] depends_on |- x blocked \/ y completed;
 }
 
 // Example: An empty todo list ready for interactive use
