@@ -835,3 +835,128 @@ fn test_all_examples_parse() {
         );
     }
 }
+
+// ============================================================================
+// Multi-session persistence tests
+// ============================================================================
+
+/// Tests that theories and instances survive REPL restarts
+///
+/// This is a critical test for persistence: create data in one "session",
+/// then verify it's still accessible after creating a new ReplState with
+/// the same persistence path.
+#[test]
+fn test_persistence_survives_restart() {
+    use tempfile::tempdir;
+
+    let dir = tempdir().expect("Failed to create temp directory");
+    let db_path = dir.path().join("test.geolog");
+
+    // Session 1: Create a theory and instance
+    {
+        let mut state = ReplState::with_path(&db_path);
+
+        let theory_def = r#"
+            theory Counter {
+                C : Sort;
+                next : C -> C;
+            }
+        "#;
+        state.execute_geolog(theory_def).expect("Theory should define");
+
+        let instance_def = r#"
+            instance Mod3 : Counter = {
+                zero : C;
+                one : C;
+                two : C;
+                zero next = one;
+                one next = two;
+                two next = zero;
+            }
+        "#;
+        state.execute_geolog(instance_def).expect("Instance should define");
+
+        // Verify it's in the current session
+        assert!(state.theories.contains_key("Counter"), "Counter theory should exist in session 1");
+        assert!(state.instances.contains_key("Mod3"), "Mod3 instance should exist in session 1");
+
+        // Explicitly save before dropping
+        state.store.save().expect("Save should succeed");
+    }
+
+    // Session 2: Load from same path and verify data persists
+    {
+        let state = ReplState::with_path(&db_path);
+
+        // Theory should be reconstructed
+        assert!(
+            state.theories.contains_key("Counter"),
+            "Counter theory should persist across sessions"
+        );
+
+        // Instance should be reconstructed
+        assert!(
+            state.instances.contains_key("Mod3"),
+            "Mod3 instance should persist across sessions"
+        );
+
+        // Verify instance structure has correct element count
+        let mod3 = state.instances.get("Mod3").expect("Mod3 should exist");
+        assert_eq!(
+            mod3.structure.len(),
+            3,
+            "Mod3 should have 3 elements after reload"
+        );
+    }
+}
+
+/// Tests that chase-derived data persists correctly
+#[test]
+fn test_persistence_with_chase() {
+    use tempfile::tempdir;
+
+    let dir = tempdir().expect("Failed to create temp directory");
+    let db_path = dir.path().join("chase_test.geolog");
+
+    // Session 1: Create a theory with chase
+    {
+        let mut state = ReplState::with_path(&db_path);
+
+        let content = r#"
+            theory Preorder {
+                X : Sort;
+                leq : [lo: X, hi: X] -> Prop;
+                ax/refl : forall x : X. |- [lo: x, hi: x] leq;
+            }
+
+            instance Three : Preorder = chase {
+                a : X;
+                b : X;
+                c : X;
+            }
+        "#;
+        state.execute_geolog(content).expect("Should define theory and chase instance");
+
+        // Verify chase added diagonal tuples
+        let three = state.instances.get("Three").expect("Three should exist");
+        assert_eq!(three.structure.relations[0].tuples.len(), 3, "Should have 3 reflexive tuples");
+
+        // Explicitly save before dropping
+        state.store.save().expect("Save should succeed");
+    }
+
+    // Session 2: Verify chase results persist
+    {
+        let state = ReplState::with_path(&db_path);
+
+        assert!(state.theories.contains_key("Preorder"), "Theory should persist");
+        assert!(state.instances.contains_key("Three"), "Instance should persist");
+
+        let three = state.instances.get("Three").expect("Three should exist");
+        assert_eq!(
+            three.structure.relations[0].tuples.len(),
+            3,
+            "Chase-derived tuples should persist"
+        );
+    }
+}
