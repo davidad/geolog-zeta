@@ -703,5 +703,244 @@ mod chase_proptest {
             prop_assert_eq!(iterations, 2);
             prop_assert_eq!(structure.relations[0].len(), num_elements);
         }
+
+        /// Test reflexivity axiom: forall x. |- [lo: x, hi: x] leq
+        /// Should create diagonal tuples for all elements
+        #[test]
+        fn chase_reflexivity_creates_diagonal(
+            num_elements in 1..8usize,
+        ) {
+            let mut universe = Universe::new();
+            let mut structure = {
+                let mut s = Structure::new(1);
+                for i in 0..num_elements {
+                    s.carriers[0].insert(i as u64);
+                }
+                // Binary relation: leq : [lo: V, hi: V] -> Prop
+                s.relations.push(VecRelation::new(2));
+                s
+            };
+
+            let mut sig = Signature::default();
+            sig.add_sort("V".to_string());
+            sig.add_relation("leq".to_string(), DerivedSort::Product(vec![
+                ("lo".to_string(), DerivedSort::Base(0)),
+                ("hi".to_string(), DerivedSort::Base(0)),
+            ]));
+
+            // Axiom: forall x : V. |- [lo: x, hi: x] leq
+            let axiom = Sequent {
+                context: Context {
+                    vars: vec![("x".to_string(), DerivedSort::Base(0))],
+                },
+                premise: Formula::True,
+                conclusion: Formula::Rel(0, Term::Record(vec![
+                    ("lo".to_string(), Term::Var("x".to_string(), DerivedSort::Base(0))),
+                    ("hi".to_string(), Term::Var("x".to_string(), DerivedSort::Base(0))),
+                ])),
+            };
+
+            let iterations = chase_fixpoint(
+                &[axiom],
+                &mut structure,
+                &mut universe,
+                &sig,
+                100,
+            ).unwrap();
+
+            // Should have exactly num_elements diagonal tuples
+            prop_assert_eq!(structure.relations[0].len(), num_elements);
+            prop_assert!(iterations <= 3); // Should converge quickly
+        }
+
+        /// Test transitivity axiom: [lo: x, hi: y] leq, [lo: y, hi: z] leq |- [lo: x, hi: z] leq
+        /// Classic transitive closure - should derive all reachable pairs
+        #[test]
+        fn chase_transitivity_computes_closure(
+            chain_length in 2..5usize,
+        ) {
+            let mut universe = Universe::new();
+            let mut structure = {
+                let mut s = Structure::new(1);
+                // Create a chain: 0 -> 1 -> 2 -> ... -> n-1
+                for i in 0..chain_length {
+                    s.carriers[0].insert(i as u64);
+                }
+                s.relations.push(VecRelation::new(2));
+                s
+            };
+
+            let mut sig = Signature::default();
+            sig.add_sort("V".to_string());
+            sig.add_relation("leq".to_string(), DerivedSort::Product(vec![
+                ("lo".to_string(), DerivedSort::Base(0)),
+                ("hi".to_string(), DerivedSort::Base(0)),
+            ]));
+
+            // Seed the chain edges: 0->1, 1->2, ..., (n-2)->(n-1)
+            use geolog::id::Slid;
+            for i in 0..(chain_length - 1) {
+                structure.relations[0].insert(vec![
+                    Slid::from_usize(i),
+                    Slid::from_usize(i + 1),
+                ]);
+            }
+
+            // Transitivity axiom
+            let axiom = Sequent {
+                context: Context {
+                    vars: vec![
+                        ("x".to_string(), DerivedSort::Base(0)),
+                        ("y".to_string(), DerivedSort::Base(0)),
+                        ("z".to_string(), DerivedSort::Base(0)),
+                    ],
+                },
+                premise: Formula::Conj(vec![
+                    Formula::Rel(0, Term::Record(vec![
+                        ("lo".to_string(), Term::Var("x".to_string(), DerivedSort::Base(0))),
+                        ("hi".to_string(), Term::Var("y".to_string(), DerivedSort::Base(0))),
+                    ])),
+                    Formula::Rel(0, Term::Record(vec![
+                        ("lo".to_string(), Term::Var("y".to_string(), DerivedSort::Base(0))),
+                        ("hi".to_string(), Term::Var("z".to_string(), DerivedSort::Base(0))),
+                    ])),
+                ]),
+                conclusion: Formula::Rel(0, Term::Record(vec![
+                    ("lo".to_string(), Term::Var("x".to_string(), DerivedSort::Base(0))),
+                    ("hi".to_string(), Term::Var("z".to_string(), DerivedSort::Base(0))),
+                ])),
+            };
+
+            let _iterations = chase_fixpoint(
+                &[axiom],
+                &mut structure,
+                &mut universe,
+                &sig,
+                100,
+            ).unwrap();
+
+            // For a chain of length n, transitive closure has n*(n-1)/2 pairs
+            // (all pairs (i,j) where i < j)
+            let expected_tuples = chain_length * (chain_length - 1) / 2;
+            prop_assert_eq!(structure.relations[0].len(), expected_tuples);
+        }
+
+        /// Test existential conclusion creates fresh witnesses
+        /// ax/witness : forall x : V. |- exists y : V. [lo: x, hi: y] R
+        #[test]
+        fn chase_existential_creates_witnesses(
+            num_elements in 1..5usize,
+        ) {
+            let mut universe = Universe::new();
+            let mut structure = {
+                let mut s = Structure::new(1);
+                for i in 0..num_elements {
+                    s.carriers[0].insert(i as u64);
+                }
+                s.relations.push(VecRelation::new(2));
+                s
+            };
+
+            let mut sig = Signature::default();
+            sig.add_sort("V".to_string());
+            sig.add_relation("R".to_string(), DerivedSort::Product(vec![
+                ("lo".to_string(), DerivedSort::Base(0)),
+                ("hi".to_string(), DerivedSort::Base(0)),
+            ]));
+
+            // Axiom: forall x : V. |- exists y : V. [lo: x, hi: y] R
+            let axiom = Sequent {
+                context: Context {
+                    vars: vec![("x".to_string(), DerivedSort::Base(0))],
+                },
+                premise: Formula::True,
+                conclusion: Formula::Exists(
+                    "y".to_string(),
+                    DerivedSort::Base(0),
+                    Box::new(Formula::Rel(0, Term::Record(vec![
+                        ("lo".to_string(), Term::Var("x".to_string(), DerivedSort::Base(0))),
+                        ("hi".to_string(), Term::Var("y".to_string(), DerivedSort::Base(0))),
+                    ]))),
+                ),
+            };
+
+            let _iterations = chase_fixpoint(
+                &[axiom],
+                &mut structure,
+                &mut universe,
+                &sig,
+                100,
+            ).unwrap();
+
+            // Each original element should have at least one witness
+            // So we should have at least num_elements tuples
+            prop_assert!(structure.relations[0].len() >= num_elements);
+        }
+
+        /// Test equality conclusion merges elements via CC
+        /// ax/collapse : forall x, y : V. [lo: x, hi: y] R |- x = y
+        #[test]
+        fn chase_equality_conclusion_reduces_carrier(
+            num_pairs in 1..4usize,
+        ) {
+            let mut universe = Universe::new();
+            let num_elements = num_pairs * 2; // Each pair will merge
+
+            let mut structure = {
+                let mut s = Structure::new(1);
+                for i in 0..num_elements {
+                    s.carriers[0].insert(i as u64);
+                }
+                s.relations.push(VecRelation::new(2));
+                s
+            };
+
+            let mut sig = Signature::default();
+            sig.add_sort("V".to_string());
+            sig.add_relation("R".to_string(), DerivedSort::Product(vec![
+                ("lo".to_string(), DerivedSort::Base(0)),
+                ("hi".to_string(), DerivedSort::Base(0)),
+            ]));
+
+            // Seed pairs: (0,1), (2,3), (4,5), ...
+            // Each pair will be collapsed by the equality axiom
+            use geolog::id::Slid;
+            for i in 0..num_pairs {
+                structure.relations[0].insert(vec![
+                    Slid::from_usize(i * 2),
+                    Slid::from_usize(i * 2 + 1),
+                ]);
+            }
+
+            // Axiom: forall x, y : V. [lo: x, hi: y] R |- x = y
+            let axiom = Sequent {
+                context: Context {
+                    vars: vec![
+                        ("x".to_string(), DerivedSort::Base(0)),
+                        ("y".to_string(), DerivedSort::Base(0)),
+                    ],
+                },
+                premise: Formula::Rel(0, Term::Record(vec![
+                    ("lo".to_string(), Term::Var("x".to_string(), DerivedSort::Base(0))),
+                    ("hi".to_string(), Term::Var("y".to_string(), DerivedSort::Base(0))),
+                ])),
+                conclusion: Formula::Eq(
+                    Term::Var("x".to_string(), DerivedSort::Base(0)),
+                    Term::Var("y".to_string(), DerivedSort::Base(0)),
+                ),
+            };
+
+            let _iterations = chase_fixpoint(
+                &[axiom],
+                &mut structure,
+                &mut universe,
+                &sig,
+                100,
+            ).unwrap();
+
+            // After canonicalization, carrier should have fewer elements
+            // Each pair merges into one, so we should have num_pairs elements
+            prop_assert_eq!(structure.carriers[0].len() as usize, num_pairs);
+        }
     }
 }
