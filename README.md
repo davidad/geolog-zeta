@@ -100,7 +100,43 @@ instance G : Graph = {
   [from: b, to: c] reachable;
   [from: a, to: c] reachable;
 }
+
+# Category theory with equality saturation
+~/dev/geolog$ geolog examples/geolog/category.geolog
+geolog> :show Arrow
+instance Arrow : Category = {
+  // ob (2):
+  A : ob;
+  B : ob;
+  // mor (3):
+  f : mor;
+  #3 : mor;
+  #4 : mor;
+  // src:
+  f src = A;
+  #3 src = A;
+  #4 src = B;
+  // tgt:
+  f tgt = B;
+  #3 tgt = A;
+  #4 tgt = B;
+  // comp (4 tuples):
+  [f: f, g: #4, h: f] comp;
+  [f: #3, g: f, h: f] comp;
+  [f: #3, g: #3, h: #3] comp;
+  [f: #4, g: #4, h: #4] comp;
+  // id (2 tuples):
+  [a: A, f: #3] id;
+  [a: B, f: #4] id;
+}
 ```
+
+The `Arrow` instance declares only objects A, B and one morphism f : A → B.
+The chase derives identity morphisms (#3 = idA, #4 = idB) and all compositions,
+while **equality saturation** collapses infinite self-compositions via unit laws:
+- `[f: #3, g: f, h: f]` means idA;f = f (left unit)
+- `[f: f, g: #4, h: f]` means f;idB = f (right unit)
+- `[f: #3, g: #3, h: #3]` means idA;idA = idA (collapsed by unit law)
 
 ## Features
 
