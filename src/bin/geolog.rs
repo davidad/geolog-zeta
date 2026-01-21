@@ -717,10 +717,42 @@ fn handle_explain(state: &ReplState, instance_name: &str, sort_name: &str) {
     println!("Instance: {} (theory: {})", instance_name, entry.theory_name);
 }
 
-/// Handle :compile command - compile query to RelAlgIR instance
+/// Handle :compile command - compile query to TensorIR instance and execute
 fn handle_compile(state: &mut ReplState, instance_name: &str, sort_name: &str) {
-    use geolog::query::{to_relalg::compile_to_relalg, QueryOp};
+    use geolog::query::{
+        to_tensor_ir::compile_to_tensor_ir,
+        from_tensor_ir::execute_tensor_ir,
+        QueryOp
+    };
     use geolog::universe::Universe;
+
+    // First, load TensorIR if needed (before borrowing instances)
+    if state.theories.get("TensorIR").is_none() {
+        eprintln!("TensorIR theory not loaded. Loading it now...");
+        let meta_content = std::fs::read_to_string("theories/GeologMeta.geolog")
+            .unwrap_or_else(|_| {
+                eprintln!("Could not read theories/GeologMeta.geolog");
+                String::new()
+            });
+        let ir_content = std::fs::read_to_string("theories/TensorIR.geolog")
+            .unwrap_or_else(|_| {
+                eprintln!("Could not read theories/TensorIR.geolog");
+                String::new()
+            });
+
+        if meta_content.is_empty() || ir_content.is_empty() {
+            return;
+        }
+
+        if let Err(e) = state.execute_geolog(&meta_content) {
+            eprintln!("Failed to load GeologMeta: {}", e);
+            return;
+        }
+        if let Err(e) = state.execute_geolog(&ir_content) {
+            eprintln!("Failed to load TensorIR: {}", e);
+            return;
+        }
+    }
 
     // Get the instance
     let entry = match state.instances.get(instance_name) {
@@ -752,78 +784,69 @@ fn handle_compile(state: &mut ReplState, instance_name: &str, sort_name: &str) {
         }
     };
 
-    // Check if RelAlgIR theory is loaded
-    let relalg_theory = match state.theories.get("RelAlgIR") {
-        Some(t) => t.clone(),
-        None => {
-            eprintln!("RelAlgIR theory not loaded. Loading it now...");
-            // Try to load it
-            let meta_content = std::fs::read_to_string("theories/GeologMeta.geolog")
-                .unwrap_or_else(|_| {
-                    eprintln!("Could not read theories/GeologMeta.geolog");
-                    String::new()
-                });
-            let ir_content = std::fs::read_to_string("theories/RelAlgIR.geolog")
-                .unwrap_or_else(|_| {
-                    eprintln!("Could not read theories/RelAlgIR.geolog");
-                    String::new()
-                });
-
-            if meta_content.is_empty() || ir_content.is_empty() {
-                return;
-            }
-
-            if let Err(e) = state.execute_geolog(&meta_content) {
-                eprintln!("Failed to load GeologMeta: {}", e);
-                return;
-            }
-            if let Err(e) = state.execute_geolog(&ir_content) {
-                eprintln!("Failed to load RelAlgIR: {}", e);
-                return;
-            }
-
-            state.theories.get("RelAlgIR").unwrap().clone()
-        }
-    };
+    // Get TensorIR theory (now guaranteed to exist)
+    let tensor_ir_theory = state.theories.get("TensorIR").unwrap().clone();
 
     // Build the query plan
     let plan = QueryOp::Scan { sort_idx };
 
-    // Compile to RelAlgIR
+    // Compile to TensorIR
     let mut universe = Universe::new();
-    match compile_to_relalg(&plan, &relalg_theory, &mut universe) {
-        Ok(instance) => {
-            println!("RelAlgIR compilation for ':query {} {}':", instance_name, sort_name);
+    match compile_to_tensor_ir(&plan, &tensor_ir_theory, &mut universe) {
+        Ok(tensor_instance) => {
+            println!("TensorIR compilation for ':query {} {}':", instance_name, sort_name);
             println!();
             println!("QueryOp plan:");
             println!("{}", plan);
             println!();
-            println!("Compiled to RelAlgIR instance:");
-            println!("  Elements: {}", instance.structure.len());
-            println!("  Output wire: {:?}", instance.output_wire);
+            println!("Compiled to TensorIR instance:");
+            println!("  Elements: {}", tensor_instance.structure.len());
+            println!("  Output wire: {:?}", tensor_instance.output_wire);
             println!();
 
             // Group elements by sort and show with sort names
-            let sig = &relalg_theory.theory.signature;
+            let sig = &tensor_ir_theory.theory.signature;
             println!("Elements by sort:");
-            for (sort_idx, sort_name) in sig.sorts.iter().enumerate() {
-                let count = instance.structure.carrier_size(sort_idx);
+            for (si, sn) in sig.sorts.iter().enumerate() {
+                let count = tensor_instance.structure.carrier_size(si);
                 if count > 0 {
-                    println!("  {}: {} element(s)", sort_name, count);
+                    println!("  {}: {} element(s)", sn, count);
                 }
             }
             println!();
 
             // Show named elements with their sorts
             println!("Named elements:");
-            for (slid, name) in instance.names.iter() {
-                let sort_idx = instance.structure.sorts[slid.index()];
-                let sort_name = &sig.sorts[sort_idx];
-                println!("  {} : {} = {:?}", name, sort_name, slid);
+            for (slid, name) in tensor_instance.names.iter() {
+                let si = tensor_instance.structure.sorts[slid.index()];
+                let sn = &sig.sorts[si];
+                println!("  {} : {} = {:?}", name, sn, slid);
+            }
+
+            // Execute the TensorIR plan against the target instance
+            println!();
+            println!("Execution result:");
+            match execute_tensor_ir(&tensor_instance, &tensor_ir_theory, &entry.structure) {
+                Ok(result_tuples) => {
+                    println!("  {} tuple(s) returned", result_tuples.len());
+                    if !result_tuples.is_empty() {
+                        // Show first 20 tuples
+                        let display_count = result_tuples.len().min(20);
+                        for (i, tuple) in result_tuples.iter().take(display_count).enumerate() {
+                            println!("  [{}] {:?}", i, tuple);
+                        }
+                        if result_tuples.len() > 20 {
+                            println!("  ... and {} more", result_tuples.len() - 20);
+                        }
+                    }
+                }
+                Err(e) => {
+                    eprintln!("  Execution error: {}", e);
+                }
             }
         }
         Err(e) => {
-            eprintln!("Failed to compile query to RelAlgIR: {}", e);
+            eprintln!("Failed to compile query to TensorIR: {}", e);
         }
     }
 }

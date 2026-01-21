@@ -1268,7 +1268,7 @@ pub enum MetaCommand {
     Query { instance: String, sort: String },
     /// Explain query plan: `:explain <instance> <sort>`
     Explain { instance: String, sort: String },
-    /// Compile query to RelAlgIR: `:compile <instance> <sort>`
+    /// Compile query to TensorIR and execute: `:compile <instance> <sort>`
     Compile { instance: String, sort: String },
     /// Solve: find an instance of a theory using the geometric logic solver
     /// `:solve <theory> [budget_ms]`
