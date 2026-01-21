@@ -477,8 +477,8 @@ theory TensorIR extends GeologMeta {
   // ============================================================
 
   Bool : Sort;
-  true : Bool;
-  false : Bool;
+  bool_true : Bool;
+  bool_false : Bool;
 
   // ============================================================
   // ALGEBRAIC LAWS (for optimization)
