@@ -587,17 +587,17 @@ mod to_relalg_tests {
 
 mod chase_proptest {
     use super::*;
-    use geolog::core::{DerivedSort, RelationStorage, Signature, Theory, VecRelation};
-    use geolog::query::chase::{chase_step, ChaseHead, ChaseRule};
+    use geolog::core::{Context, DerivedSort, Formula, RelationStorage, Sequent, Signature, Structure, Term, Theory, VecRelation};
+    use geolog::query::chase::{chase_step, chase_fixpoint};
     use geolog::universe::Universe;
 
-    /// Generate a simple theory with one sort and one binary relation
+    /// Generate a simple theory with one sort and one unary relation
     fn simple_relation_theory() -> Theory {
         let mut sig = Signature::default();
         sig.add_sort("V".to_string());
-        sig.add_relation("Edge".to_string(), DerivedSort::Base(0));
+        sig.add_relation("R".to_string(), DerivedSort::Base(0));
         Theory {
-            name: "Graph".to_string(),
+            name: "Simple".to_string(),
             signature: sig,
             axioms: vec![],
             axiom_names: vec![],
@@ -606,7 +606,7 @@ mod chase_proptest {
 
     proptest! {
         #[test]
-        fn chase_step_no_panic_on_empty_rules(
+        fn chase_step_no_panic_on_empty_axioms(
             num_elements in 0..10usize,
         ) {
             let mut universe = Universe::new();
@@ -615,18 +615,18 @@ mod chase_proptest {
                 for i in 0..num_elements {
                     s.carriers[0].insert(i as u64);
                 }
-                s.relations.push(VecRelation::new(2));
+                s.relations.push(VecRelation::new(1));
                 s
             };
             let theory = simple_relation_theory();
 
-            // Empty rules should not change anything
+            // Empty axioms should not change anything
             let changed = chase_step(&[], &mut structure, &mut universe, &theory.signature).unwrap();
             prop_assert!(!changed);
         }
 
         #[test]
-        fn chase_step_with_scan_rule(
+        fn chase_step_adds_to_relation(
             num_elements in 1..10usize,
         ) {
             let mut universe = Universe::new();
@@ -640,19 +640,17 @@ mod chase_proptest {
             };
             let theory = simple_relation_theory();
 
-            // Rule: scan all elements and add to unary relation
-            let rule = ChaseRule {
-                name: "add_all".to_string(),
-                var_indices: [("x".to_string(), 0)].into_iter().collect(),
-                query: geolog::query::backend::QueryOp::Scan { sort_idx: 0 },
-                head: ChaseHead::AddRelation {
-                    rel_id: 0,
-                    arg_indices: vec![0],
+            // Axiom: forall x : V. |- R(x)
+            let axiom = Sequent {
+                context: Context {
+                    vars: vec![("x".to_string(), DerivedSort::Base(0))],
                 },
+                premise: Formula::True,
+                conclusion: Formula::Rel(0, Term::Var("x".to_string(), DerivedSort::Base(0))),
             };
 
             // First chase step should add elements
-            let changed = chase_step(std::slice::from_ref(&rule), &mut structure, &mut universe, &theory.signature).unwrap();
+            let changed = chase_step(&[axiom.clone()], &mut structure, &mut universe, &theory.signature).unwrap();
 
             if num_elements > 0 {
                 prop_assert!(changed);
@@ -660,7 +658,7 @@ mod chase_proptest {
             }
 
             // Second chase step should not change anything
-            let changed2 = chase_step(&[rule], &mut structure, &mut universe, &theory.signature).unwrap();
+            let changed2 = chase_step(&[axiom], &mut structure, &mut universe, &theory.signature).unwrap();
             prop_assert!(!changed2);
         }
 
@@ -668,8 +666,6 @@ mod chase_proptest {
         fn chase_fixpoint_converges(
             num_elements in 1..8usize,
         ) {
-            use geolog::query::chase::chase_fixpoint;
-
             let mut universe = Universe::new();
             let mut structure = {
                 let mut s = Structure::new(1);
@@ -681,22 +677,20 @@ mod chase_proptest {
             };
             let theory = simple_relation_theory();
 
-            // Rule: scan all elements and add to unary relation
-            let rule = ChaseRule {
-                name: "add_all".to_string(),
-                var_indices: [("x".to_string(), 0)].into_iter().collect(),
-                query: geolog::query::backend::QueryOp::Scan { sort_idx: 0 },
-                head: ChaseHead::AddRelation {
-                    rel_id: 0,
-                    arg_indices: vec![0],
+            // Axiom: forall x : V. |- R(x)
+            let axiom = Sequent {
+                context: Context {
+                    vars: vec![("x".to_string(), DerivedSort::Base(0))],
                 },
+                premise: Formula::True,
+                conclusion: Formula::Rel(0, Term::Var("x".to_string(), DerivedSort::Base(0))),
             };
 
             // Chase should converge in exactly 2 iterations:
             // 1. Add all elements to relation
             // 2. Verify no more changes
             let iterations = chase_fixpoint(
-                std::slice::from_ref(&rule),
+                &[axiom],
                 &mut structure,
                 &mut universe,
                 &theory.signature,

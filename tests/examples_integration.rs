@@ -397,8 +397,8 @@ fn test_transitive_closure_chain_structure() {
 
 #[test]
 fn test_transitive_closure_chase() {
-    use geolog::core::{ElaboratedTheory, RelationStorage};
-    use geolog::query::chase::{compile_theory_axioms, chase_fixpoint};
+    use geolog::core::RelationStorage;
+    use geolog::query::chase::chase_fixpoint;
     use geolog::universe::Universe;
 
     let path = Path::new("examples/geolog/transitive_closure.geolog");
@@ -413,15 +413,10 @@ fn test_transitive_closure_chase() {
         "Chain should have 6 Path tuples after elaboration with chase");
 
     // Running chase again should be idempotent (1 iteration, no changes)
-    let elaborated = ElaboratedTheory {
-        theory: theory.theory.clone(),
-        params: vec![],
-    };
-    let rules = compile_theory_axioms(&elaborated).unwrap();
     let mut universe = Universe::new();
 
     let iterations = chase_fixpoint(
-        &rules,
+        &theory.theory.axioms,
         &mut chain.structure,
         &mut universe,
         &theory.theory.signature,

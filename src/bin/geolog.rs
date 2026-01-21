@@ -27,10 +27,74 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
 const PROMPT: &str = "geolog> ";
 const CONTINUATION: &str = "......  ";
 
+/// Parse command line arguments.
+///
+/// Usage: geolog [-d <workspace>] [source_files...]
+///
+/// Options:
+///   -d, --dir <path>   Use <path> as the workspace directory for persistence
+///   -h, --help         Show help and exit
+///   -v, --version      Show version and exit
+///
+/// Returns (workspace_path, source_files)
+fn parse_args(args: &[String]) -> (Option<PathBuf>, Vec<PathBuf>) {
+    let mut workspace_path = None;
+    let mut source_files = Vec::new();
+    let mut i = 0;
+
+    while i < args.len() {
+        let arg = &args[i];
+        match arg.as_str() {
+            "-d" | "--dir" => {
+                if i + 1 < args.len() {
+                    workspace_path = Some(PathBuf::from(&args[i + 1]));
+                    i += 2;
+                } else {
+                    eprintln!("Error: -d requires a path argument");
+                    std::process::exit(1);
+                }
+            }
+            "-h" | "--help" => {
+                println!("geolog v{} - Geometric Logic REPL", VERSION);
+                println!();
+                println!("Usage: geolog [OPTIONS] [source_files...]");
+                println!();
+                println!("Options:");
+                println!("  -d, --dir <path>   Use <path> as workspace directory for persistence");
+                println!("  -h, --help         Show this help message");
+                println!("  -v, --version      Show version");
+                println!();
+                println!("Examples:");
+                println!("  geolog                     Start REPL (in-memory, no persistence)");
+                println!("  geolog -d ./myproject      Start REPL with workspace persistence");
+                println!("  geolog file.geolog         Load file.geolog on startup");
+                println!("  geolog -d ./proj f.geolog  Load file into persistent workspace");
+                std::process::exit(0);
+            }
+            "-v" | "--version" => {
+                println!("geolog v{}", VERSION);
+                std::process::exit(0);
+            }
+            _ if arg.starts_with('-') => {
+                eprintln!("Error: Unknown option '{}'", arg);
+                eprintln!("Try 'geolog --help' for usage information");
+                std::process::exit(1);
+            }
+            _ => {
+                // Positional argument - treat as source file
+                source_files.push(PathBuf::from(arg));
+                i += 1;
+            }
+        }
+    }
+
+    (workspace_path, source_files)
+}
+
 fn main() {
     // Parse command line args
-    let args: Vec<String> = std::env::args().collect();
-    let workspace_path = args.get(1).map(PathBuf::from);
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let (workspace_path, source_files) = parse_args(&args);
 
     // Print banner
     println!("geolog v{} - Geometric Logic REPL", VERSION);
@@ -43,6 +107,11 @@ fn main() {
     } else {
         ReplState::new()
     };
+
+    // Load any source files specified on command line
+    for source_file in &source_files {
+        handle_source(&mut state, source_file);
+    }
 
     // Set up rustyline
     let config = Config::builder().auto_add_history(true).build();
@@ -923,7 +992,7 @@ fn handle_extend(state: &ReplState, instance_name: &str, theory_name: &str, budg
 
 /// Handle :chase command - run chase algorithm on instance's theory axioms
 fn handle_chase(state: &mut ReplState, instance_name: &str, max_iterations: Option<usize>) {
-    use geolog::query::chase::{chase_fixpoint, compile_axiom};
+    use geolog::query::chase::chase_fixpoint;
 
     // Get the instance
     let entry = match state.instances.get_mut(instance_name) {
@@ -952,35 +1021,13 @@ fn handle_chase(state: &mut ReplState, instance_name: &str, max_iterations: Opti
     }
 
     println!("Running chase on instance '{}' (theory '{}')...", instance_name, entry.theory_name);
-    println!("  {} axioms to process", axioms.len());
+    println!("  {} axiom(s) to process", axioms.len());
 
-    // Compile axioms to chase rules
-    let mut rules = Vec::new();
-    for (i, axiom) in axioms.iter().enumerate() {
-        let axiom_name = format!("axiom_{}", i);
-        match compile_axiom(axiom, sig, axiom_name.clone()) {
-            Ok(rule) => {
-                println!("  Compiled axiom {}: {}", i, rule.name);
-                rules.push(rule);
-            }
-            Err(e) => {
-                println!("  Skipping axiom {} (unsupported): {}", i, e);
-            }
-        }
-    }
-
-    if rules.is_empty() {
-        println!("No axioms could be compiled to chase rules.");
-        return;
-    }
-
-    println!("\nExecuting chase with {} rules...", rules.len());
-
-    // Run the chase
+    // Run the chase (tensor-backed: handles existentials in premises, etc.)
     let max_iter = max_iterations.unwrap_or(100);
     let start = std::time::Instant::now();
 
-    match chase_fixpoint(&rules, &mut entry.structure, &mut state.store.universe, sig, max_iter) {
+    match chase_fixpoint(axioms, &mut entry.structure, &mut state.store.universe, sig, max_iter) {
         Ok(iterations) => {
             let elapsed = start.elapsed();
             println!("✓ Chase completed in {} iterations ({:.2}ms)", iterations, elapsed.as_secs_f64() * 1000.0);
@@ -988,7 +1035,7 @@ fn handle_chase(state: &mut ReplState, instance_name: &str, max_iterations: Opti
             print_structure_summary(&entry.structure, sig);
         }
         Err(e) => {
-            eprintln!("✗ Chase error: {:?}", e);
+            eprintln!("✗ Chase error: {}", e);
         }
     }
 }

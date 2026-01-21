@@ -307,8 +307,8 @@ pub struct InstanceDecl {
 /// Items in an instance body
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum InstanceItem {
-    /// Element declaration: `A : P;`
-    Element(String, TypeExpr),
+    /// Element declaration: `A : P;` or `a, b, c : P;`
+    Element(Vec<String>, TypeExpr),
 
     /// Equation: `ab_in in.src = A;`
     Equation(Term, Term),

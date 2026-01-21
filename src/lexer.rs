@@ -39,6 +39,7 @@ pub enum Token {
     Arrow,     // ->
     Eq,        // =
     Turnstile, // |-
+    And,       // /\
     Or,        // \/
     Question,  // ?
 }
@@ -72,6 +73,7 @@ impl std::fmt::Display for Token {
             Token::Arrow => write!(f, "->"),
             Token::Eq => write!(f, "="),
             Token::Turnstile => write!(f, "|-"),
+            Token::And => write!(f, r"/\"),
             Token::Or => write!(f, r"\/"),
             Token::Question => write!(f, "?"),
         }
@@ -101,6 +103,7 @@ pub fn lexer() -> impl Parser<char, Vec<(Token, Span)>, Error = Simple<char>> {
     let punctuation = choice((
         just("->").to(Token::Arrow),
         just("|-").to(Token::Turnstile),
+        just(r"/\").to(Token::And),
         just(r"\/").to(Token::Or),
         just('{').to(Token::LBrace),
         just('}').to(Token::RBrace),

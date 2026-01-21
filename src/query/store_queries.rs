@@ -27,7 +27,7 @@
 //! ```
 
 use crate::core::DerivedSort;
-use crate::id::Slid;
+use crate::id::{NumericId, Slid, Uuid};
 use crate::store::Store;
 use crate::store::append::AppendOps;
 use crate::store::bootstrap_queries::{SortInfo, FuncInfo, RelInfo, ElemInfo, FuncValInfo, RelTupleInfo};
@@ -35,6 +35,16 @@ use super::backend::execute;
 use super::compile::compile_simple_filter;
 
 impl Store {
+    /// Get the UUID for an element in GeologMeta by its Slid.
+    /// Used for deterministic ordering: UUIDs v7 are time-ordered.
+    fn get_element_uuid(&self, slid: Slid) -> Uuid {
+        if let Some(&luid) = self.meta.luids.get(slid.index()) {
+            self.universe.get(luid).unwrap_or(Uuid::nil())
+        } else {
+            Uuid::nil()
+        }
+    }
+
     /// Query all sorts belonging to a theory (using compiled query engine).
     ///
     /// This is equivalent to `query_theory_sorts` in bootstrap_queries.rs,
@@ -63,6 +73,9 @@ impl Store {
                 });
             }
         }
+        // Sort by UUID to ensure deterministic order matching original creation order
+        // (UUIDs v7 are time-ordered, so earlier-created elements come first)
+        infos.sort_by_key(|info| self.get_element_uuid(info.slid));
         infos
     }
 
@@ -113,6 +126,8 @@ impl Store {
                 });
             }
         }
+        // Sort by UUID to ensure deterministic order matching original creation order
+        infos.sort_by_key(|info| self.get_element_uuid(info.slid));
         infos
     }
 
@@ -155,6 +170,8 @@ impl Store {
                 });
             }
         }
+        // Sort by UUID to ensure deterministic order matching original creation order
+        infos.sort_by_key(|info| self.get_element_uuid(info.slid));
         infos
     }
 
@@ -196,6 +213,8 @@ impl Store {
                 });
             }
         }
+        // Sort by UUID to preserve original creation order
+        infos.sort_by_key(|info| self.get_element_uuid(info.slid));
         infos
     }
 
@@ -236,6 +255,8 @@ impl Store {
                 });
             }
         }
+        // Sort by UUID to preserve original creation order
+        infos.sort_by_key(|info| self.get_element_uuid(info.slid));
         infos
     }
 
@@ -272,6 +293,8 @@ impl Store {
                 });
             }
         }
+        // Sort by UUID to preserve original creation order
+        infos.sort_by_key(|info| self.get_element_uuid(info.slid));
         infos
     }
 }

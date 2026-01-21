@@ -6,7 +6,7 @@ use std::rc::Rc;
 use crate::ast;
 use crate::core::*;
 use crate::id::{NumericId, Slid};
-use crate::query::chase::{chase_fixpoint, compile_theory_axioms_lenient};
+use crate::query::chase::chase_fixpoint;
 use crate::tensor::check_theory_axioms;
 use crate::universe::Universe;
 
@@ -398,14 +398,17 @@ fn elaborate_instance_ctx_inner(
 
     // 3. First pass: create elements (new elements declared in this instance)
     for item in &instance.body {
-        if let ast::InstanceItem::Element(name, sort_expr) = &item.node {
+        if let ast::InstanceItem::Element(names, sort_expr) = &item.node {
             // Resolve the sort
             let sort_id = resolve_instance_sort(&theory.theory.signature, sort_expr)?;
 
-            // Add element to structure (returns Slid, Luid)
-            let (slid, _luid) = structure.add_element(ctx.universe, sort_id);
-            name_to_slid.insert(name.clone(), slid);
-            slid_to_name.insert(slid, name.clone());
+            // Add element for each name in the comma-separated list
+            for name in names {
+                // Add element to structure (returns Slid, Luid)
+                let (slid, _luid) = structure.add_element(ctx.universe, sort_id);
+                name_to_slid.insert(name.clone(), slid);
+                slid_to_name.insert(slid, name.clone());
+            }
         }
     }
 
@@ -949,15 +952,16 @@ fn elaborate_instance_ctx_inner(
 
     // 7. Run chase if requested (fills in missing values according to axioms)
     if instance.needs_chase {
-        // Use lenient compilation: skip axioms that can't be compiled
-        // (e.g., those with complex term applications in premises)
-        let chase_rules = compile_theory_axioms_lenient(theory.as_ref());
-
-        if !chase_rules.is_empty() {
-            const MAX_CHASE_ITERATIONS: usize = 1000;
-            chase_fixpoint(&chase_rules, &mut structure, ctx.universe, &theory.theory.signature, MAX_CHASE_ITERATIONS)
-                .map_err(|e| ElabError::ChaseFailed(e.to_string()))?;
-        }
+        const MAX_CHASE_ITERATIONS: usize = 1000;
+        // Chase now uses tensor system for premise evaluation - handles existentials, etc.
+        chase_fixpoint(
+            &theory.theory.axioms,
+            &mut structure,
+            ctx.universe,
+            &theory.theory.signature,
+            MAX_CHASE_ITERATIONS,
+        )
+        .map_err(|e| ElabError::ChaseFailed(e.to_string()))?;
     }
 
     // 8. Check axioms - all instances must satisfy the theory's axioms

@@ -1,243 +1,25 @@
-//! Unit tests for chase algorithm
+//! Unit tests for tensor-backed chase algorithm
 
 use geolog::core::{
-    Context, DerivedSort, ElaboratedTheory, Formula, RelationStorage, Sequent, Signature, Structure, Term, Theory,
+    Context, DerivedSort, Formula, RelationStorage, Sequent, Signature, Structure, Term, Theory,
 };
-use geolog::query::chase::{
-    chase_fixpoint, chase_step, compile_axiom, compile_theory_axioms, ChaseHead, ChaseRule,
-};
+use geolog::query::chase::chase_fixpoint;
 use geolog::universe::Universe;
 
-/// Create a simple test theory with one sort and one binary relation
+/// Create a simple test theory with one sort and one unary relation
 fn simple_theory_with_relation() -> Theory {
     let mut sig = Signature::default();
     sig.add_sort("V".to_string());
-    sig.add_relation("Edge".to_string(), DerivedSort::Base(0));
+    sig.add_relation("R".to_string(), DerivedSort::Base(0));
     Theory {
-        name: "Graph".to_string(),
+        name: "Simple".to_string(),
         signature: sig,
         axioms: vec![],
         axiom_names: vec![],
     }
 }
 
-/// Create a theory with transitive closure axiom: Edge(x,y), Edge(y,z) ⊢ Path(x,z)
-fn transitive_closure_theory() -> Theory {
-    let mut sig = Signature::default();
-    sig.add_sort("V".to_string());
-    sig.add_relation("Edge".to_string(), DerivedSort::Base(0));
-    sig.add_relation("Path".to_string(), DerivedSort::Base(0));
-
-    // Axiom 1: Edge(x,y) ⊢ Path(x,y)  (base case)
-    let base_axiom = Sequent {
-        context: Context {
-            vars: vec![
-                ("x".to_string(), DerivedSort::Base(0)),
-                ("y".to_string(), DerivedSort::Base(0)),
-            ],
-        },
-        premise: Formula::Rel(0, Term::Var("x".to_string(), DerivedSort::Base(0))),
-        conclusion: Formula::Rel(1, Term::Var("x".to_string(), DerivedSort::Base(0))),
-    };
-
-    // TODO: Axiom 2 needs conjunction which requires more complex query compilation
-    // For now, test with just the base case
-
-    Theory {
-        name: "TransitiveClosure".to_string(),
-        signature: sig,
-        axioms: vec![base_axiom],
-        axiom_names: vec!["ax/base".to_string()],
-    }
-}
-
-#[test]
-fn test_compile_axiom_basic() {
-    let theory = simple_theory_with_relation();
-    let sig = &theory.signature;
-
-    // Create a simple axiom: x:V ⊢ R(x)
-    let axiom = Sequent {
-        context: Context {
-            vars: vec![("x".to_string(), DerivedSort::Base(0))],
-        },
-        premise: Formula::True,
-        conclusion: Formula::Rel(0, Term::Var("x".to_string(), DerivedSort::Base(0))),
-    };
-
-    let rule = compile_axiom(&axiom, sig, "test_rule".to_string()).unwrap();
-
-    assert_eq!(rule.name, "test_rule");
-    assert_eq!(rule.var_indices.len(), 1);
-    assert_eq!(rule.var_indices.get("x"), Some(&0));
-
-    // Check head is AddRelation
-    match &rule.head {
-        ChaseHead::AddRelation { rel_id, arg_indices } => {
-            assert_eq!(*rel_id, 0);
-            assert_eq!(arg_indices, &vec![0]);
-        }
-        _ => panic!("Expected AddRelation head"),
-    }
-}
-
-#[test]
-fn test_compile_axiom_conjunction_conclusion() {
-    let mut sig = Signature::default();
-    sig.add_sort("V".to_string());
-    sig.add_relation("R".to_string(), DerivedSort::Base(0));
-    sig.add_relation("S".to_string(), DerivedSort::Base(0));
-
-    // Axiom: x:V ⊢ R(x) ∧ S(x)
-    let axiom = Sequent {
-        context: Context {
-            vars: vec![("x".to_string(), DerivedSort::Base(0))],
-        },
-        premise: Formula::True,
-        conclusion: Formula::Conj(vec![
-            Formula::Rel(0, Term::Var("x".to_string(), DerivedSort::Base(0))),
-            Formula::Rel(1, Term::Var("x".to_string(), DerivedSort::Base(0))),
-        ]),
-    };
-
-    let rule = compile_axiom(&axiom, &sig, "conj_rule".to_string()).unwrap();
-
-    // Check head is Multi with two AddRelation
-    match &rule.head {
-        ChaseHead::Multi(heads) => {
-            assert_eq!(heads.len(), 2);
-            for head in heads {
-                match head {
-                    ChaseHead::AddRelation { .. } => {}
-                    _ => panic!("Expected AddRelation in Multi head"),
-                }
-            }
-        }
-        _ => panic!("Expected Multi head"),
-    }
-}
-
-#[test]
-fn test_chase_step_adds_relation() {
-    let mut universe = Universe::new();
-    let mut structure = Structure::new(1);
-
-    // Add some elements
-    let (a, _) = structure.add_element(&mut universe, 0);
-    let (b, _) = structure.add_element(&mut universe, 0);
-    let (c, _) = structure.add_element(&mut universe, 0);
-
-    // Initialize one relation with arity 1
-    structure.init_relations(&[1]);
-
-    // Create theory and compile rule
-    let theory = simple_theory_with_relation();
-
-    // Simple rule: just scan sort 0 and add to relation
-    let rule = ChaseRule {
-        name: "add_all".to_string(),
-        var_indices: [("x".to_string(), 0)].into_iter().collect(),
-        query: geolog::query::backend::QueryOp::Scan { sort_idx: 0 },
-        head: ChaseHead::AddRelation {
-            rel_id: 0,
-            arg_indices: vec![0],
-        },
-    };
-
-    // Execute chase step
-    let changed = chase_step(&[rule], &mut structure, &mut universe, &theory.signature).unwrap();
-
-    assert!(changed);
-    assert_eq!(structure.get_relation(0).len(), 3);
-    assert!(structure.query_relation(0, &[a]));
-    assert!(structure.query_relation(0, &[b]));
-    assert!(structure.query_relation(0, &[c]));
-
-    // Second chase step should not change anything
-    let rule2 = ChaseRule {
-        name: "add_all".to_string(),
-        var_indices: [("x".to_string(), 0)].into_iter().collect(),
-        query: geolog::query::backend::QueryOp::Scan { sort_idx: 0 },
-        head: ChaseHead::AddRelation {
-            rel_id: 0,
-            arg_indices: vec![0],
-        },
-    };
-
-    let changed2 = chase_step(&[rule2], &mut structure, &mut universe, &theory.signature).unwrap();
-    assert!(!changed2);
-}
-
-#[test]
-fn test_chase_fixpoint() {
-    let mut universe = Universe::new();
-    let mut structure = Structure::new(1);
-
-    // Add elements
-    let (a, _) = structure.add_element(&mut universe, 0);
-    let (b, _) = structure.add_element(&mut universe, 0);
-
-    // Initialize relation
-    structure.init_relations(&[1]);
-
-    let theory = simple_theory_with_relation();
-
-    let rule = ChaseRule {
-        name: "add_all".to_string(),
-        var_indices: [("x".to_string(), 0)].into_iter().collect(),
-        query: geolog::query::backend::QueryOp::Scan { sort_idx: 0 },
-        head: ChaseHead::AddRelation {
-            rel_id: 0,
-            arg_indices: vec![0],
-        },
-    };
-
-    let iterations = chase_fixpoint(&[rule], &mut structure, &mut universe, &theory.signature, 100).unwrap();
-
-    assert_eq!(iterations, 2); // One to add, one to confirm fixpoint
-    assert_eq!(structure.get_relation(0).len(), 2);
-    assert!(structure.query_relation(0, &[a]));
-    assert!(structure.query_relation(0, &[b]));
-}
-
-#[test]
-fn test_chase_with_empty_structure() {
-    let mut universe = Universe::new();
-    let mut structure = Structure::new(1);
-    structure.init_relations(&[1]);
-
-    let theory = simple_theory_with_relation();
-
-    let rule = ChaseRule {
-        name: "add_all".to_string(),
-        var_indices: [("x".to_string(), 0)].into_iter().collect(),
-        query: geolog::query::backend::QueryOp::Scan { sort_idx: 0 },
-        head: ChaseHead::AddRelation {
-            rel_id: 0,
-            arg_indices: vec![0],
-        },
-    };
-
-    let iterations = chase_fixpoint(&[rule], &mut structure, &mut universe, &theory.signature, 100).unwrap();
-
-    assert_eq!(iterations, 1); // Only one iteration needed (no elements to process)
-    assert_eq!(structure.get_relation(0).len(), 0);
-}
-
-#[test]
-fn test_compile_theory_axioms() {
-    let theory = ElaboratedTheory {
-        theory: transitive_closure_theory(),
-        params: vec![],
-    };
-
-    let rules = compile_theory_axioms(&theory).unwrap();
-
-    assert_eq!(rules.len(), 1);
-    assert_eq!(rules[0].name, "axiom_0");
-}
-
-/// Create a preorder-like theory with binary leq relation and transitivity axiom
+/// Create a preorder-like theory with binary leq relation, reflexivity and transitivity
 fn preorder_theory() -> Theory {
     let mut sig = Signature::default();
     sig.add_sort("X".to_string());
@@ -247,7 +29,7 @@ fn preorder_theory() -> Theory {
         ("x".to_string(), DerivedSort::Base(0)),
         ("y".to_string(), DerivedSort::Base(0)),
     ]);
-    sig.add_relation("leq".to_string(), domain.clone());
+    sig.add_relation("leq".to_string(), domain);
 
     // Reflexivity axiom: forall x : X. |- [x: x, y: x] leq
     let refl_axiom = Sequent {
@@ -307,9 +89,72 @@ fn preorder_theory() -> Theory {
 }
 
 #[test]
+fn test_chase_adds_relation_from_true_premise() {
+    // Axiom: forall x : V. |- R(x)
+    // This should add all elements to R
+    let mut sig = Signature::default();
+    sig.add_sort("V".to_string());
+    sig.add_relation("R".to_string(), DerivedSort::Base(0));
+
+    let axiom = Sequent {
+        context: Context {
+            vars: vec![("x".to_string(), DerivedSort::Base(0))],
+        },
+        premise: Formula::True,
+        conclusion: Formula::Rel(0, Term::Var("x".to_string(), DerivedSort::Base(0))),
+    };
+
+    let mut universe = Universe::new();
+    let mut structure = Structure::new(1);
+
+    // Add some elements
+    let (a, _) = structure.add_element(&mut universe, 0);
+    let (b, _) = structure.add_element(&mut universe, 0);
+    let (c, _) = structure.add_element(&mut universe, 0);
+
+    // Initialize relation
+    structure.init_relations(&[1]);
+
+    // Run chase
+    let iterations = chase_fixpoint(&[axiom], &mut structure, &mut universe, &sig, 100).unwrap();
+
+    // Should add all 3 elements to R
+    assert_eq!(structure.get_relation(0).len(), 3);
+    assert!(structure.query_relation(0, &[a]));
+    assert!(structure.query_relation(0, &[b]));
+    assert!(structure.query_relation(0, &[c]));
+
+    // Should converge in 2 iterations
+    assert_eq!(iterations, 2);
+}
+
+#[test]
+fn test_chase_fixpoint_empty_structure() {
+    let theory = simple_theory_with_relation();
+
+    // Axiom: forall x : V. |- R(x)
+    let axiom = Sequent {
+        context: Context {
+            vars: vec![("x".to_string(), DerivedSort::Base(0))],
+        },
+        premise: Formula::True,
+        conclusion: Formula::Rel(0, Term::Var("x".to_string(), DerivedSort::Base(0))),
+    };
+
+    let mut universe = Universe::new();
+    let mut structure = Structure::new(1);
+    structure.init_relations(&[1]);
+
+    let iterations = chase_fixpoint(&[axiom], &mut structure, &mut universe, &theory.signature, 100).unwrap();
+
+    // Empty structure: no elements, so nothing to add
+    assert_eq!(iterations, 1);
+    assert_eq!(structure.get_relation(0).len(), 0);
+}
+
+#[test]
 fn test_chase_preorder_reflexivity() {
-    // Test that chase correctly computes reflexive closure without generating
-    // spurious tuples from cross-join (the bug that was fixed)
+    // Test that chase correctly computes reflexive closure
     let theory = preorder_theory();
     let mut universe = Universe::new();
     let mut structure = Structure::new(1);
@@ -319,48 +164,39 @@ fn test_chase_preorder_reflexivity() {
     let (b, _) = structure.add_element(&mut universe, 0);
     let (c, _) = structure.add_element(&mut universe, 0);
 
-    // Initialize relation with arity 2 (binary relation)
+    // Initialize relation with arity 2
     structure.init_relations(&[2]);
 
-    // Compile axioms
-    let rules = compile_theory_axioms(&ElaboratedTheory {
-        theory: theory.clone(),
-        params: vec![],
-    })
-    .unwrap();
-
-    assert_eq!(rules.len(), 2, "Should compile both reflexivity and transitivity axioms");
-
     // Run chase
-    let iterations = chase_fixpoint(&rules, &mut structure, &mut universe, &theory.signature, 100).unwrap();
+    let iterations = chase_fixpoint(
+        &theory.axioms,
+        &mut structure,
+        &mut universe,
+        &theory.signature,
+        100,
+    ).unwrap();
 
-    // With only reflexivity and transitivity (no additional ordering),
-    // we should get exactly 3 reflexive pairs: (a,a), (b,b), (c,c)
+    // Should have exactly 3 reflexive tuples
     let relation = structure.get_relation(0);
-    assert_eq!(
-        relation.len(),
-        3,
-        "Should have exactly 3 reflexive tuples (was 9 before equi-join fix)"
-    );
+    assert_eq!(relation.len(), 3, "Should have exactly 3 reflexive tuples");
 
-    // Check that each reflexive pair exists
+    // Check reflexive pairs exist
     assert!(structure.query_relation(0, &[a, a]), "Should have (a,a)");
     assert!(structure.query_relation(0, &[b, b]), "Should have (b,b)");
     assert!(structure.query_relation(0, &[c, c]), "Should have (c,c)");
 
-    // Check that non-reflexive pairs do NOT exist (they would if cross-join bug existed)
+    // Check non-reflexive pairs do NOT exist
     assert!(!structure.query_relation(0, &[a, b]), "Should NOT have (a,b)");
     assert!(!structure.query_relation(0, &[a, c]), "Should NOT have (a,c)");
     assert!(!structure.query_relation(0, &[b, a]), "Should NOT have (b,a)");
 
-    // Should complete in 2 iterations (one to add reflexive pairs, one to verify fixpoint)
-    assert_eq!(iterations, 2, "Should reach fixpoint in 2 iterations");
+    // Should complete in 2 iterations
+    assert_eq!(iterations, 2);
 }
 
 #[test]
 fn test_chase_transitive_closure() {
-    // Test that chase correctly computes transitive closure when there are
-    // actual edges to close over (not just reflexive pairs)
+    // Test that chase correctly computes transitive closure
     let theory = preorder_theory();
     let mut universe = Universe::new();
     let mut structure = Structure::new(1);
@@ -377,45 +213,214 @@ fn test_chase_transitive_closure() {
     structure.get_relation_mut(0).insert(vec![a, b]);
     structure.get_relation_mut(0).insert(vec![b, c]);
 
-    // Compile axioms
-    let rules = compile_theory_axioms(&ElaboratedTheory {
-        theory: theory.clone(),
-        params: vec![],
-    })
-    .unwrap();
-
     // Run chase
-    let _iterations = chase_fixpoint(&rules, &mut structure, &mut universe, &theory.signature, 100).unwrap();
+    let _iterations = chase_fixpoint(
+        &theory.axioms,
+        &mut structure,
+        &mut universe,
+        &theory.signature,
+        100,
+    ).unwrap();
 
-    // Expected tuples after chase:
-    // - Reflexive: (a,a), (b,b), (c,c) - from reflexivity axiom
-    // - Initial: (a,b), (b,c) - manually added
-    // - Transitive: (a,c) - from transitivity: (a,b) + (b,c) → (a,c)
-    // Total: 6 tuples
+    // Expected: 3 reflexive + 2 initial + 1 transitive (a,c) = 6
     let relation = structure.get_relation(0);
-    assert_eq!(
-        relation.len(),
-        6,
-        "Should have 6 tuples: 3 reflexive + 2 initial + 1 transitive"
-    );
+    assert_eq!(relation.len(), 6, "Should have 6 tuples");
 
     // Check reflexive pairs
-    assert!(structure.query_relation(0, &[a, a]), "Should have (a,a)");
-    assert!(structure.query_relation(0, &[b, b]), "Should have (b,b)");
-    assert!(structure.query_relation(0, &[c, c]), "Should have (c,c)");
+    assert!(structure.query_relation(0, &[a, a]));
+    assert!(structure.query_relation(0, &[b, b]));
+    assert!(structure.query_relation(0, &[c, c]));
 
     // Check initial ordering
-    assert!(structure.query_relation(0, &[a, b]), "Should have (a,b)");
-    assert!(structure.query_relation(0, &[b, c]), "Should have (b,c)");
+    assert!(structure.query_relation(0, &[a, b]));
+    assert!(structure.query_relation(0, &[b, c]));
 
     // Check transitive closure!
-    assert!(
-        structure.query_relation(0, &[a, c]),
-        "Should have (a,c) from transitive closure: (a,b) + (b,c) → (a,c)"
-    );
+    assert!(structure.query_relation(0, &[a, c]), "Should have (a,c) from transitivity");
 
     // Should NOT have backwards edges
-    assert!(!structure.query_relation(0, &[b, a]), "Should NOT have (b,a)");
-    assert!(!structure.query_relation(0, &[c, b]), "Should NOT have (c,b)");
-    assert!(!structure.query_relation(0, &[c, a]), "Should NOT have (c,a)");
+    assert!(!structure.query_relation(0, &[b, a]));
+    assert!(!structure.query_relation(0, &[c, b]));
+    assert!(!structure.query_relation(0, &[c, a]));
+}
+
+#[test]
+fn test_chase_conjunction_in_conclusion() {
+    // Axiom: forall x : V. |- R(x) ∧ S(x)
+    let mut sig = Signature::default();
+    sig.add_sort("V".to_string());
+    sig.add_relation("R".to_string(), DerivedSort::Base(0));
+    sig.add_relation("S".to_string(), DerivedSort::Base(0));
+
+    let axiom = Sequent {
+        context: Context {
+            vars: vec![("x".to_string(), DerivedSort::Base(0))],
+        },
+        premise: Formula::True,
+        conclusion: Formula::Conj(vec![
+            Formula::Rel(0, Term::Var("x".to_string(), DerivedSort::Base(0))),
+            Formula::Rel(1, Term::Var("x".to_string(), DerivedSort::Base(0))),
+        ]),
+    };
+
+    let mut universe = Universe::new();
+    let mut structure = Structure::new(1);
+
+    let (a, _) = structure.add_element(&mut universe, 0);
+    let (b, _) = structure.add_element(&mut universe, 0);
+
+    structure.init_relations(&[1, 1]);
+
+    let _iterations = chase_fixpoint(&[axiom], &mut structure, &mut universe, &sig, 100).unwrap();
+
+    // Both relations should have both elements
+    assert_eq!(structure.get_relation(0).len(), 2);
+    assert_eq!(structure.get_relation(1).len(), 2);
+    assert!(structure.query_relation(0, &[a]));
+    assert!(structure.query_relation(0, &[b]));
+    assert!(structure.query_relation(1, &[a]));
+    assert!(structure.query_relation(1, &[b]));
+}
+
+#[test]
+fn test_chase_relation_premise() {
+    // Axiom: forall x, y : V. R(x, y) |- S(x, y)
+    // Copy tuples from R to S
+    let mut sig = Signature::default();
+    sig.add_sort("V".to_string());
+    let domain = DerivedSort::Product(vec![
+        ("a".to_string(), DerivedSort::Base(0)),
+        ("b".to_string(), DerivedSort::Base(0)),
+    ]);
+    sig.add_relation("R".to_string(), domain.clone());
+    sig.add_relation("S".to_string(), domain);
+
+    let axiom = Sequent {
+        context: Context {
+            vars: vec![
+                ("x".to_string(), DerivedSort::Base(0)),
+                ("y".to_string(), DerivedSort::Base(0)),
+            ],
+        },
+        premise: Formula::Rel(
+            0,
+            Term::Record(vec![
+                ("a".to_string(), Term::Var("x".to_string(), DerivedSort::Base(0))),
+                ("b".to_string(), Term::Var("y".to_string(), DerivedSort::Base(0))),
+            ]),
+        ),
+        conclusion: Formula::Rel(
+            1,
+            Term::Record(vec![
+                ("a".to_string(), Term::Var("x".to_string(), DerivedSort::Base(0))),
+                ("b".to_string(), Term::Var("y".to_string(), DerivedSort::Base(0))),
+            ]),
+        ),
+    };
+
+    let mut universe = Universe::new();
+    let mut structure = Structure::new(1);
+
+    let (a, _) = structure.add_element(&mut universe, 0);
+    let (b, _) = structure.add_element(&mut universe, 0);
+
+    structure.init_relations(&[2, 2]);
+
+    // Add some tuples to R
+    structure.get_relation_mut(0).insert(vec![a, b]);
+    structure.get_relation_mut(0).insert(vec![b, a]);
+
+    let _iterations = chase_fixpoint(&[axiom], &mut structure, &mut universe, &sig, 100).unwrap();
+
+    // S should have the same tuples as R
+    assert_eq!(structure.get_relation(1).len(), 2);
+    assert!(structure.query_relation(1, &[a, b]));
+    assert!(structure.query_relation(1, &[b, a]));
+}
+
+/// Test chase with existential premise (the feature that motivated tensor-backed chase!)
+#[test]
+fn test_chase_existential_premise() {
+    // Theory: Graph with reachability
+    // Axiom: forall v0, v1 : V. (exists e : E. src(e) = v0 ∧ tgt(e) = v1) |- reachable(v0, v1)
+    let mut sig = Signature::default();
+    let v_sort = sig.add_sort("V".to_string());
+    let e_sort = sig.add_sort("E".to_string());
+
+    // src, tgt : E -> V
+    sig.add_function("src".to_string(), DerivedSort::Base(e_sort), DerivedSort::Base(v_sort));
+    sig.add_function("tgt".to_string(), DerivedSort::Base(e_sort), DerivedSort::Base(v_sort));
+
+    // reachable : [from: V, to: V] -> Prop
+    let reach_domain = DerivedSort::Product(vec![
+        ("from".to_string(), DerivedSort::Base(v_sort)),
+        ("to".to_string(), DerivedSort::Base(v_sort)),
+    ]);
+    sig.add_relation("reachable".to_string(), reach_domain);
+
+    // Axiom: (exists e : E. src(e) = v0 ∧ tgt(e) = v1) |- reachable(v0, v1)
+    let axiom = Sequent {
+        context: Context {
+            vars: vec![
+                ("v0".to_string(), DerivedSort::Base(v_sort)),
+                ("v1".to_string(), DerivedSort::Base(v_sort)),
+            ],
+        },
+        premise: Formula::Exists(
+            "e".to_string(),
+            DerivedSort::Base(e_sort),
+            Box::new(Formula::Conj(vec![
+                Formula::Eq(
+                    Term::App(0, Box::new(Term::Var("e".to_string(), DerivedSort::Base(e_sort)))),
+                    Term::Var("v0".to_string(), DerivedSort::Base(v_sort)),
+                ),
+                Formula::Eq(
+                    Term::App(1, Box::new(Term::Var("e".to_string(), DerivedSort::Base(e_sort)))),
+                    Term::Var("v1".to_string(), DerivedSort::Base(v_sort)),
+                ),
+            ])),
+        ),
+        conclusion: Formula::Rel(
+            0,
+            Term::Record(vec![
+                ("from".to_string(), Term::Var("v0".to_string(), DerivedSort::Base(v_sort))),
+                ("to".to_string(), Term::Var("v1".to_string(), DerivedSort::Base(v_sort))),
+            ]),
+        ),
+    };
+
+    let mut universe = Universe::new();
+    let mut structure = Structure::new(2); // 2 sorts: V and E
+
+    // Add vertices: a, b, c
+    let (a, _) = structure.add_element(&mut universe, v_sort);
+    let (b, _) = structure.add_element(&mut universe, v_sort);
+    let (c, _) = structure.add_element(&mut universe, v_sort);
+
+    // Add edges: e1 (a->b), e2 (b->c)
+    let (e1, _) = structure.add_element(&mut universe, e_sort);
+    let (e2, _) = structure.add_element(&mut universe, e_sort);
+
+    // Initialize functions and relations
+    structure.init_functions(&[Some(e_sort), Some(e_sort)]); // src, tgt both have domain E
+    structure.init_relations(&[2]); // reachable is binary
+
+    // Define src and tgt
+    structure.define_function(0, e1, a).unwrap(); // src(e1) = a
+    structure.define_function(1, e1, b).unwrap(); // tgt(e1) = b
+    structure.define_function(0, e2, b).unwrap(); // src(e2) = b
+    structure.define_function(1, e2, c).unwrap(); // tgt(e2) = c
+
+    // Run chase
+    let iterations = chase_fixpoint(&[axiom], &mut structure, &mut universe, &sig, 100).unwrap();
+
+    // Should derive reachable(a,b) and reachable(b,c)
+    assert_eq!(structure.get_relation(0).len(), 2, "Should have 2 reachable pairs");
+    assert!(structure.query_relation(0, &[a, b]), "Should have reachable(a,b)");
+    assert!(structure.query_relation(0, &[b, c]), "Should have reachable(b,c)");
+
+    // Should NOT have other pairs
+    assert!(!structure.query_relation(0, &[a, c]), "Should NOT have reachable(a,c) without transitive closure axiom");
+
+    println!("Chase with existential premise completed in {} iterations", iterations);
 }

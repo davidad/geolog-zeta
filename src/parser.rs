@@ -368,9 +368,25 @@ fn formula() -> impl Parser<Token, Formula, Error = Simple<Token>> + Clone {
 
         let atom = choice((true_lit, false_lit, exists, paren_formula, term_based));
 
+        // Conjunction: phi /\ psi (binds tighter than disjunction)
+        let conjunction = atom
+            .clone()
+            .then(just(Token::And).ignore_then(atom.clone()).repeated())
+            .foldl(|a, b| {
+                // Flatten into a single And with multiple conjuncts
+                match a {
+                    Formula::And(mut conjuncts) => {
+                        conjuncts.push(b);
+                        Formula::And(conjuncts)
+                    }
+                    _ => Formula::And(vec![a, b]),
+                }
+            });
+
         // Disjunction: phi \/ psi
-        atom.clone()
-            .then(just(Token::Or).ignore_then(atom.clone()).repeated())
+        conjunction
+            .clone()
+            .then(just(Token::Or).ignore_then(conjunction.clone()).repeated())
             .foldl(|a, b| {
                 // Flatten into a single Or with multiple disjuncts
                 match a {
@@ -481,16 +497,6 @@ fn param() -> impl Parser<Token, Param, Error = Simple<Token>> + Clone {
 }
 
 fn theory_decl() -> impl Parser<Token, TheoryDecl, Error = Simple<Token>> + Clone {
-    // Allow multiple parameter groups: (X : Sort) (Y : Sort)
-    let param_group = param()
-        .separated_by(just(Token::Comma))
-        .at_least(1)
-        .delimited_by(just(Token::LParen), just(Token::RParen));
-
-    let params = param_group
-        .repeated()
-        .map(|groups| groups.into_iter().flatten().collect());
-
     // Optional `extends ParentTheory`
     let extends_clause = ident()
         .try_map(|s, span| {
@@ -503,9 +509,53 @@ fn theory_decl() -> impl Parser<Token, TheoryDecl, Error = Simple<Token>> + Clon
         .ignore_then(path())
         .or_not();
 
-    just(Token::Theory)
-        .ignore_then(params)
+    // A param group in parens: (X : Type, Y : Type)
+    let param_group = param()
+        .separated_by(just(Token::Comma))
+        .at_least(1)
+        .delimited_by(just(Token::LParen), just(Token::RParen));
+
+    // After 'theory', we may have:
+    // 1. One or more param groups followed by an identifier: (X:T) (Y:U) Name
+    // 2. Just an identifier (no params): Name
+    // 3. Just '{' (missing name - ERROR)
+    //
+    // Strategy: Parse by looking at the first token after 'theory':
+    // - If '(' -> parse params, then expect name
+    // - If identifier -> that's the name, no params
+    // - If '{' -> error: missing name
+
+    // Helper to parse params then name
+    let params_then_name = param_group
+        .repeated()
+        .at_least(1)
+        .map(|groups: Vec<Vec<Param>>| groups.into_iter().flatten().collect::<Vec<Param>>())
         .then(ident())
+        .map(|(params, name)| (params, name));
+
+    // No params, just a name
+    let just_name = ident().map(|name| (Vec::<Param>::new(), name));
+
+    // Error case: '{' with no name - emit error at the '{' token's location
+    // Use `just` to peek at '{' and capture its position, then emit a helpful error
+    // We DON'T consume the '{' because we need it for the body parser
+    let missing_name = just(Token::LBrace)
+        .map_with_span(|_, span: Span| span) // Capture '{' token's span
+        .rewind() // Rewind to not consume '{' - we need it for the body
+        .validate(|brace_span, _, emit| {
+            emit(Simple::custom(
+                brace_span,
+                "expected theory name - anonymous theories are not allowed. \
+                 Use: theory MyTheoryName { ... }",
+            ));
+            // Return dummy values for error recovery
+            (Vec::<Param>::new(), "_anonymous_".to_string())
+        });
+
+    // Parse theory keyword, then params+name in one of the three ways
+    // Order matters: try params first (if '('), then name (if ident), then error (if '{')
+    just(Token::Theory)
+        .ignore_then(choice((params_then_name, just_name, missing_name)))
         .then(extends_clause)
         .then(
             theory_item()
@@ -547,12 +597,14 @@ fn instance_item() -> impl Parser<Token, InstanceItem, Error = Simple<Token>> + 
                 )
             });
 
-        // Element declaration: A : P;
+        // Element declaration: A : P; or a, b, c : P;
         let element = ident()
+            .separated_by(just(Token::Comma))
+            .at_least(1)
             .then_ignore(just(Token::Colon))
             .then(type_expr())
             .then_ignore(just(Token::Semicolon))
-            .map(|(name, ty)| InstanceItem::Element(name, ty));
+            .map(|(names, ty)| InstanceItem::Element(names, ty));
 
         // Equation: term = term;
         let equation = term()

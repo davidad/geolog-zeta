@@ -366,8 +366,8 @@ impl Pretty {
 
     pub fn instance_item(&mut self, item: &InstanceItem) {
         match item {
-            InstanceItem::Element(name, ty) => {
-                self.write(name);
+            InstanceItem::Element(names, ty) => {
+                self.write(&names.join(", "));
                 self.write(" : ");
                 self.type_expr(ty);
                 self.write(";");

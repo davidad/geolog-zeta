@@ -61,18 +61,34 @@ pub fn format_parser_errors(
         let span = error.span();
 
         // Map token span to character span
-        let char_span = if let Some((_, char_range)) = token_spans.get(span.start) {
-            char_range.clone()
-        } else if span.start > 0 && span.start == token_spans.len() {
-            // End of input - use the end of the last token
+        // The span could be either:
+        // 1. A token index (0, 1, 2, ..., n-1 for n tokens) - look up in token_spans
+        // 2. Already a character position (from custom errors that captured spans)
+        //
+        // Best heuristic: check if the span matches a token's character range.
+        // If so, it's a character position. Otherwise, treat as token index.
+        let is_char_position = token_spans
+            .iter()
+            .any(|(_, char_range)| char_range.start == span.start && char_range.end == span.end);
+
+        let char_span = if is_char_position {
+            // Span exactly matches a token's character range - use as-is
+            span.clone()
+        } else if span.start < token_spans.len() {
+            // Span.start is a valid token index - use token's character range
+            token_spans[span.start].1.clone()
+        } else if span.start == token_spans.len() {
+            // End of input marker - use the end of the last token
             if let Some((_, last_range)) = token_spans.last() {
                 last_range.end..last_range.end
             } else {
                 0..0
             }
         } else {
-            // Fallback to byte positions
-            span.clone()
+            // Fallback: treat as character position
+            let start = span.start.min(source.len());
+            let end = span.end.min(source.len());
+            start..end
         };
 
         let report = Report::build(ReportKind::Error, (), char_span.start)
@@ -94,10 +110,17 @@ pub fn format_parser_errors(
 
 /// Format a single parser error into a readable message
 fn format_parser_error(error: &Simple<Token>) -> String {
+    use chumsky::error::SimpleReason;
+
     let found = error
         .found()
         .map(|t| format!("'{}'", format_token(t)))
         .unwrap_or_else(|| "end of input".to_string());
+
+    // Check for custom error messages first (from Simple::custom())
+    if let SimpleReason::Custom(msg) = error.reason() {
+        return msg.clone();
+    }
 
     let expected = format_token_set(error.expected());
 
@@ -156,6 +179,7 @@ fn format_token(token: &Token) -> String {
         Token::Arrow => "->".to_string(),
         Token::Eq => "=".to_string(),
         Token::Turnstile => "|-".to_string(),
+        Token::And => r"/\".to_string(),
         Token::Or => r"\/".to_string(),
         Token::Question => "?".to_string(),
         Token::Chase => "chase".to_string(),
