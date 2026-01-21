@@ -90,6 +90,115 @@ fn test_petri_net_example_parses() {
     assert!(state.instances.contains_key("MutualExclusion"));
 }
 
+// ============================================================================
+// Petri Net Showcase - Full Type-Theoretic Encoding (from 2025-12-12 vision)
+// ============================================================================
+
+#[test]
+fn test_petri_net_showcase_loads() {
+    let path = Path::new("examples/geolog/petri_net_showcase.geolog");
+    let state = load_geolog_file(path).expect("petri_net_showcase.geolog should parse and elaborate");
+
+    // Check theories
+    assert!(state.theories.contains_key("PetriNet"), "PetriNet theory should exist");
+    assert!(state.theories.contains_key("Marking"), "Marking theory should exist");
+    assert!(state.theories.contains_key("ReachabilityProblem"), "ReachabilityProblem theory should exist");
+    assert!(state.theories.contains_key("Trace"), "Trace theory should exist");
+    assert!(state.theories.contains_key("Iso"), "Iso theory should exist");
+    assert!(state.theories.contains_key("Solution"), "Solution theory should exist");
+
+    // Check PetriNet theory structure
+    let petri = state.theories.get("PetriNet").unwrap();
+    assert_eq!(petri.theory.signature.sorts.len(), 4, "PetriNet should have 4 sorts");
+    assert_eq!(petri.theory.signature.functions.len(), 4, "PetriNet should have 4 functions");
+
+    // Check parameterized theories have correct parameter structure
+    let marking = state.theories.get("Marking").unwrap();
+    assert_eq!(marking.params.len(), 1, "Marking should have 1 parameter (N : PetriNet instance)");
+    assert_eq!(marking.params[0].name, "N");
+
+    let reach_prob = state.theories.get("ReachabilityProblem").unwrap();
+    assert_eq!(reach_prob.params.len(), 1, "ReachabilityProblem should have 1 parameter");
+
+    let trace = state.theories.get("Trace").unwrap();
+    assert_eq!(trace.params.len(), 1, "Trace should have 1 parameter");
+
+    let iso = state.theories.get("Iso").unwrap();
+    assert_eq!(iso.params.len(), 2, "Iso should have 2 parameters (X : Sort, Y : Sort)");
+
+    let solution = state.theories.get("Solution").unwrap();
+    assert_eq!(solution.params.len(), 2, "Solution should have 2 parameters (N, RP)");
+
+    // Check instances
+    assert!(state.instances.contains_key("ExampleNet"), "ExampleNet instance should exist");
+    assert!(state.instances.contains_key("problem0"), "problem0 instance should exist");
+    assert!(state.instances.contains_key("solution0"), "solution0 instance should exist");
+    assert!(state.instances.contains_key("problem2"), "problem2 instance should exist");
+    assert!(state.instances.contains_key("solution2"), "solution2 instance should exist");
+}
+
+#[test]
+fn test_petri_net_showcase_example_net_structure() {
+    let path = Path::new("examples/geolog/petri_net_showcase.geolog");
+    let state = load_geolog_file(path).unwrap();
+
+    let example_net = state.instances.get("ExampleNet").unwrap();
+
+    // ExampleNet has:
+    // - 3 places (A, B, C)
+    // - 3 transitions (ab, ba, abc)
+    // - 4 input arcs (ab_in, ba_in, abc_in1, abc_in2)
+    // - 3 output arcs (ab_out, ba_out, abc_out)
+    // Total: 3 + 3 + 4 + 3 = 13 elements
+    assert_eq!(example_net.structure.len(), 13, "ExampleNet should have 13 elements");
+
+    // Check carrier sizes by sort index (P=0, T=1, in=2, out=3)
+    assert_eq!(example_net.structure.carrier_size(0), 3, "ExampleNet should have 3 places");
+    assert_eq!(example_net.structure.carrier_size(1), 3, "ExampleNet should have 3 transitions");
+    assert_eq!(example_net.structure.carrier_size(2), 4, "ExampleNet should have 4 input arcs");
+    assert_eq!(example_net.structure.carrier_size(3), 3, "ExampleNet should have 3 output arcs");
+}
+
+#[test]
+fn test_petri_net_showcase_problem0_structure() {
+    let path = Path::new("examples/geolog/petri_net_showcase.geolog");
+    let state = load_geolog_file(path).unwrap();
+
+    // problem0: 1 token in A -> 1 token in B
+    let problem0 = state.instances.get("problem0").unwrap();
+
+    // ReachabilityProblem structure includes the nested Marking instances
+    // This test verifies the cross-references work correctly
+    assert!(problem0.structure.len() > 0, "problem0 should have elements");
+}
+
+#[test]
+fn test_petri_net_showcase_solution0_structure() {
+    let path = Path::new("examples/geolog/petri_net_showcase.geolog");
+    let state = load_geolog_file(path).unwrap();
+
+    // solution0 proves A -> B reachability by firing 'ab' once
+    let solution0 = state.instances.get("solution0").unwrap();
+
+    // Solution structure includes nested Trace and Iso instances
+    // The trace has: 1 firing, 1 input terminal, 1 output terminal
+    // Plus the isomorphism mappings
+    assert!(solution0.structure.len() > 0, "solution0 should have elements");
+}
+
+#[test]
+fn test_petri_net_showcase_solution2_structure() {
+    let path = Path::new("examples/geolog/petri_net_showcase.geolog");
+    let state = load_geolog_file(path).unwrap();
+
+    // solution2 proves 2A -> C reachability by firing 'ab' then 'abc'
+    // This is the complex case: requires firing ab to move one A-token to B,
+    // then abc consumes both an A-token and the new B-token to produce C
+    let solution2 = state.instances.get("solution2").unwrap();
+
+    assert!(solution2.structure.len() > 0, "solution2 should have elements");
+}
+
 #[test]
 fn test_petri_net_producer_consumer() {
     let path = Path::new("examples/geolog/petri_net.geolog");

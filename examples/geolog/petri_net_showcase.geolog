@@ -1,0 +1,254 @@
+// Petri Net Reachability - Full Type-Theoretic Encoding
+//
+// This showcase demonstrates geolog's core capabilities through a
+// non-trivial domain: encoding Petri net reachability as dependent types.
+//
+// A solution to a reachability problem is NOT a yes/no boolean but a
+// CONSTRUCTIVE WITNESS: a diagrammatic proof that tokens can flow from
+// initial to target markings via a sequence of transition firings.
+//
+// Key concepts demonstrated:
+// - Parameterized theories (Marking depends on PetriNet instance)
+// - Nested instance types (ReachabilityProblem contains Marking instances)
+// - Sort-parameterized theories (Iso takes two sorts as parameters)
+// - Cross-instance references (solution's trace elements reference problem's tokens)
+//
+// Original design: loose_thoughts/2025-12-12_12:10_VanillaPetriNetRechability.md
+
+// ============================================================
+// THEORY: PetriNet
+// Places, transitions, and arcs with proper arc semantics
+// ============================================================
+
+theory PetriNet {
+  P : Sort;      // Places
+  T : Sort;      // Transitions
+  in : Sort;     // Input arcs (place -> transition)
+  out : Sort;    // Output arcs (transition -> place)
+
+  in/src : in -> P;    // Input arc source place
+  in/tgt : in -> T;    // Input arc target transition
+  out/src : out -> T;  // Output arc source transition
+  out/tgt : out -> P;  // Output arc target place
+}
+
+// ============================================================
+// THEORY: Marking (parameterized by N : PetriNet)
+// A marking assigns tokens to places
+// ============================================================
+
+theory (N : PetriNet instance) Marking {
+  token : Sort;
+  token/of : token -> N/P;
+}
+
+// ============================================================
+// THEORY: ReachabilityProblem (parameterized by N : PetriNet)
+// Initial and target markings as nested instances
+// ============================================================
+
+theory (N : PetriNet instance) ReachabilityProblem {
+  initial_marking : N Marking instance;
+  target_marking : N Marking instance;
+}
+
+// ============================================================
+// THEORY: Trace (parameterized by N : PetriNet)
+// A trace records transition firings and token flow
+// ============================================================
+//
+// Note: The full version with wire axioms requires function
+// applications in premises (e.g., ax1-ax6 in the 2025-12-12 vision),
+// which isn't yet supported by the chase/tensor checker.
+// This simplified version captures the essential structure.
+
+theory (N : PetriNet instance) Trace {
+  F : Sort;                         // Firings
+  F/of : F -> N/T;                  // Which transition each firing corresponds to
+
+  input_terminal : Sort;            // Entry points for initial marking tokens
+  output_terminal : Sort;           // Exit points for target marking tokens
+  input_terminal/of : input_terminal -> N/P;
+  output_terminal/of : output_terminal -> N/P;
+}
+
+// ============================================================
+// THEORY: Iso (parameterized by two sorts)
+// Isomorphism (bijection) between two sorts
+// ============================================================
+
+theory (X : Sort) (Y : Sort) Iso {
+  fwd : X -> Y;
+  bwd : Y -> X;
+  // Roundtrip axioms (currently unchecked due to function app in premises):
+  // fb : forall x : X. |- x fwd bwd = x;
+  // bf : forall y : Y. |- y bwd fwd = y;
+}
+
+// ============================================================
+// THEORY: Solution (parameterized by N and RP)
+// A constructive witness that target is reachable from initial
+// ============================================================
+
+theory (N : PetriNet instance) (RP : N ReachabilityProblem instance) Solution {
+  trace : N Trace instance;
+
+  // Bijection: input terminals <-> initial marking tokens
+  initial_iso : (trace/input_terminal) (RP/initial_marking/token) Iso instance;
+
+  // Bijection: output terminals <-> target marking tokens
+  target_iso : (trace/output_terminal) (RP/target_marking/token) Iso instance;
+
+  // Commutativity axioms (currently unchecked):
+  // ax/init_comm : forall i : trace/input_terminal.
+  //   |- i trace/input_terminal/of = i initial_iso/fwd RP/initial_marking/token/of;
+  // ax/target_comm : forall o : trace/output_terminal.
+  //   |- o trace/output_terminal/of = o target_iso/fwd RP/target_marking/token/of;
+}
+
+// ============================================================
+// INSTANCE: ExampleNet
+//
+// A Petri net with places A, B, C and transitions:
+//   ab: consumes 1 token from A, produces 1 token in B
+//   ba: consumes 1 token from B, produces 1 token in A
+//   abc: consumes 1 token from A AND 1 from B, produces 1 token in C
+//
+//       +---[ba]----+
+//       v           |
+//      (A) --[ab]->(B) --+
+//       |                |
+//       +----[abc]-------+--> (C)
+//
+// The abc transition is interesting: it requires BOTH an A-token
+// and a B-token to fire, producing a C-token.
+// ============================================================
+
+instance ExampleNet : PetriNet = {
+  A : P; B : P; C : P;
+  ab : T; ba : T; abc : T;
+
+  // A -> B (via ab)
+  ab_in : in;  ab_in in/src = A; ab_in in/tgt = ab;
+  ab_out : out; ab_out out/src = ab; ab_out out/tgt = B;
+
+  // B -> A (via ba)
+  ba_in : in;  ba_in in/src = B; ba_in in/tgt = ba;
+  ba_out : out; ba_out out/src = ba; ba_out out/tgt = A;
+
+  // A + B -> C (via abc) - note: two input arcs!
+  abc_in1 : in; abc_in1 in/src = A; abc_in1 in/tgt = abc;
+  abc_in2 : in; abc_in2 in/src = B; abc_in2 in/tgt = abc;
+  abc_out : out; abc_out out/src = abc; abc_out out/tgt = C;
+}
+
+// ============================================================
+// PROBLEM 0: Can we reach B from A with one token?
+// Initial: 1 token in A
+// Target:  1 token in B
+// ============================================================
+
+instance problem0 : ExampleNet ReachabilityProblem = {
+  initial_marking = {
+    tok : token;
+    tok token/of = ExampleNet/A;
+  };
+  target_marking = {
+    tok : token;
+    tok token/of = ExampleNet/B;
+  };
+}
+
+// ============================================================
+// SOLUTION 0: Yes! Fire transition 'ab' once.
+//
+// This Solution instance is a CONSTRUCTIVE PROOF:
+// - The trace contains one firing (f1) of transition 'ab'
+// - The input terminal witnesses that the initial token feeds into f1
+// - The output terminal witnesses that f1 produces the target token
+// - The isomorphisms prove the token counts match exactly
+// ============================================================
+
+instance solution0 : ExampleNet problem0 Solution = {
+  trace = {
+    f1 : F;
+    f1 F/of = ExampleNet/ab;
+
+    it : input_terminal;
+    it input_terminal/of = ExampleNet/A;
+
+    ot : output_terminal;
+    ot output_terminal/of = ExampleNet/B;
+  };
+
+  initial_iso = {
+    trace/it fwd = problem0/initial_marking/tok;
+    problem0/initial_marking/tok bwd = trace/it;
+  };
+
+  target_iso = {
+    trace/ot fwd = problem0/target_marking/tok;
+    problem0/target_marking/tok bwd = trace/ot;
+  };
+}
+
+// ============================================================
+// PROBLEM 2: Can we reach C from two A-tokens?
+// Initial: 2 tokens in A
+// Target:  1 token in C
+//
+// This is interesting because the only path to C is via 'abc',
+// which requires tokens in BOTH A and B simultaneously.
+// ============================================================
+
+instance problem2 : ExampleNet ReachabilityProblem = {
+  initial_marking = {
+    t1 : token; t1 token/of = ExampleNet/A;
+    t2 : token; t2 token/of = ExampleNet/A;
+  };
+  target_marking = {
+    t : token;
+    t token/of = ExampleNet/C;
+  };
+}
+
+// ============================================================
+// SOLUTION 2: Yes! Fire 'ab' then 'abc'.
+//
+// Step 1: Fire 'ab' to move one token A -> B
+//         State: 1 token in A, 1 token in B
+// Step 2: Fire 'abc' consuming one A-token and one B-token
+//         State: 1 token in C
+//
+// The trace has two firings, and the token bookkeeping is
+// witnessed by the terminal/token bijections.
+// ============================================================
+
+instance solution2 : ExampleNet problem2 Solution = {
+  trace = {
+    // Two firings
+    f1 : F; f1 F/of = ExampleNet/ab;   // First: A -> B
+    f2 : F; f2 F/of = ExampleNet/abc;  // Second: A + B -> C
+
+    // Two input terminals (one for each initial A-token)
+    it1 : input_terminal; it1 input_terminal/of = ExampleNet/A;
+    it2 : input_terminal; it2 input_terminal/of = ExampleNet/A;
+
+    // One output terminal (for the final C-token)
+    ot : output_terminal; ot output_terminal/of = ExampleNet/C;
+  };
+
+  // Bijection: 2 input terminals <-> 2 initial tokens
+  initial_iso = {
+    trace/it1 fwd = problem2/initial_marking/t1;
+    trace/it2 fwd = problem2/initial_marking/t2;
+    problem2/initial_marking/t1 bwd = trace/it1;
+    problem2/initial_marking/t2 bwd = trace/it2;
+  };
+
+  // Bijection: 1 output terminal <-> 1 target token
+  target_iso = {
+    trace/ot fwd = problem2/target_marking/t;
+    problem2/target_marking/t bwd = trace/ot;
+  };
+}

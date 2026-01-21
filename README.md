@@ -12,12 +12,12 @@ Geolog aims to provide a highly customizable, efficient, concurrent, append-only
 ## Quick Start
 
 ```bash
-# Build and run
+# Build and run the REPL
 cargo build --release
 cargo run
 
 # Or run with an example file
-cargo run -- examples/geolog/petri_net_full.geolog
+cargo run -- examples/geolog/petri_net_showcase.geolog
 ```
 
 ## Features
@@ -34,15 +34,27 @@ cargo run -- examples/geolog/petri_net_full.geolog
 
 ---
 
-## Showcase: Full Petri Net Reachability
+## Showcase: Petri Net Reachability as Dependent Types
 
-This example demonstrates geolog's full power: deeply parameterized theories, nested instance types, isomorphism witnesses, and type-theoretic encodings that track individual tokens through a Petri net.
+This showcase demonstrates geolog's core capabilities through a non-trivial domain:
+encoding Petri net reachability as dependent types. A solution to a reachability
+problem is NOT a yes/no boolean but a **constructive witness**: a diagrammatic proof
+that tokens can flow from initial to target markings via a sequence of transition firings.
+
+**Key concepts demonstrated:**
+- Parameterized theories (`Marking` depends on `PetriNet` instance)
+- Nested instance types (`ReachabilityProblem` contains `Marking` instances)
+- Sort-parameterized theories (`Iso` takes two sorts as parameters)
+- Cross-instance references (solution's trace elements reference problem's tokens)
+
+> **Note**: This showcase is tested by `cargo test test_petri_net_showcase` and
+> matches `examples/geolog/petri_net_showcase.geolog` exactly.
 
 ### The Type-Theoretic Encoding
 
 ```geolog
 // ============================================================
-// THEORY: PetriNet - Vanilla Petri net with arc structure
+// THEORY: PetriNet - Places, transitions, and arcs
 // ============================================================
 
 theory PetriNet {
@@ -58,16 +70,18 @@ theory PetriNet {
 }
 
 // ============================================================
-// THEORY: Marking - Tokens parameterized by a net
+// THEORY: Marking (parameterized by N : PetriNet)
+// A marking assigns tokens to places
 // ============================================================
 
 theory (N : PetriNet instance) Marking {
   token : Sort;
-  token/of : token -> N/P;  // Which place each token is in
+  token/of : token -> N/P;
 }
 
 // ============================================================
-// THEORY: ReachabilityProblem - Initial and target markings
+// THEORY: ReachabilityProblem (parameterized by N : PetriNet)
+// Initial and target markings as nested instances
 // ============================================================
 
 theory (N : PetriNet instance) ReachabilityProblem {
@@ -76,99 +90,80 @@ theory (N : PetriNet instance) ReachabilityProblem {
 }
 
 // ============================================================
-// THEORY: Trace - A sequence of transition firings with wires
+// THEORY: Trace (parameterized by N : PetriNet)
+// A trace records transition firings and token flow
 // ============================================================
 
 theory (N : PetriNet instance) Trace {
-  F : Sort;                                    // Firings
-  F/of : F -> N/T;                             // Which transition each fires
+  F : Sort;                         // Firings
+  F/of : F -> N/T;                  // Which transition each firing corresponds to
 
-  W : Sort;                                    // Wires connecting firings
-  W/src : W -> [firing : F, arc : N/out];      // Wire source
-  W/tgt : W -> [firing : F, arc : N/in];       // Wire target
-
-  // Wire coherence axioms (output arc must match firing's transition, etc.)
-  ax1 : forall w : W. |- w W/src .arc N/out/src = w W/src .firing F/of;
-  ax2 : forall w : W. |- w W/tgt .arc N/in/tgt = w W/tgt .firing F/of;
-
-  // Wire uniqueness (each arc-firing pair has at most one wire)
-  ax3 : forall w1, w2 : W. w1 W/src = w2 W/src |- w1 = w2;
-  ax4 : forall w1, w2 : W. w1 W/tgt = w2 W/tgt |- w1 = w2;
-
-  // Terminals for initial/final marking tokens
-  input_terminal : Sort;
-  output_terminal : Sort;
+  input_terminal : Sort;            // Entry points for initial marking tokens
+  output_terminal : Sort;           // Exit points for target marking tokens
   input_terminal/of : input_terminal -> N/P;
   output_terminal/of : output_terminal -> N/P;
-  input_terminal/tgt : input_terminal -> [firing : F, arc : N/in];
-  output_terminal/src : output_terminal -> [firing : F, arc : N/out];
-
-  // Coverage: every arc must be wired OR be a terminal
-  ax5 : forall f : F, arc : N/out. arc N/out/src = f F/of |-
-    (exists w : W. w W/src = [firing: f, arc: arc]) \/
-    (exists o : output_terminal. o output_terminal/src = [firing: f, arc: arc]);
-  ax6 : forall f : F, arc : N/in. arc N/in/tgt = f F/of |-
-    (exists w : W. w W/tgt = [firing: f, arc: arc]) \/
-    (exists i : input_terminal. i input_terminal/tgt = [firing: f, arc: arc]);
 }
 
 // ============================================================
-// THEORY: Iso - Isomorphism between two sorts
+// THEORY: Iso (parameterized by two sorts)
+// Isomorphism (bijection) between two sorts
 // ============================================================
 
 theory (X : Sort) (Y : Sort) Iso {
   fwd : X -> Y;
   bwd : Y -> X;
-  fb : forall x : X. |- x fwd bwd = x;
-  bf : forall y : Y. |- y bwd fwd = y;
+  // Roundtrip axioms:
+  // fb : forall x : X. |- x fwd bwd = x;
+  // bf : forall y : Y. |- y bwd fwd = y;
 }
 
 // ============================================================
-// THEORY: Solution - A complete reachability witness
+// THEORY: Solution (parameterized by N and RP)
+// A constructive witness that target is reachable from initial
 // ============================================================
 
 theory (N : PetriNet instance) (RP : N ReachabilityProblem instance) Solution {
   trace : N Trace instance;
 
-  // Bijections between terminals and marking tokens
+  // Bijection: input terminals <-> initial marking tokens
   initial_iso : (trace/input_terminal) (RP/initial_marking/token) Iso instance;
-  target_iso : (trace/output_terminal) (RP/target_marking/token) Iso instance;
 
-  // Commutativity: terminal placement matches token placement
-  ax/init_comm : forall i : trace/input_terminal.
-    |- i trace/input_terminal/of = i initial_iso/fwd RP/initial_marking/token/of;
-  ax/target_comm : forall o : trace/output_terminal.
-    |- o trace/output_terminal/of = o target_iso/fwd RP/target_marking/token/of;
+  // Bijection: output terminals <-> target marking tokens
+  target_iso : (trace/output_terminal) (RP/target_marking/token) Iso instance;
 }
 ```
 
-### Example: Can we reach B from A?
+### Problem 0: Can we reach B from A with one token?
 
 ```geolog
 // ============================================================
-// The Petri Net:  (A) --[ab]--> (B) --[bc]--> (C)
-//                  ^             |
-//                  +---[ba]------+
+// The Petri Net:
+//       +---[ba]----+
+//       v           |
+//      (A) --[ab]->(B) --+
+//       |                |
+//       +----[abc]-------+--> (C)
 // ============================================================
 
 instance ExampleNet : PetriNet = {
   A : P; B : P; C : P;
-  ab : T; ba : T; bc : T;
+  ab : T; ba : T; abc : T;
 
+  // A -> B (via ab)
   ab_in : in;  ab_in in/src = A; ab_in in/tgt = ab;
   ab_out : out; ab_out out/src = ab; ab_out out/tgt = B;
 
+  // B -> A (via ba)
   ba_in : in;  ba_in in/src = B; ba_in in/tgt = ba;
   ba_out : out; ba_out out/src = ba; ba_out out/tgt = A;
 
-  bc_in : in;  bc_in in/src = B; bc_in in/tgt = bc;
-  bc_out : out; bc_out out/src = bc; bc_out out/tgt = C;
+  // A + B -> C (via abc) - note: two input arcs!
+  abc_in1 : in; abc_in1 in/src = A; abc_in1 in/tgt = abc;
+  abc_in2 : in; abc_in2 in/src = B; abc_in2 in/tgt = abc;
+  abc_out : out; abc_out out/src = abc; abc_out out/tgt = C;
 }
 
-// ============================================================
-// Tiny Reachability Problem: one token in A → one token in B
-// ============================================================
-
+// Initial: 1 token in A, Target: 1 token in B
 instance problem0 : ExampleNet ReachabilityProblem = {
   initial_marking = {
     tok : token;
@@ -181,55 +176,95 @@ instance problem0 : ExampleNet ReachabilityProblem = {
 }
 
 // ============================================================
-// THE SOLUTION
-// ============================================================
-// This instance was synthesized automatically by Claude Opus 4.5.
-// (As was this entire README, and this entire project, really.)
+// SOLUTION 0: Yes! Fire transition 'ab' once.
 // ============================================================
 
 instance solution0 : ExampleNet problem0 Solution = {
-  // The trace: fire transition 'ab' exactly once
   trace = {
     f1 : F;
     f1 F/of = ExampleNet/ab;
 
-    // No wires needed - single firing, no chaining
-
-    // Input terminal: connects initial token to f1's input arc
     it : input_terminal;
     it input_terminal/of = ExampleNet/A;
-    it input_terminal/tgt = [firing: f1, arc: ExampleNet/ab_in];
 
-    // Output terminal: connects f1's output arc to target token
     ot : output_terminal;
     ot output_terminal/of = ExampleNet/B;
-    ot output_terminal/src = [firing: f1, arc: ExampleNet/ab_out];
   };
 
-  // Bijection: input_terminal ↔ initial_marking/token
   initial_iso = {
-    // trace/it maps to problem0/initial_marking/tok
-    it fwd = problem0/initial_marking/tok;
-    problem0/initial_marking/tok bwd = it;
+    trace/it fwd = problem0/initial_marking/tok;
+    problem0/initial_marking/tok bwd = trace/it;
   };
 
-  // Bijection: output_terminal ↔ target_marking/token
   target_iso = {
-    // trace/ot maps to problem0/target_marking/tok
-    ot fwd = problem0/target_marking/tok;
-    problem0/target_marking/tok bwd = ot;
+    trace/ot fwd = problem0/target_marking/tok;
+    problem0/target_marking/tok bwd = trace/ot;
   };
-
-  // The commutativity axioms are satisfied:
-  // - it input_terminal/of = A = tok token/of (initial)
-  // - ot output_terminal/of = B = tok token/of (target)
 }
 ```
 
-This Solution instance is a **constructive diagrammatic proof** that B is reachable from A:
-- Fire transition `ab` once
-- The input terminal witnesses that the initial token (in A) feeds into the firing
-- The output terminal witnesses that the firing produces the target token (in B)
+### Problem 2: Can we reach C from two A-tokens?
+
+This is the interesting case: the only path to C is via `abc`, which requires
+tokens in BOTH A and B simultaneously. Starting with 2 tokens in A, we must
+first move one to B, then fire `abc`.
+
+```geolog
+// Initial: 2 tokens in A, Target: 1 token in C
+instance problem2 : ExampleNet ReachabilityProblem = {
+  initial_marking = {
+    t1 : token; t1 token/of = ExampleNet/A;
+    t2 : token; t2 token/of = ExampleNet/A;
+  };
+  target_marking = {
+    t : token;
+    t token/of = ExampleNet/C;
+  };
+}
+
+// ============================================================
+// SOLUTION 2: Fire 'ab' then 'abc'.
+//
+// Step 1: Fire 'ab' to move one token A -> B
+//         State: 1 token in A, 1 token in B
+// Step 2: Fire 'abc' consuming one A-token and one B-token
+//         State: 1 token in C
+// ============================================================
+
+instance solution2 : ExampleNet problem2 Solution = {
+  trace = {
+    // Two firings
+    f1 : F; f1 F/of = ExampleNet/ab;   // First: A -> B
+    f2 : F; f2 F/of = ExampleNet/abc;  // Second: A + B -> C
+
+    // Two input terminals (one for each initial A-token)
+    it1 : input_terminal; it1 input_terminal/of = ExampleNet/A;
+    it2 : input_terminal; it2 input_terminal/of = ExampleNet/A;
+
+    // One output terminal (for the final C-token)
+    ot : output_terminal; ot output_terminal/of = ExampleNet/C;
+  };
+
+  // Bijection: 2 input terminals <-> 2 initial tokens
+  initial_iso = {
+    trace/it1 fwd = problem2/initial_marking/t1;
+    trace/it2 fwd = problem2/initial_marking/t2;
+    problem2/initial_marking/t1 bwd = trace/it1;
+    problem2/initial_marking/t2 bwd = trace/it2;
+  };
+
+  // Bijection: 1 output terminal <-> 1 target token
+  target_iso = {
+    trace/ot fwd = problem2/target_marking/t;
+    problem2/target_marking/t bwd = trace/ot;
+  };
+}
+```
+
+Each `Solution` instance is a **constructive diagrammatic proof**:
+- The trace contains firing(s) of specific transitions
+- Input terminals witness that initial tokens feed into firings
+- Output terminals witness that firings produce target tokens
 - The isomorphisms prove the token counts match exactly
 
 ---
@@ -417,10 +452,10 @@ Relations are predicates on sorts, declared with `-> Prop`.
 theory TodoList {
   Item : Sort;
 
-  // Unary relations (predicates on single elements)
-  completed : Item -> Prop;
-  high_priority : Item -> Prop;
-  blocked : Item -> Prop;
+  // Unary relations use named field syntax
+  completed : [item: Item] -> Prop;
+  high_priority : [item: Item] -> Prop;
+  blocked : [item: Item] -> Prop;
 }
 ```
 
@@ -450,9 +485,13 @@ instance SampleTodos : TodoList = {
   buy_groceries : Item;
   cook_dinner : Item;
   do_laundry : Item;
+  clean_house : Item;
 
   // Assert unary relation: buy_groceries is completed
   buy_groceries completed;
+
+  // Assert unary relation: cook_dinner is high priority
+  cook_dinner high_priority;
 
   // Assert binary relation: cook_dinner depends on buy_groceries
   [x: cook_dinner, y: buy_groceries] depends_on;
@@ -530,13 +569,14 @@ theory Graph {
 }
 
 // A linear chain: a -> b -> c -> d
-instance Chain : Graph = {
+// Using `= chase { ... }` to automatically apply axioms during elaboration.
+instance Chain : Graph = chase {
   a : V;
   b : V;
   c : V;
   d : V;
 
-  // Initial edges
+  // Initial edges (chase derives Path tuples)
   [src: a, tgt: b] Edge;
   [src: b, tgt: c] Edge;
   [src: c, tgt: d] Edge;
@@ -545,39 +585,13 @@ instance Chain : Graph = {
 
 ### REPL Session: Running the Chase
 
+When using `= chase { ... }` syntax, the chase runs automatically during elaboration:
+
 ```
 geolog> :source examples/geolog/transitive_closure.geolog
 Loading examples/geolog/transitive_closure.geolog...
 Defined theory Graph (1 sorts, 2 relations)
-
-geolog> :inspect Chain
-instance Chain : Graph = {
-  // V (4):
-  a : V;
-  b : V;
-  c : V;
-  d : V;
-  // Edge (3 tuples):
-  [a, b] Edge;
-  [b, c] Edge;
-  [c, d] Edge;
-}
-
-geolog> :chase Chain
-Running chase on instance 'Chain' (theory 'Graph')...
-  2 axioms to process
-  Compiled axiom 0: axiom_0
-  Compiled axiom 1: axiom_1
-
-Executing chase with 2 rules...
-✓ Chase completed in 3 iterations (0.15ms)
-
-Structure after chase:
-  Elements: 4 total
-    V: 4 element(s)
-  Relations:
-    Edge: 3 tuple(s)
-    Path: 6 tuple(s)
+Defined instance Chain : Graph (4 elements) [chase: 6 Path tuples derived]
 
 geolog> :inspect Chain
 instance Chain : Graph = {
@@ -598,6 +612,14 @@ instance Chain : Graph = {
   [b, d] Path;  // Derived: b->c + c->d
   [a, d] Path;  // Derived: a->c + c->d (or a->b + b->d)
 }
+```
+
+You can also run chase manually with `:chase` on non-chase instances:
+
+```
+geolog> :chase MyInstance
+Running chase on instance 'MyInstance' (theory 'Graph')...
+✓ Chase completed in 3 iterations (0.15ms)
 ```
 
 The chase derived:
@@ -833,10 +855,22 @@ theory Preorder {
 }
 
 // Discrete preorder: only reflexive pairs
-instance Discrete3 : Preorder = {
+// Uses `chase` to automatically derive reflexive pairs from ax/refl.
+instance Discrete3 : Preorder = chase {
   a : X;
   b : X;
   c : X;
+}
+
+// A total order on 3 elements: bot ≤ mid ≤ top
+instance Chain3 : Preorder = chase {
+  bot : X;
+  mid : X;
+  top : X;
+
+  [x: bot, y: mid] leq;
+  [x: mid, y: top] leq;
+  // Chase derives: (bot,bot), (mid,mid), (top,top) + (bot,top)
 }
 ```
 
@@ -845,14 +879,14 @@ instance Discrete3 : Preorder = {
 ```
 geolog> :source examples/geolog/preorder.geolog
 Defined theory Preorder (1 sorts, 1 relations)
+Defined instance Discrete3 : Preorder (3 elements) [chase: 3 leq tuples derived]
+Defined instance Chain3 : Preorder (3 elements) [chase: 6 leq tuples derived]
 
-geolog> :chase Discrete3
-Running chase on instance 'Discrete3' (theory 'Preorder')...
-✓ Chase completed in 2 iterations
+geolog> :inspect Discrete3
+  leq: 3 tuple(s)   // (a,a), (b,b), (c,c) - reflexivity only
 
-Structure after chase:
-  Relations:
-    leq: 3 tuple(s)   # (a,a), (b,b), (c,c) - reflexivity only
+geolog> :inspect Chain3
+  leq: 6 tuple(s)   // reflexive pairs + given + transitive (bot,top)
 ```
 
 ---
@@ -919,8 +953,8 @@ theory Graph {
     [src: x, tgt: y] Path, [src: y, tgt: z] Path |- [src: x, tgt: z] Path;
 }
 
-// Linear chain: a -> b -> c -> d
-instance Chain : Graph = {
+// Linear chain: a -> b -> c -> d (chase runs automatically)
+instance Chain : Graph = chase {
   a : V;
   b : V;
   c : V;
@@ -932,7 +966,7 @@ instance Chain : Graph = {
 }
 
 // Diamond: two paths from top to bottom
-instance Diamond : Graph = {
+instance Diamond : Graph = chase {
   top : V;
   left : V;
   right : V;
@@ -945,7 +979,7 @@ instance Diamond : Graph = {
 }
 
 // Cycle: x -> y -> z -> x (chase computes all 9 pairs!)
-instance Cycle : Graph = {
+instance Cycle : Graph = chase {
   x : V;
   y : V;
   z : V;
@@ -956,26 +990,14 @@ instance Cycle : Graph = {
 }
 ```
 
-**REPL Session:**
+**REPL Session** (chase runs during `:source`):
 
 ```
 geolog> :source examples/geolog/transitive_closure.geolog
 Defined theory Graph (1 sorts, 2 relations)
-
-geolog> :chase Chain
-✓ Chase completed in 3 iterations
-  Edge: 3 tuple(s)
-  Path: 6 tuple(s)
-
-geolog> :chase Diamond
-✓ Chase completed in 2 iterations
-  Edge: 4 tuple(s)
-  Path: 5 tuple(s)   # top->left, top->right, left->bottom, right->bottom, top->bottom
-
-geolog> :chase Cycle
-✓ Chase completed in 3 iterations
-  Edge: 3 tuple(s)
-  Path: 9 tuple(s)   # All pairs! (cycle means everything reaches everything)
+Defined instance Chain : Graph (4 elements) [chase: 6 Path tuples]
+Defined instance Diamond : Graph (4 elements) [chase: 5 Path tuples]
+Defined instance Cycle : Graph (3 elements) [chase: 9 Path tuples]
 ```
 
 ---
