@@ -452,10 +452,10 @@ Relations are predicates on sorts, declared with `-> Prop`.
 theory TodoList {
   Item : Sort;
 
-  // Unary relations use named field syntax
-  completed : [item: Item] -> Prop;
-  high_priority : [item: Item] -> Prop;
-  blocked : [item: Item] -> Prop;
+  // Unary relations: simple arrow syntax
+  completed : Item -> Prop;
+  high_priority : Item -> Prop;
+  blocked : Item -> Prop;
 }
 ```
 
