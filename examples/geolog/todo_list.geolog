@@ -7,16 +7,16 @@ theory TodoList {
   // The sort of todo items
   Item : Sort;
 
-  // Unary relations for item status (using named field syntax)
-  completed : [item: Item] -> Prop;      // Item has been completed
-  high_priority : [item: Item] -> Prop;  // Item is high priority
-  blocked : [item: Item] -> Prop;        // Item is blocked on something
+  // Unary relations for item status
+  completed : [item: Item] -> Prop;
+  high_priority : [item: Item] -> Prop;
+  blocked : [item: Item] -> Prop;
 
   // Binary relation for dependencies
-  depends_on : [x: Item, y: Item] -> Prop;  // x depends on y (x is blocked until y is done)
+  depends_on : [x: Item, y: Item] -> Prop;  // x depends on y
 
-  // Axiom: if an item depends on another item, either the dependent is blocked
-  // or the dependency is completed. This captures: "x can't be unblocked until y is done"
+  // Axiom: if an item depends on another, either the dependent is blocked
+  // or the dependency is completed
   ax/dep_blocked : forall x : Item, y : Item.
     [x: x, y: y] depends_on |- [item: x] blocked \/ [item: y] completed;
 }
