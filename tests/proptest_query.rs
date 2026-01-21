@@ -588,6 +588,7 @@ mod to_relalg_tests {
 mod chase_proptest {
     use super::*;
     use geolog::core::{Context, DerivedSort, Formula, RelationStorage, Sequent, Signature, Structure, Term, Theory, VecRelation};
+    use geolog::cc::CongruenceClosure;
     use geolog::query::chase::{chase_step, chase_fixpoint};
     use geolog::universe::Universe;
 
@@ -621,7 +622,8 @@ mod chase_proptest {
             let theory = simple_relation_theory();
 
             // Empty axioms should not change anything
-            let changed = chase_step(&[], &mut structure, &mut universe, &theory.signature).unwrap();
+            let mut cc = CongruenceClosure::new();
+            let changed = chase_step(&[], &mut structure, &mut cc, &mut universe, &theory.signature).unwrap();
             prop_assert!(!changed);
         }
 
@@ -650,7 +652,8 @@ mod chase_proptest {
             };
 
             // First chase step should add elements
-            let changed = chase_step(&[axiom.clone()], &mut structure, &mut universe, &theory.signature).unwrap();
+            let mut cc = CongruenceClosure::new();
+            let changed = chase_step(&[axiom.clone()], &mut structure, &mut cc, &mut universe, &theory.signature).unwrap();
 
             if num_elements > 0 {
                 prop_assert!(changed);
@@ -658,7 +661,7 @@ mod chase_proptest {
             }
 
             // Second chase step should not change anything
-            let changed2 = chase_step(&[axiom], &mut structure, &mut universe, &theory.signature).unwrap();
+            let changed2 = chase_step(&[axiom], &mut structure, &mut cc, &mut universe, &theory.signature).unwrap();
             prop_assert!(!changed2);
         }
 

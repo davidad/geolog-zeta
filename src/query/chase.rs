@@ -46,9 +46,10 @@
 
 use std::collections::HashMap;
 
+use crate::cc::{CongruenceClosure, EquationReason};
 use crate::core::{DerivedSort, Formula, RelationStorage, Sequent, Signature, Structure, Term};
 use crate::id::{NumericId, Slid};
-use crate::tensor::{compile_formula, CompileContext};
+use crate::tensor::{check_sequent, CheckResult};
 use crate::universe::Universe;
 
 /// Error type for chase operations
@@ -92,35 +93,41 @@ pub type Binding = HashMap<String, Slid>;
 pub fn chase_step(
     axioms: &[Sequent],
     structure: &mut Structure,
+    cc: &mut CongruenceClosure,
     universe: &mut Universe,
     sig: &Signature,
 ) -> Result<bool, ChaseError> {
     let mut changed = false;
 
     for axiom in axioms {
-        changed |= fire_axiom(axiom, structure, universe, sig)?;
+        changed |= fire_axiom(axiom, structure, cc, universe, sig)?;
     }
 
     Ok(changed)
 }
 
-/// Fire a single axiom: evaluate premise, fire conclusion for each match.
+/// Fire a single axiom: find violations using tensor system, fire conclusion only for violations.
+///
+/// This is the key to correct chase semantics: we only create fresh elements when
+/// the tensor system confirms there is NO existing witness for the conclusion.
 fn fire_axiom(
     axiom: &Sequent,
     structure: &mut Structure,
+    cc: &mut CongruenceClosure,
     universe: &mut Universe,
     sig: &Signature,
 ) -> Result<bool, ChaseError> {
-    // Compile premise using tensor system
-    let ctx = CompileContext::from_context(&axiom.context);
-
     // Use catch_unwind to handle unsupported formula patterns gracefully
-    let compile_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        compile_formula(&axiom.premise, &ctx, structure, sig)
+    let check_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        check_sequent(axiom, structure, sig)
     }));
 
-    let (premise_expr, premise_vars) = match compile_result {
-        Ok(result) => result,
+    let violations = match check_result {
+        Ok(CheckResult::Satisfied) => {
+            // Axiom is already satisfied - nothing to fire
+            return Ok(false);
+        }
+        Ok(CheckResult::Violated(vs)) => vs,
         Err(_) => {
             // Tensor compilation panicked (unsupported pattern)
             // Skip this axiom silently
@@ -128,11 +135,7 @@ fn fire_axiom(
         }
     };
 
-    // Materialize to get all satisfying assignments (as index tuples)
-    let premise_tensor = premise_expr.materialize();
-
-    if premise_tensor.is_empty() {
-        // No matches - nothing to fire
+    if violations.is_empty() {
         return Ok(false);
     }
 
@@ -140,12 +143,6 @@ fn fire_axiom(
     let index_to_slid: Vec<Vec<Slid>> = axiom.context.vars.iter()
         .map(|(_, sort)| carrier_to_slid_vec(structure, sort))
         .collect();
-
-    // Handle special case: premise is scalar (Formula::True) but we have context vars
-    // In this case, we need to enumerate all combinations of context variables
-    if premise_vars.is_empty() && !axiom.context.vars.is_empty() {
-        return fire_axiom_all_combinations(axiom, structure, universe, sig, &index_to_slid);
-    }
 
     // Map from variable name to its position in the context
     let var_to_ctx_idx: HashMap<&str, usize> = axiom.context.vars.iter()
@@ -155,26 +152,22 @@ fn fire_axiom(
 
     let mut changed = false;
 
-    // For each satisfying tuple, fire the conclusion
-    for tuple in premise_tensor.iter() {
-        // Build binding: variable name -> Slid
-        let binding: Binding = premise_vars.iter()
+    // Fire conclusion ONLY for violations (where premise holds but conclusion doesn't)
+    for violation in violations {
+        // Build binding from violation assignment
+        let binding: Binding = violation.variable_names.iter()
             .enumerate()
             .filter_map(|(tensor_idx, var_name)| {
-                // Find this variable in the context
                 let ctx_idx = var_to_ctx_idx.get(var_name.as_str())?;
                 let slid_vec = &index_to_slid[*ctx_idx];
-
-                // Map tensor index to Slid
-                let tensor_val = tuple.get(tensor_idx)?;
+                let tensor_val = violation.assignment.get(tensor_idx)?;
                 let slid = slid_vec.get(*tensor_val)?;
-
                 Some((var_name.clone(), *slid))
             })
             .collect();
 
-        // Fire conclusion with this binding (skip on unsupported patterns)
-        match fire_conclusion(&axiom.conclusion, &binding, structure, universe, sig) {
+        // Fire conclusion with this binding
+        match fire_conclusion(&axiom.conclusion, &binding, structure, cc, universe, sig) {
             Ok(c) => changed |= c,
             Err(_) => {
                 // Unsupported conclusion pattern - skip this axiom silently
@@ -184,62 +177,6 @@ fn fire_axiom(
     }
 
     Ok(changed)
-}
-
-/// Fire an axiom with True premise by enumerating all combinations of context variables
-fn fire_axiom_all_combinations(
-    axiom: &Sequent,
-    structure: &mut Structure,
-    universe: &mut Universe,
-    sig: &Signature,
-    index_to_slid: &[Vec<Slid>],
-) -> Result<bool, ChaseError> {
-    // Get domain sizes for each context variable
-    let domain_sizes: Vec<usize> = index_to_slid.iter().map(|v| v.len()).collect();
-
-    // If any domain is empty, nothing to do
-    if domain_sizes.iter().any(|&s| s == 0) {
-        return Ok(false);
-    }
-
-    let mut changed = false;
-
-    // Enumerate all combinations (Cartesian product)
-    let mut indices = vec![0usize; domain_sizes.len()];
-    loop {
-        // Build binding for current indices
-        let binding: Binding = axiom.context.vars.iter()
-            .enumerate()
-            .map(|(i, (name, _))| {
-                let slid = index_to_slid[i][indices[i]];
-                (name.clone(), slid)
-            })
-            .collect();
-
-        // Fire conclusion (skip on unsupported patterns)
-        match fire_conclusion(&axiom.conclusion, &binding, structure, universe, sig) {
-            Ok(c) => changed |= c,
-            Err(_) => {
-                // Unsupported conclusion pattern - skip this axiom silently
-                return Ok(false);
-            }
-        }
-
-        // Increment indices (odometer style)
-        let mut i = indices.len();
-        loop {
-            if i == 0 {
-                // All combinations exhausted
-                return Ok(changed);
-            }
-            i -= 1;
-            indices[i] += 1;
-            if indices[i] < domain_sizes[i] {
-                break;
-            }
-            indices[i] = 0;
-        }
-    }
 }
 
 /// Convert a carrier to a Vec of Slids for index→Slid lookup
@@ -265,6 +202,7 @@ fn fire_conclusion(
     formula: &Formula,
     binding: &Binding,
     structure: &mut Structure,
+    cc: &mut CongruenceClosure,
     universe: &mut Universe,
     sig: &Signature,
 ) -> Result<bool, ChaseError> {
@@ -280,8 +218,22 @@ fn fire_conclusion(
             // Add tuple to relation
             let tuple = eval_term_to_tuple(term, binding, structure)?;
 
-            // Check if already present
-            if structure.relations[*rel_id].contains(&tuple) {
+            // Check if already present (using canonical representatives)
+            let canonical_tuple: Vec<Slid> = tuple.iter()
+                .map(|&s| cc.canonical(s))
+                .collect();
+
+            // Check if a canonically-equivalent tuple exists
+            let exists = structure.relations[*rel_id].iter().any(|existing| {
+                if existing.len() != canonical_tuple.len() {
+                    return false;
+                }
+                existing.iter().zip(canonical_tuple.iter()).all(|(e, c)| {
+                    cc.canonical(*e) == *c
+                })
+            });
+
+            if exists {
                 return Ok(false);
             }
 
@@ -292,7 +244,7 @@ fn fire_conclusion(
         Formula::Conj(formulas) => {
             let mut changed = false;
             for f in formulas {
-                changed |= fire_conclusion(f, binding, structure, universe, sig)?;
+                changed |= fire_conclusion(f, binding, structure, cc, universe, sig)?;
             }
             Ok(changed)
         }
@@ -302,17 +254,17 @@ fn fire_conclusion(
             // (sound but potentially adds more facts than necessary)
             let mut changed = false;
             for f in formulas {
-                changed |= fire_conclusion(f, binding, structure, universe, sig)?;
+                changed |= fire_conclusion(f, binding, structure, cc, universe, sig)?;
             }
             Ok(changed)
         }
 
         Formula::Eq(left, right) => {
-            fire_equality(left, right, binding, structure, sig)
+            fire_equality(left, right, binding, structure, cc, sig)
         }
 
         Formula::Exists(var_name, sort, body) => {
-            fire_existential(var_name, sort, body, binding, structure, universe, sig)
+            fire_existential(var_name, sort, body, binding, structure, cc, universe, sig)
         }
     }
 }
@@ -391,6 +343,7 @@ fn fire_equality(
     right: &Term,
     binding: &Binding,
     structure: &mut Structure,
+    cc: &mut CongruenceClosure,
     sig: &Signature,
 ) -> Result<bool, ChaseError> {
     match (left, right) {
@@ -408,12 +361,17 @@ fn fire_equality(
 
                     // Check if already defined
                     if let Some(existing) = structure.get_function(*func_idx, local_id) {
-                        if existing == value_slid {
-                            return Ok(false); // Already set to same value
+                        // Check if values are equal (using CC)
+                        if cc.are_equal(existing, value_slid) {
+                            return Ok(false); // Already set to equivalent value
                         }
-                        return Err(ChaseError::FunctionConflict(
-                            format!("Function {} already defined at {:?}", func_idx, arg_slid)
-                        ));
+                        // Function conflict: add equation to CC instead of error
+                        // (this is how we propagate equalities through functions)
+                        cc.add_equation(existing, value_slid, EquationReason::FunctionConflict {
+                            func_id: *func_idx,
+                            domain: arg_slid,
+                        });
+                        return Ok(true); // Changed (added equation)
                     }
 
                     structure.define_function(*func_idx, arg_slid, value_slid)
@@ -433,7 +391,7 @@ fn fire_equality(
                         // Check if already defined
                         if let Some(existing) = structure.get_function_product_codomain(*func_idx, local_id) {
                             let all_match = codomain_values.iter().all(|(name, expected)| {
-                                existing.iter().any(|(n, v)| n == name && v == expected)
+                                existing.iter().any(|(n, v)| n == name && cc.are_equal(*v, *expected))
                             });
                             if all_match {
                                 return Ok(false);
@@ -455,19 +413,20 @@ fn fire_equality(
             }
         }
 
-        // x = y (variable equality)
+        // x = y (variable equality) - add to congruence closure!
         (Term::Var(name1, _), Term::Var(name2, _)) => {
             let slid1 = binding.get(name1)
                 .ok_or_else(|| ChaseError::UnboundVariable(name1.clone()))?;
             let slid2 = binding.get(name2)
                 .ok_or_else(|| ChaseError::UnboundVariable(name2.clone()))?;
 
-            if slid1 == slid2 {
-                Ok(false) // Already equal
+            // Check if already equal in CC
+            if cc.are_equal(*slid1, *slid2) {
+                Ok(false) // Already equivalent
             } else {
-                // Would need union-find for proper unification
-                // For now, treat as constraint that doesn't fire
-                Ok(false)
+                // Add equation to congruence closure
+                cc.add_equation(*slid1, *slid2, EquationReason::ChaseConclusion);
+                Ok(true) // Changed!
             }
         }
 
@@ -477,16 +436,88 @@ fn fire_equality(
     }
 }
 
+/// Check if a formula is satisfied given a variable binding.
+/// This is used for witness search in existential conclusions.
+/// Uses CC for canonical relation lookups and equality checks.
+fn check_formula_satisfied(
+    formula: &Formula,
+    binding: &Binding,
+    structure: &Structure,
+    cc: &mut CongruenceClosure,
+) -> bool {
+    match formula {
+        Formula::True => true,
+        Formula::False => false,
+
+        Formula::Rel(rel_id, term) => {
+            // Check if the tuple is in the relation (using canonical representatives)
+            if let Ok(tuple) = eval_term_to_tuple(term, binding, structure) {
+                let canonical_tuple: Vec<Slid> = tuple.iter()
+                    .map(|&s| cc.canonical(s))
+                    .collect();
+
+                // Check if a canonically-equivalent tuple exists
+                structure.relations[*rel_id].iter().any(|existing| {
+                    if existing.len() != canonical_tuple.len() {
+                        return false;
+                    }
+                    existing.iter().zip(canonical_tuple.iter()).all(|(e, c)| {
+                        cc.canonical(*e) == *c
+                    })
+                })
+            } else {
+                false // Couldn't evaluate term (unbound variable)
+            }
+        }
+
+        Formula::Conj(fs) => {
+            fs.iter().all(|f| check_formula_satisfied(f, binding, structure, cc))
+        }
+
+        Formula::Disj(fs) => {
+            fs.iter().any(|f| check_formula_satisfied(f, binding, structure, cc))
+        }
+
+        Formula::Eq(t1, t2) => {
+            // Check if both terms evaluate to equivalent values (using CC)
+            match (eval_term_to_slid(t1, binding, structure), eval_term_to_slid(t2, binding, structure)) {
+                (Ok(s1), Ok(s2)) => cc.are_equal(s1, s2),
+                _ => false // Couldn't evaluate (unbound variable or undefined function)
+            }
+        }
+
+        Formula::Exists(inner_var, inner_sort, inner_body) => {
+            // Check if any witness exists in the carrier
+            let DerivedSort::Base(sort_idx) = inner_sort else {
+                return false; // Product sorts not supported
+            };
+
+            structure.carriers[*sort_idx].iter().any(|w_u64| {
+                let witness = Slid::from_usize(w_u64 as usize);
+                let mut extended = binding.clone();
+                extended.insert(inner_var.clone(), witness);
+                check_formula_satisfied(inner_body, &extended, structure, cc)
+            })
+        }
+    }
+}
+
 /// Fire an existential in conclusion: ∃x:S. body
 /// This creates a new element if no witness exists.
+///
+/// The algorithm:
+/// 1. Search the carrier of S for an existing witness w where body[x↦w] holds
+/// 2. If found, do nothing (witness exists)
+/// 3. If not found, create a fresh element w and fire body as conclusion with x↦w
 fn fire_existential(
     var_name: &str,
     sort: &DerivedSort,
     body: &Formula,
     binding: &Binding,
     structure: &mut Structure,
+    cc: &mut CongruenceClosure,
     universe: &mut Universe,
-    _sig: &Signature,
+    sig: &Signature,
 ) -> Result<bool, ChaseError> {
     let DerivedSort::Base(sort_idx) = sort else {
         return Err(ChaseError::UnsupportedConclusion(
@@ -494,143 +525,165 @@ fn fire_existential(
         ));
     };
 
-    // Check for "∃b. f(a) = b" pattern (EnsureFunction)
-    if let Some((func_idx, arg_slid)) = extract_ensure_function_pattern(body, var_name, binding, structure)? {
-        let local_id = structure.sort_local_id(arg_slid);
-
-        // Check if f(arg) is already defined
-        if structure.get_function(func_idx, local_id).is_some() {
-            return Ok(false); // Already defined
-        }
-
-        // Create new element and define f(arg) = new_elem
-        let (new_elem, _) = structure.add_element(universe, *sort_idx);
-        structure.define_function(func_idx, arg_slid, new_elem)
-            .map_err(|e| ChaseError::FunctionConflict(format!("{:?}", e)))?;
-
-        return Ok(true);
-    }
-
-    // General case: check if witness exists, create if not
-    // Extract function bindings from body: f(new_var) = expr
-    let function_bindings = extract_function_bindings(body, var_name, binding, structure)?;
-
-    // Search for existing witness
+    // Search for existing witness by checking if body is satisfied (using CC for canonical lookups)
     let carrier = &structure.carriers[*sort_idx];
-    let witness_exists = carrier.iter().any(|elem_u64| {
+    let witness_found = carrier.iter().any(|elem_u64| {
         let elem_slid = Slid::from_usize(elem_u64 as usize);
-        let local_id = structure.sort_local_id(elem_slid);
-
-        function_bindings.iter().all(|&(func_idx, expected)| {
-            structure.get_function(func_idx, local_id) == Some(expected)
-        })
+        let mut extended_binding = binding.clone();
+        extended_binding.insert(var_name.to_string(), elem_slid);
+        check_formula_satisfied(body, &extended_binding, structure, cc)
     });
 
-    if witness_exists {
-        return Ok(false);
+    if witness_found {
+        return Ok(false); // Witness already exists, nothing to do
     }
 
-    // Create new element with bindings
+    // No witness exists - create a fresh element
     let (new_elem, _) = structure.add_element(universe, *sort_idx);
 
-    for (func_idx, result) in function_bindings {
-        structure.define_function(func_idx, new_elem, result)
-            .map_err(|e| ChaseError::FunctionConflict(format!("{:?}", e)))?;
-    }
+    // Fire body as conclusion with the new element bound to var_name
+    let mut extended_binding = binding.clone();
+    extended_binding.insert(var_name.to_string(), new_elem);
+
+    // Use fire_conclusion to make the body true
+    // This handles relations, equalities, conjunctions uniformly
+    fire_conclusion(body, &extended_binding, structure, cc, universe, sig)?;
 
     Ok(true)
 }
 
-/// Check for "∃b. f(a) = b" pattern where b is the existential variable
-/// and a is bound. Returns Some((func_idx, arg_slid)) if pattern matches.
-fn extract_ensure_function_pattern(
-    formula: &Formula,
-    new_var: &str,
-    binding: &Binding,
-    structure: &Structure,
-) -> Result<Option<(usize, Slid)>, ChaseError> {
-    match formula {
-        Formula::Eq(left, right) => {
-            // Check f(arg) = new_var
-            if let (Term::App(func_idx, arg), Term::Var(var_name, _)) = (left, right) {
-                if var_name == new_var {
-                    let arg_slid = eval_term_to_slid(arg, binding, structure)?;
-                    return Ok(Some((*func_idx, arg_slid)));
-                }
-            }
-            // Check new_var = f(arg)
-            if let (Term::Var(var_name, _), Term::App(func_idx, arg)) = (left, right) {
-                if var_name == new_var {
-                    let arg_slid = eval_term_to_slid(arg, binding, structure)?;
-                    return Ok(Some((*func_idx, arg_slid)));
-                }
-            }
-            Ok(None)
+/// Run the chase algorithm until a fixpoint is reached, with congruence closure.
+///
+/// Repeatedly applies [`chase_step`] and propagates equations until no more changes occur.
+///
+/// # Arguments
+///
+/// * `axioms` - The sequents (axioms) to apply
+/// * `structure` - The structure to modify
+/// * `cc` - Congruence closure for equality reasoning
+/// * `universe` - The universe for element creation
+/// * `sig` - The signature
+/// * `max_iterations` - Safety limit to prevent infinite loops
+///
+/// # Returns
+///
+/// The number of iterations taken to reach the fixpoint.
+pub fn chase_fixpoint_with_cc(
+    axioms: &[Sequent],
+    structure: &mut Structure,
+    cc: &mut CongruenceClosure,
+    universe: &mut Universe,
+    sig: &Signature,
+    max_iterations: usize,
+) -> Result<usize, ChaseError> {
+    let mut iterations = 0;
+
+    loop {
+        if iterations >= max_iterations {
+            return Err(ChaseError::MaxIterationsExceeded(max_iterations));
         }
-        Formula::Conj(fs) if fs.len() == 1 => {
-            extract_ensure_function_pattern(&fs[0], new_var, binding, structure)
+
+        // Fire axiom conclusions
+        let axiom_changed = chase_step(axioms, structure, cc, universe, sig)?;
+
+        // Propagate pending equations in CC
+        let eq_changed = propagate_equations(structure, cc, sig);
+
+        iterations += 1;
+
+        if !axiom_changed && !eq_changed {
+            break;
         }
-        _ => Ok(None)
     }
+
+    Ok(iterations)
 }
 
-/// Extract function bindings from an existential body: f(new_var) = expr
-/// Returns (func_idx, result_slid) pairs.
-fn extract_function_bindings(
-    formula: &Formula,
-    new_var: &str,
-    binding: &Binding,
+/// Propagate pending equations in the congruence closure.
+///
+/// This merges equivalence classes and detects function conflicts
+/// (which add new equations via congruence).
+fn propagate_equations(
     structure: &Structure,
-) -> Result<Vec<(usize, Slid)>, ChaseError> {
-    let mut bindings = Vec::new();
-    extract_function_bindings_inner(formula, new_var, binding, structure, &mut bindings)?;
-    Ok(bindings)
-}
+    cc: &mut CongruenceClosure,
+    sig: &Signature,
+) -> bool {
+    let mut changed = false;
 
-fn extract_function_bindings_inner(
-    formula: &Formula,
-    new_var: &str,
-    binding: &Binding,
-    structure: &Structure,
-    bindings: &mut Vec<(usize, Slid)>,
-) -> Result<(), ChaseError> {
-    match formula {
-        Formula::Eq(left, right) => {
-            // f(new_var) = result
-            if let Term::App(func_idx, arg) = left {
-                if is_var(arg, new_var) {
-                    let result_slid = eval_term_to_slid(right, binding, structure)?;
-                    bindings.push((*func_idx, result_slid));
+    while let Some(eq) = cc.pop_pending() {
+        // Merge the equivalence classes
+        if cc.merge(eq.lhs, eq.rhs) {
+            changed = true;
+
+            // Check for function conflicts (congruence propagation)
+            // If f(a) = x and f(b) = y, and a = b (just merged), then x = y
+            for func_id in 0..sig.functions.len() {
+                if func_id >= structure.functions.len() {
+                    continue;
+                }
+
+                let lhs_local = structure.sort_local_id(eq.lhs);
+                let rhs_local = structure.sort_local_id(eq.rhs);
+
+                let lhs_val = structure.get_function(func_id, lhs_local);
+                let rhs_val = structure.get_function(func_id, rhs_local);
+
+                if let (Some(lv), Some(rv)) = (lhs_val, rhs_val) {
+                    if !cc.are_equal(lv, rv) {
+                        // Congruence: f(a) = lv, f(b) = rv, a = b implies lv = rv
+                        cc.add_equation(lv, rv, EquationReason::Congruence { func_id });
+                    }
                 }
             }
-            // result = f(new_var)
-            if let Term::App(func_idx, arg) = right {
-                if is_var(arg, new_var) {
-                    let result_slid = eval_term_to_slid(left, binding, structure)?;
-                    bindings.push((*func_idx, result_slid));
-                }
-            }
-            Ok(())
         }
-        Formula::Conj(fs) => {
-            for f in fs {
-                extract_function_bindings_inner(f, new_var, binding, structure, bindings)?;
-            }
-            Ok(())
-        }
-        _ => Ok(())
     }
+
+    changed
 }
 
-/// Check if term is a specific variable
-fn is_var(term: &Term, var_name: &str) -> bool {
-    matches!(term, Term::Var(n, _) if n == var_name)
+/// Canonicalize the structure based on the congruence closure.
+///
+/// After the chase, some elements may have been merged in the CC but the
+/// structure still contains distinct elements. This function:
+/// 1. Removes non-canonical elements from carriers
+/// 2. Replaces relation tuples with their canonical forms
+fn canonicalize_structure(structure: &mut Structure, cc: &mut CongruenceClosure) {
+    use crate::core::{RelationStorage, VecRelation};
+
+    // 1. Canonicalize carriers: keep only canonical representatives
+    for carrier in &mut structure.carriers {
+        let elements: Vec<u64> = carrier.iter().collect();
+        carrier.clear();
+        for elem in elements {
+            let slid = Slid::from_usize(elem as usize);
+            let canonical = cc.canonical(slid);
+            // Only keep if this element is its own canonical representative
+            if canonical == slid {
+                carrier.insert(elem);
+            }
+        }
+    }
+
+    // 2. Canonicalize relations: replace tuples with canonical forms
+    for rel in &mut structure.relations {
+        let canonical_tuples: Vec<Vec<Slid>> = rel.iter()
+            .map(|tuple| tuple.iter().map(|&s| cc.canonical(s)).collect())
+            .collect();
+
+        let arity = rel.arity();
+        let mut new_rel = VecRelation::new(arity);
+        for tuple in canonical_tuples {
+            new_rel.insert(tuple);
+        }
+
+        *rel = new_rel;
+    }
 }
 
 /// Run the chase algorithm until a fixpoint is reached.
 ///
-/// Repeatedly applies [`chase_step`] until no more changes occur, or until
-/// `max_iterations` is reached.
+/// This is a convenience wrapper that creates a fresh congruence closure.
+/// Use [`chase_fixpoint_with_cc`] if you need to provide your own CC.
 ///
 /// # Arguments
 ///
@@ -650,20 +703,11 @@ pub fn chase_fixpoint(
     sig: &Signature,
     max_iterations: usize,
 ) -> Result<usize, ChaseError> {
-    let mut iterations = 0;
+    let mut cc = CongruenceClosure::new();
+    let iterations = chase_fixpoint_with_cc(axioms, structure, &mut cc, universe, sig, max_iterations)?;
 
-    loop {
-        if iterations >= max_iterations {
-            return Err(ChaseError::MaxIterationsExceeded(max_iterations));
-        }
-
-        let changed = chase_step(axioms, structure, universe, sig)?;
-        iterations += 1;
-
-        if !changed {
-            break;
-        }
-    }
+    // Canonicalize structure to reflect CC merges before returning
+    canonicalize_structure(structure, &mut cc);
 
     Ok(iterations)
 }

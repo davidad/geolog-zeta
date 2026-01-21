@@ -64,24 +64,18 @@ theory Category {
     [a: x, f: i1] id, [a: x, f: i2] id |- i1 = i2;
 }
 
-// A simple category instance: the "walking arrow" (two objects, one non-identity morphism)
+// The "walking arrow" category: A --f--> B
+//
+// Now we can declare just objects and non-identity morphisms!
+// The chase derives:
+// - Identity morphisms for each object (via ax/id_exists)
+// - Composition facts (via ax/comp_exists)
+// - Source/target for compositions (via ax/comp_src, ax/comp_tgt)
 instance Arrow : Category = chase {
   // Objects
   A : ob;
   B : ob;
 
-  // Morphisms: id_A, id_B, and f : A -> B
-  idA : mor; idA src = A; idA tgt = A;
-  idB : mor; idB src = B; idB tgt = B;
+  // Non-identity morphism
   f : mor; f src = A; f tgt = B;
-
-  // Identity relations
-  [a: A, f: idA] id;
-  [a: B, f: idB] id;
-
-  // Composition facts (chase should derive these from axioms, but we seed them)
-  [f: idA, g: idA, h: idA] comp;
-  [f: idB, g: idB, h: idB] comp;
-  [f: idA, g: f, h: f] comp;
-  [f: f, g: idB, h: f] comp;
 }
