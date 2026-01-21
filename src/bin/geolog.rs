@@ -276,6 +276,7 @@ fn handle_geolog(state: &mut ReplState, source: &str) {
                         num_sorts,
                         num_functions,
                         num_relations,
+                        num_axioms,
                     } => {
                         let mut parts = vec![format!("{} sorts", num_sorts)];
                         if num_functions > 0 {
@@ -283,6 +284,9 @@ fn handle_geolog(state: &mut ReplState, source: &str) {
                         }
                         if num_relations > 0 {
                             parts.push(format!("{} relations", num_relations));
+                        }
+                        if num_axioms > 0 {
+                            parts.push(format!("{} axioms", num_axioms));
                         }
                         println!("Defined theory {} ({})", name, parts.join(", "));
                     }
@@ -992,6 +996,7 @@ fn handle_extend(state: &ReplState, instance_name: &str, theory_name: &str, budg
 
 /// Handle :chase command - run chase algorithm on instance's theory axioms
 fn handle_chase(state: &mut ReplState, instance_name: &str, max_iterations: Option<usize>) {
+    use geolog::core::RelationStorage;
     use geolog::query::chase::chase_fixpoint;
 
     // Get the instance
@@ -1023,6 +1028,12 @@ fn handle_chase(state: &mut ReplState, instance_name: &str, max_iterations: Opti
     println!("Running chase on instance '{}' (theory '{}')...", instance_name, entry.theory_name);
     println!("  {} axiom(s) to process", axioms.len());
 
+    // Snapshot relation tuple counts before chase
+    let tuple_counts_before: Vec<usize> = entry.structure.relations
+        .iter()
+        .map(|r| r.len())
+        .collect();
+
     // Run the chase (tensor-backed: handles existentials in premises, etc.)
     let max_iter = max_iterations.unwrap_or(100);
     let start = std::time::Instant::now();
@@ -1033,11 +1044,146 @@ fn handle_chase(state: &mut ReplState, instance_name: &str, max_iterations: Opti
             println!("✓ Chase completed in {} iterations ({:.2}ms)", iterations, elapsed.as_secs_f64() * 1000.0);
             println!("\nStructure after chase:");
             print_structure_summary(&entry.structure, sig);
+
+            // Check if any new tuples were added
+            let tuple_counts_after: Vec<usize> = entry.structure.relations
+                .iter()
+                .map(|r| r.len())
+                .collect();
+            let tuples_added = tuple_counts_before.iter()
+                .zip(tuple_counts_after.iter())
+                .any(|(before, after)| after > before);
+
+            // Save info needed for persistence before dropping entry borrow
+            let theory_name_owned = entry.theory_name.clone();
+
+            if tuples_added {
+                // Persist the chase results via columnar batches
+                // Note: This persists ALL current tuples, not just the delta.
+                // A more sophisticated implementation would track the delta.
+                if let Err(e) = persist_chase_results(
+                    state,
+                    instance_name,
+                    &theory_name_owned,
+                ) {
+                    eprintln!("Warning: Failed to persist chase results: {}", e);
+                } else {
+                    println!("Chase results persisted to store.");
+                }
+            }
         }
         Err(e) => {
             eprintln!("✗ Chase error: {}", e);
         }
     }
+}
+
+/// Persist chase results (relation tuples) to columnar batches as IDB data.
+///
+/// IDB batches are persisted locally but NOT transmitted over the wire.
+/// Recipients recompute IDB by running the chase on received EDB patches.
+fn persist_chase_results(
+    state: &mut ReplState,
+    instance_name: &str,
+    theory_name: &str,
+) -> Result<(), String> {
+    use geolog::core::RelationStorage;
+    use geolog::id::{Slid, Uuid};
+    use geolog::store::columnar::{InstanceDataBatch, RelationTupleBatch};
+
+    let entry = state.instances.get(instance_name).ok_or("Instance not found")?;
+    let structure = &entry.structure;
+
+    // Resolve the instance in the Store
+    let (instance_slid, _) = state.store.resolve_name(instance_name)
+        .ok_or_else(|| format!("Instance '{}' not found in store", instance_name))?;
+
+    // Get theory to map relation indices to Slids
+    let (theory_slid, _) = state.store.resolve_name(theory_name)
+        .ok_or_else(|| format!("Theory '{}' not found in store", theory_name))?;
+
+    let rel_infos = state.store.query_theory_rels(theory_slid);
+
+    // Build mapping from relation index to Rel UUID
+    let rel_idx_to_uuid: std::collections::HashMap<usize, Uuid> = rel_infos
+        .iter()
+        .enumerate()
+        .map(|(idx, info)| (idx, state.store.get_element_uuid(info.slid)))
+        .collect();
+
+    // Build mapping from Structure Slid to element UUID
+    // We need to find the Elem in GeologMeta that corresponds to each Structure element
+    let elem_infos = state.store.query_instance_elems(instance_slid);
+    let mut struct_slid_to_uuid: std::collections::HashMap<Slid, Uuid> = std::collections::HashMap::new();
+
+    // Map element names to UUIDs
+    for info in &elem_infos {
+        // Try to find the structure Slid by name
+        if let Some(&struct_slid) = entry.slid_to_name.iter()
+            .find(|(_, name)| *name == &info.name)
+            .map(|(slid, _)| slid)
+        {
+            struct_slid_to_uuid.insert(struct_slid, state.store.get_element_uuid(info.slid));
+        }
+    }
+
+    // For chase-created elements that might not have names in slid_to_name,
+    // use the structure's UUID mapping
+    for slid_u64 in structure.luids.iter().map(|_| 0).enumerate().map(|(i, _)| i) {
+        let slid = Slid::from_usize(slid_u64);
+        if !struct_slid_to_uuid.contains_key(&slid) {
+            if let Some(uuid) = structure.get_uuid(slid, &state.store.universe) {
+                struct_slid_to_uuid.insert(slid, uuid);
+            }
+        }
+    }
+
+    // Get instance UUID
+    let instance_uuid = state.store.get_element_uuid(instance_slid);
+
+    // Build columnar batch as IDB (chase-derived, not wire-transmittable)
+    let mut batch = InstanceDataBatch::new_idb();
+
+    for (rel_idx, relation) in structure.relations.iter().enumerate() {
+        let rel_uuid = match rel_idx_to_uuid.get(&rel_idx) {
+            Some(u) => *u,
+            None => continue,
+        };
+
+        if relation.is_empty() {
+            continue;
+        }
+
+        let arity = rel_infos.get(rel_idx).map(|r| r.domain.arity()).unwrap_or(1);
+        let field_ids: Vec<Uuid> = (0..arity).map(|_| Uuid::nil()).collect();
+
+        let mut rel_batch = RelationTupleBatch::new(instance_uuid, rel_uuid, field_ids);
+
+        for tuple in relation.iter() {
+            let uuid_tuple: Vec<Uuid> = tuple
+                .iter()
+                .filter_map(|struct_slid| struct_slid_to_uuid.get(struct_slid).copied())
+                .collect();
+
+            if uuid_tuple.len() == tuple.len() {
+                rel_batch.push(&uuid_tuple);
+            }
+        }
+
+        if !rel_batch.is_empty() {
+            batch.relation_tuples.push(rel_batch);
+        }
+    }
+
+    // Save the batch
+    if !batch.relation_tuples.is_empty() {
+        let existing_batches = state.store.load_instance_data_batches(instance_uuid)
+            .unwrap_or_default();
+        let version = existing_batches.len() as u64;
+        state.store.save_instance_data_batch(instance_uuid, version, &batch)?;
+    }
+
+    Ok(())
 }
 
 /// Handle query result from `query { ? : Type; }` syntax

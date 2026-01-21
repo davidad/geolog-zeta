@@ -219,10 +219,19 @@ impl ReplState {
                     let num_sorts = elab.theory.signature.sorts.len();
                     let num_functions = elab.theory.signature.functions.len();
                     let num_relations = elab.theory.signature.relations.len();
+                    let num_axioms = elab.theory.axioms.len();
 
                     // Register in Store with full signature
                     let theory_slid = self.store.create_theory(&name)?;
-                    self.store.persist_signature(theory_slid, &elab.theory.signature)?;
+                    let sig_result = self.store.persist_signature(theory_slid, &elab.theory.signature)?;
+
+                    // Persist axioms
+                    self.store.persist_axioms(
+                        theory_slid,
+                        &elab.theory.axioms,
+                        &elab.theory.axiom_names,
+                        &sig_result,
+                    )?;
 
                     // Store in transitional HashMap (will be removed once we query Store directly)
                     self.theories.insert(name.clone(), Rc::new(elab));
@@ -232,6 +241,7 @@ impl ReplState {
                         num_sorts,
                         num_functions,
                         num_relations,
+                        num_axioms,
                     });
                 }
                 ast::Declaration::Instance(inst) => {
@@ -1445,6 +1455,7 @@ pub enum ExecuteResult {
         num_sorts: usize,
         num_functions: usize,
         num_relations: usize,
+        num_axioms: usize,
     },
     Instance {
         name: String,

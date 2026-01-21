@@ -8,7 +8,7 @@
 
 use std::collections::HashMap;
 
-use crate::core::{DerivedSort, ElaboratedTheory, Signature, Theory};
+use crate::core::{Context, DerivedSort, ElaboratedTheory, Formula, Sequent, Signature, Term, Theory};
 use crate::id::{NumericId, Slid};
 
 use super::append::AppendOps;
@@ -70,6 +70,22 @@ pub struct RelInfo {
     pub domain: DerivedSort,
 }
 
+/// Information about a sequent (axiom) in a theory
+#[derive(Debug, Clone)]
+pub struct SequentInfo {
+    pub name: String,
+    pub slid: Slid,
+    pub premise_slid: Option<Slid>,
+    pub conclusion_slid: Option<Slid>,
+}
+
+/// Information about a context variable in a sequent
+#[derive(Debug, Clone)]
+pub struct CtxVarInfo {
+    pub slid: Slid,
+    pub binder_slid: Option<Slid>,
+}
+
 impl Store {
     /// Query all sorts belonging to a theory.
     ///
@@ -120,6 +136,461 @@ impl Store {
             .into_iter()
             .find(|r| r.name == name)
             .map(|r| r.slid)
+    }
+
+    /// Query all sequents (axioms) belonging to a theory.
+    pub fn query_theory_sequents(&self, theory_slid: Slid) -> Vec<SequentInfo> {
+        let Some(sequent_sort) = self.sort_ids.sequent else {
+            return vec![];
+        };
+        let Some(theory_func) = self.func_ids.sequent_theory else {
+            return vec![];
+        };
+
+        let mut results = Vec::new();
+        for sequent_slid in self.elements_of_sort(sequent_sort) {
+            if self.get_func(theory_func, sequent_slid) == Some(theory_slid) {
+                let name = self.get_element_name(sequent_slid);
+                let short_name = name.rsplit('/').next().unwrap_or(&name).to_string();
+
+                let premise_slid = self
+                    .func_ids
+                    .sequent_premise
+                    .and_then(|f| self.get_func(f, sequent_slid));
+                let conclusion_slid = self
+                    .func_ids
+                    .sequent_conclusion
+                    .and_then(|f| self.get_func(f, sequent_slid));
+
+                results.push(SequentInfo {
+                    name: short_name,
+                    slid: sequent_slid,
+                    premise_slid,
+                    conclusion_slid,
+                });
+            }
+        }
+        results
+    }
+
+    /// Query context variables for a sequent.
+    fn query_sequent_ctx_vars(&self, sequent_slid: Slid) -> Vec<CtxVarInfo> {
+        let Some(ctx_var_sort) = self.sort_ids.ctx_var else {
+            return vec![];
+        };
+        let Some(sequent_func) = self.func_ids.ctx_var_sequent else {
+            return vec![];
+        };
+
+        let mut results = Vec::new();
+        for ctx_var_slid in self.elements_of_sort(ctx_var_sort) {
+            if self.get_func(sequent_func, ctx_var_slid) == Some(sequent_slid) {
+                let binder_slid = self
+                    .func_ids
+                    .ctx_var_binder
+                    .and_then(|f| self.get_func(f, ctx_var_slid));
+
+                results.push(CtxVarInfo {
+                    slid: ctx_var_slid,
+                    binder_slid,
+                });
+            }
+        }
+        results
+    }
+
+    /// Get the binder's type (DSort slid).
+    fn get_binder_type(&self, binder_slid: Slid) -> Option<Slid> {
+        self.func_ids
+            .binder_type
+            .and_then(|f| self.get_func(f, binder_slid))
+    }
+
+    /// Reconstruct a Term from its Term slid.
+    fn reconstruct_term(
+        &self,
+        term_slid: Slid,
+        binder_to_var: &HashMap<Slid, (String, DerivedSort)>,
+        func_to_idx: &HashMap<Slid, usize>,
+        srt_slid_to_idx: &HashMap<usize, usize>,
+    ) -> Option<Term> {
+        // Check VarT
+        if let Some(var_t_sort) = self.sort_ids.var_t {
+            for var_t_slid in self.elements_of_sort(var_t_sort) {
+                if let Some(term_func) = self.func_ids.var_t_term {
+                    if self.get_func(term_func, var_t_slid) == Some(term_slid) {
+                        // Found a VarT for this term
+                        if let Some(binder_func) = self.func_ids.var_t_binder {
+                            if let Some(binder_slid) = self.get_func(binder_func, var_t_slid) {
+                                if let Some((var_name, var_sort)) = binder_to_var.get(&binder_slid) {
+                                    return Some(Term::Var(var_name.clone(), var_sort.clone()));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Check AppT
+        if let Some(app_t_sort) = self.sort_ids.app_t {
+            for app_t_slid in self.elements_of_sort(app_t_sort) {
+                if let Some(term_func) = self.func_ids.app_t_term {
+                    if self.get_func(term_func, app_t_slid) == Some(term_slid) {
+                        // Found an AppT for this term
+                        let func_slid = self
+                            .func_ids
+                            .app_t_func
+                            .and_then(|f| self.get_func(f, app_t_slid))?;
+                        let func_idx = *func_to_idx.get(&func_slid)?;
+
+                        let arg_term_slid = self
+                            .func_ids
+                            .app_t_arg
+                            .and_then(|f| self.get_func(f, app_t_slid))?;
+                        let arg = self.reconstruct_term(
+                            arg_term_slid,
+                            binder_to_var,
+                            func_to_idx,
+                            srt_slid_to_idx,
+                        )?;
+
+                        return Some(Term::App(func_idx, Box::new(arg)));
+                    }
+                }
+            }
+        }
+
+        // Check RecordT
+        if let Some(record_t_sort) = self.sort_ids.record_t {
+            for record_t_slid in self.elements_of_sort(record_t_sort) {
+                if let Some(term_func) = self.func_ids.record_t_term {
+                    if self.get_func(term_func, record_t_slid) == Some(term_slid) {
+                        // Found a RecordT for this term - collect entries
+                        let mut fields = Vec::new();
+                        if let Some(rec_entry_sort) = self.sort_ids.rec_entry {
+                            for rec_entry_slid in self.elements_of_sort(rec_entry_sort) {
+                                if let Some(record_func) = self.func_ids.rec_entry_record {
+                                    if self.get_func(record_func, rec_entry_slid)
+                                        == Some(record_t_slid)
+                                    {
+                                        // Get field name (from Field)
+                                        let field_name = self
+                                            .func_ids
+                                            .rec_entry_field
+                                            .and_then(|f| self.get_func(f, rec_entry_slid))
+                                            .map(|field_slid| {
+                                                let name = self.get_element_name(field_slid);
+                                                name.rsplit('/').next().unwrap_or(&name).to_string()
+                                            })
+                                            .unwrap_or_default();
+
+                                        // Get value term
+                                        if let Some(val_slid) = self
+                                            .func_ids
+                                            .rec_entry_val
+                                            .and_then(|f| self.get_func(f, rec_entry_slid))
+                                        {
+                                            if let Some(val_term) = self.reconstruct_term(
+                                                val_slid,
+                                                binder_to_var,
+                                                func_to_idx,
+                                                srt_slid_to_idx,
+                                            ) {
+                                                fields.push((field_name, val_term));
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        return Some(Term::Record(fields));
+                    }
+                }
+            }
+        }
+
+        // Check ProjT
+        if let Some(proj_t_sort) = self.sort_ids.proj_t {
+            for proj_t_slid in self.elements_of_sort(proj_t_sort) {
+                if let Some(term_func) = self.func_ids.proj_t_term {
+                    if self.get_func(term_func, proj_t_slid) == Some(term_slid) {
+                        // Get base term
+                        let base_slid = self
+                            .func_ids
+                            .proj_t_base
+                            .and_then(|f| self.get_func(f, proj_t_slid))?;
+                        let base =
+                            self.reconstruct_term(base_slid, binder_to_var, func_to_idx, srt_slid_to_idx)?;
+
+                        // Get field name
+                        let field_name = self
+                            .func_ids
+                            .proj_t_field
+                            .and_then(|f| self.get_func(f, proj_t_slid))
+                            .map(|field_slid| {
+                                let name = self.get_element_name(field_slid);
+                                name.rsplit('/').next().unwrap_or(&name).to_string()
+                            })
+                            .unwrap_or_default();
+
+                        return Some(Term::Project(Box::new(base), field_name));
+                    }
+                }
+            }
+        }
+
+        None
+    }
+
+    /// Reconstruct a Formula from its Formula slid.
+    fn reconstruct_formula(
+        &self,
+        formula_slid: Slid,
+        binder_to_var: &mut HashMap<Slid, (String, DerivedSort)>,
+        func_to_idx: &HashMap<Slid, usize>,
+        rel_to_idx: &HashMap<Slid, usize>,
+        srt_slid_to_idx: &HashMap<usize, usize>,
+    ) -> Option<Formula> {
+        // Check TrueF
+        if let Some(true_f_sort) = self.sort_ids.true_f {
+            for true_f_slid in self.elements_of_sort(true_f_sort) {
+                if let Some(formula_func) = self.func_ids.true_f_formula {
+                    if self.get_func(formula_func, true_f_slid) == Some(formula_slid) {
+                        return Some(Formula::True);
+                    }
+                }
+            }
+        }
+
+        // Check FalseF
+        if let Some(false_f_sort) = self.sort_ids.false_f {
+            for false_f_slid in self.elements_of_sort(false_f_sort) {
+                if let Some(formula_func) = self.func_ids.false_f_formula {
+                    if self.get_func(formula_func, false_f_slid) == Some(formula_slid) {
+                        return Some(Formula::False);
+                    }
+                }
+            }
+        }
+
+        // Check EqF
+        if let Some(eq_f_sort) = self.sort_ids.eq_f {
+            for eq_f_slid in self.elements_of_sort(eq_f_sort) {
+                if let Some(formula_func) = self.func_ids.eq_f_formula {
+                    if self.get_func(formula_func, eq_f_slid) == Some(formula_slid) {
+                        let lhs_slid = self
+                            .func_ids
+                            .eq_f_lhs
+                            .and_then(|f| self.get_func(f, eq_f_slid))?;
+                        let rhs_slid = self
+                            .func_ids
+                            .eq_f_rhs
+                            .and_then(|f| self.get_func(f, eq_f_slid))?;
+
+                        let lhs =
+                            self.reconstruct_term(lhs_slid, binder_to_var, func_to_idx, srt_slid_to_idx)?;
+                        let rhs =
+                            self.reconstruct_term(rhs_slid, binder_to_var, func_to_idx, srt_slid_to_idx)?;
+
+                        return Some(Formula::Eq(lhs, rhs));
+                    }
+                }
+            }
+        }
+
+        // Check RelF
+        if let Some(rel_f_sort) = self.sort_ids.rel_f {
+            for rel_f_slid in self.elements_of_sort(rel_f_sort) {
+                if let Some(formula_func) = self.func_ids.rel_f_formula {
+                    if self.get_func(formula_func, rel_f_slid) == Some(formula_slid) {
+                        let rel_slid = self
+                            .func_ids
+                            .rel_f_rel
+                            .and_then(|f| self.get_func(f, rel_f_slid))?;
+                        let rel_idx = *rel_to_idx.get(&rel_slid)?;
+
+                        let arg_slid = self
+                            .func_ids
+                            .rel_f_arg
+                            .and_then(|f| self.get_func(f, rel_f_slid))?;
+                        let arg =
+                            self.reconstruct_term(arg_slid, binder_to_var, func_to_idx, srt_slid_to_idx)?;
+
+                        return Some(Formula::Rel(rel_idx, arg));
+                    }
+                }
+            }
+        }
+
+        // Check ConjF
+        if let Some(conj_f_sort) = self.sort_ids.conj_f {
+            for conj_f_slid in self.elements_of_sort(conj_f_sort) {
+                if let Some(formula_func) = self.func_ids.conj_f_formula {
+                    if self.get_func(formula_func, conj_f_slid) == Some(formula_slid) {
+                        // Collect conjuncts from ConjArm
+                        let mut conjuncts = Vec::new();
+                        if let Some(conj_arm_sort) = self.sort_ids.conj_arm {
+                            for arm_slid in self.elements_of_sort(conj_arm_sort) {
+                                if let Some(conj_func) = self.func_ids.conj_arm_conj {
+                                    if self.get_func(conj_func, arm_slid) == Some(conj_f_slid) {
+                                        if let Some(child_slid) = self
+                                            .func_ids
+                                            .conj_arm_child
+                                            .and_then(|f| self.get_func(f, arm_slid))
+                                        {
+                                            if let Some(child) = self.reconstruct_formula(
+                                                child_slid,
+                                                binder_to_var,
+                                                func_to_idx,
+                                                rel_to_idx,
+                                                srt_slid_to_idx,
+                                            ) {
+                                                conjuncts.push(child);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        return Some(Formula::Conj(conjuncts));
+                    }
+                }
+            }
+        }
+
+        // Check DisjF
+        if let Some(disj_f_sort) = self.sort_ids.disj_f {
+            for disj_f_slid in self.elements_of_sort(disj_f_sort) {
+                if let Some(formula_func) = self.func_ids.disj_f_formula {
+                    if self.get_func(formula_func, disj_f_slid) == Some(formula_slid) {
+                        // Collect disjuncts from DisjArm
+                        let mut disjuncts = Vec::new();
+                        if let Some(disj_arm_sort) = self.sort_ids.disj_arm {
+                            for arm_slid in self.elements_of_sort(disj_arm_sort) {
+                                if let Some(disj_func) = self.func_ids.disj_arm_disj {
+                                    if self.get_func(disj_func, arm_slid) == Some(disj_f_slid) {
+                                        if let Some(child_slid) = self
+                                            .func_ids
+                                            .disj_arm_child
+                                            .and_then(|f| self.get_func(f, arm_slid))
+                                        {
+                                            if let Some(child) = self.reconstruct_formula(
+                                                child_slid,
+                                                binder_to_var,
+                                                func_to_idx,
+                                                rel_to_idx,
+                                                srt_slid_to_idx,
+                                            ) {
+                                                disjuncts.push(child);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        return Some(Formula::Disj(disjuncts));
+                    }
+                }
+            }
+        }
+
+        // Check ExistsF
+        if let Some(exists_f_sort) = self.sort_ids.exists_f {
+            for exists_f_slid in self.elements_of_sort(exists_f_sort) {
+                if let Some(formula_func) = self.func_ids.exists_f_formula {
+                    if self.get_func(formula_func, exists_f_slid) == Some(formula_slid) {
+                        // Get the binder
+                        let binder_slid = self
+                            .func_ids
+                            .exists_f_binder
+                            .and_then(|f| self.get_func(f, exists_f_slid))?;
+
+                        // Get binder type
+                        let dsort_slid = self.get_binder_type(binder_slid)?;
+                        let dsort_raw = self.resolve_dsort(dsort_slid);
+                        let dsort = remap_derived_sort(&dsort_raw, srt_slid_to_idx);
+
+                        // Get var name from binder element name
+                        let binder_name = self.get_element_name(binder_slid);
+                        let var_name = binder_name
+                            .strip_prefix("binder_")
+                            .unwrap_or(&binder_name)
+                            .to_string();
+
+                        // Add to binder mapping for body reconstruction
+                        binder_to_var.insert(binder_slid, (var_name.clone(), dsort.clone()));
+
+                        // Reconstruct body
+                        let body_slid = self
+                            .func_ids
+                            .exists_f_body
+                            .and_then(|f| self.get_func(f, exists_f_slid))?;
+                        let body = self.reconstruct_formula(
+                            body_slid,
+                            binder_to_var,
+                            func_to_idx,
+                            rel_to_idx,
+                            srt_slid_to_idx,
+                        )?;
+
+                        return Some(Formula::Exists(var_name, dsort, Box::new(body)));
+                    }
+                }
+            }
+        }
+
+        None
+    }
+
+    /// Reconstruct an axiom (Sequent) from its SequentInfo.
+    fn reconstruct_axiom(
+        &self,
+        info: &SequentInfo,
+        func_to_idx: &HashMap<Slid, usize>,
+        rel_to_idx: &HashMap<Slid, usize>,
+        srt_slid_to_idx: &HashMap<usize, usize>,
+    ) -> Option<Sequent> {
+        // Build binder mapping from context variables
+        let mut binder_to_var: HashMap<Slid, (String, DerivedSort)> = HashMap::new();
+        let mut context = Context::new();
+
+        let ctx_vars = self.query_sequent_ctx_vars(info.slid);
+        for cv in ctx_vars {
+            if let Some(binder_slid) = cv.binder_slid {
+                // Get binder type
+                if let Some(dsort_slid) = self.get_binder_type(binder_slid) {
+                    let dsort_raw = self.resolve_dsort(dsort_slid);
+                    let dsort = remap_derived_sort(&dsort_raw, srt_slid_to_idx);
+
+                    // Get var name from binder element name
+                    let binder_name = self.get_element_name(binder_slid);
+                    let var_name = binder_name
+                        .strip_prefix("binder_")
+                        .unwrap_or(&binder_name)
+                        .to_string();
+
+                    binder_to_var.insert(binder_slid, (var_name.clone(), dsort.clone()));
+                    context = context.extend(var_name, dsort);
+                }
+            }
+        }
+
+        // Reconstruct premise
+        let premise = info.premise_slid.and_then(|slid| {
+            self.reconstruct_formula(slid, &mut binder_to_var, func_to_idx, rel_to_idx, srt_slid_to_idx)
+        })?;
+
+        // Reconstruct conclusion
+        let conclusion = info.conclusion_slid.and_then(|slid| {
+            self.reconstruct_formula(slid, &mut binder_to_var, func_to_idx, rel_to_idx, srt_slid_to_idx)
+        })?;
+
+        Some(Sequent {
+            context,
+            premise,
+            conclusion,
+        })
     }
 
     /// Resolve a DSort slid to a DerivedSort.
@@ -285,23 +756,49 @@ impl Store {
         }
 
         // Add functions with remapped DerivedSorts
-        for info in func_infos {
+        for info in &func_infos {
             let domain = remap_derived_sort(&info.domain, &srt_slid_to_idx);
             let codomain = remap_derived_sort(&info.codomain, &srt_slid_to_idx);
-            signature.add_function(info.name, domain, codomain);
+            signature.add_function(info.name.clone(), domain, codomain);
         }
 
         // Add relations with remapped DerivedSorts
-        for info in rel_infos {
+        for info in &rel_infos {
             let domain = remap_derived_sort(&info.domain, &srt_slid_to_idx);
-            signature.add_relation(info.name, domain);
+            signature.add_relation(info.name.clone(), domain);
+        }
+
+        // Build Func Slid -> func index mapping
+        let func_to_idx: HashMap<Slid, usize> = func_infos
+            .iter()
+            .enumerate()
+            .map(|(idx, info)| (info.slid, idx))
+            .collect();
+
+        // Build Rel Slid -> rel index mapping
+        let rel_to_idx: HashMap<Slid, usize> = rel_infos
+            .iter()
+            .enumerate()
+            .map(|(idx, info)| (info.slid, idx))
+            .collect();
+
+        // Query and reconstruct axioms
+        let sequent_infos = self.query_theory_sequents(theory_slid);
+        let mut axioms = Vec::new();
+        let mut axiom_names = Vec::new();
+
+        for info in &sequent_infos {
+            if let Some(axiom) = self.reconstruct_axiom(info, &func_to_idx, &rel_to_idx, &srt_slid_to_idx) {
+                axiom_names.push(info.name.clone());
+                axioms.push(axiom);
+            }
         }
 
         let theory = Theory {
             name: theory_name,
             signature,
-            axioms: vec![],      // TODO: persist and reconstruct axioms
-            axiom_names: vec![], // TODO: persist and reconstruct axiom names
+            axioms,
+            axiom_names,
         };
 
         Some(ElaboratedTheory {

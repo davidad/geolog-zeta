@@ -33,7 +33,7 @@ geolog> theory Graph {
     [from: x, to: y] reachable, [from: y, to: z] reachable
     |- [from: x, to: z] reachable;
 }
-Defined theory Graph (2 sorts, 2 functions, 1 relations)
+Defined theory Graph (2 sorts, 2 functions, 1 relations, 2 axioms)
 
 geolog> instance G : Graph = chase {
   a : V;
@@ -78,7 +78,7 @@ Type :help for help, :quit to exit
 Workspace: foo
 geolog> :list
 Theories:
-  Graph (2 sorts, 2 functions, 1 relations)
+  Graph (2 sorts, 2 functions, 1 relations, 2 axioms)
 Instances:
   G : Graph (5 elements)
 

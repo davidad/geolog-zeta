@@ -34,6 +34,7 @@ use crate::universe::Universe;
 pub mod append;
 pub mod batch;
 pub mod bootstrap_queries;
+pub mod columnar;
 pub mod commit;
 pub mod instance;
 pub mod materialize;
@@ -330,6 +331,142 @@ impl Store {
     /// Check if the store is empty
     pub fn is_empty(&self) -> bool {
         self.meta.is_empty()
+    }
+
+    // ========================================================================
+    // COLUMNAR BATCH STORAGE
+    // ========================================================================
+
+    /// Get the directory for instance data (columnar batches)
+    fn instance_data_dir(&self) -> Option<PathBuf> {
+        self.path.as_ref().map(|p| p.join("instance_data"))
+    }
+
+    /// Save instance data batch for a specific patch version.
+    ///
+    /// Each patch can have up to 2 batches per instance:
+    /// - One EDB batch (user-declared facts)
+    /// - One IDB batch (chase-derived facts)
+    ///
+    /// The batch kind is encoded in the filename to allow both to coexist.
+    pub fn save_instance_data_batch(
+        &self,
+        instance_uuid: crate::id::Uuid,
+        patch_version: u64,
+        batch: &columnar::InstanceDataBatch,
+    ) -> Result<(), String> {
+        use rkyv::ser::serializers::AllocSerializer;
+        use rkyv::ser::Serializer;
+
+        let Some(dir) = self.instance_data_dir() else {
+            return Ok(()); // In-memory store, nothing to save
+        };
+
+        // Ensure directory exists
+        std::fs::create_dir_all(&dir)
+            .map_err(|e| format!("Failed to create instance_data dir: {}", e))?;
+
+        // Serialize batch with rkyv
+        let mut serializer = AllocSerializer::<4096>::default();
+        serializer.serialize_value(batch)
+            .map_err(|e| format!("Failed to serialize instance data batch: {}", e))?;
+        let bytes = serializer.into_serializer().into_inner();
+
+        // Write to file named by instance UUID, patch version, and batch kind
+        // EDB batches: {uuid}_v{version}_edb.batch.bin
+        // IDB batches: {uuid}_v{version}_idb.batch.bin
+        let kind_suffix = match batch.kind {
+            columnar::BatchKind::Edb => "edb",
+            columnar::BatchKind::Idb => "idb",
+        };
+        let filename = format!("{}_v{}_{}.batch.bin", instance_uuid, patch_version, kind_suffix);
+        let file_path = dir.join(filename);
+        std::fs::write(&file_path, &bytes)
+            .map_err(|e| format!("Failed to write instance data batch: {}", e))?;
+
+        Ok(())
+    }
+
+    /// Load all instance data batches for an instance (across all patch versions).
+    ///
+    /// Returns batches in version order so they can be applied sequentially.
+    /// Both EDB and IDB batches are loaded; use `batch.kind` to filter if needed.
+    pub fn load_instance_data_batches(
+        &self,
+        instance_uuid: crate::id::Uuid,
+    ) -> Result<Vec<columnar::InstanceDataBatch>, String> {
+        use rkyv::Deserialize;
+
+        let Some(dir) = self.instance_data_dir() else {
+            return Ok(vec![]); // In-memory store, no data
+        };
+
+        if !dir.exists() {
+            return Ok(vec![]);
+        }
+
+        // (version, is_idb, batch) - sort so EDB comes before IDB at same version
+        let mut version_batches: Vec<(u64, bool, columnar::InstanceDataBatch)> = Vec::new();
+        let prefix = format!("{}_v", instance_uuid);
+
+        // Read all matching batch files
+        let entries = std::fs::read_dir(&dir)
+            .map_err(|e| format!("Failed to read instance_data dir: {}", e))?;
+
+        for entry in entries {
+            let entry = entry.map_err(|e| format!("Failed to read dir entry: {}", e))?;
+            let path = entry.path();
+
+            if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                if name.starts_with(&prefix) && name.ends_with(".batch.bin") {
+                    // Parse filename: {uuid}_v{version}_{edb|idb}.batch.bin
+                    // or legacy format: {uuid}_v{version}.batch.bin
+                    let suffix = name
+                        .strip_prefix(&prefix)
+                        .and_then(|s| s.strip_suffix(".batch.bin"))
+                        .ok_or_else(|| format!("Invalid batch filename: {}", name))?;
+
+                    // Check for new format with _edb or _idb suffix
+                    let (version_str, is_idb) = if let Some(v) = suffix.strip_suffix("_edb") {
+                        (v, false)
+                    } else if let Some(v) = suffix.strip_suffix("_idb") {
+                        (v, true)
+                    } else {
+                        // Legacy format without kind suffix - assume EDB
+                        (suffix, false)
+                    };
+
+                    let version: u64 = version_str.parse()
+                        .map_err(|_| format!("Invalid version in filename: {}", name))?;
+
+                    let bytes = std::fs::read(&path)
+                        .map_err(|e| format!("Failed to read batch {}: {}", name, e))?;
+
+                    let archived = rkyv::check_archived_root::<columnar::InstanceDataBatch>(&bytes)
+                        .map_err(|e| format!("Failed to validate batch {}: {}", name, e))?;
+
+                    let batch: columnar::InstanceDataBatch = archived.deserialize(&mut rkyv::Infallible)
+                        .map_err(|_| format!("Failed to deserialize batch {}", name))?;
+
+                    version_batches.push((version, is_idb, batch));
+                }
+            }
+        }
+
+        // Sort by version, then EDB before IDB at same version
+        version_batches.sort_by_key(|(v, is_idb, _)| (*v, *is_idb));
+        Ok(version_batches.into_iter().map(|(_, _, b)| b).collect())
+    }
+
+    /// Load only EDB (wire-transmittable) batches for an instance.
+    ///
+    /// This is what would be sent over the network during sync.
+    pub fn load_edb_batches(
+        &self,
+        instance_uuid: crate::id::Uuid,
+    ) -> Result<Vec<columnar::InstanceDataBatch>, String> {
+        let all = self.load_instance_data_batches(instance_uuid)?;
+        Ok(all.into_iter().filter(|b| b.is_wire_transmittable()).collect())
     }
 }
 

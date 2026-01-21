@@ -37,7 +37,7 @@ use super::compile::compile_simple_filter;
 impl Store {
     /// Get the UUID for an element in GeologMeta by its Slid.
     /// Used for deterministic ordering: UUIDs v7 are time-ordered.
-    fn get_element_uuid(&self, slid: Slid) -> Uuid {
+    pub fn get_element_uuid(&self, slid: Slid) -> Uuid {
         if let Some(&luid) = self.meta.luids.get(slid.index()) {
             self.universe.get(luid).unwrap_or(Uuid::nil())
         } else {
@@ -578,6 +578,12 @@ mod tests {
     }
 
     /// Test that compiled query matches bootstrap for relation tuples.
+    ///
+    /// NOTE: Relation tuples are now stored in columnar batches (see store::columnar),
+    /// not as individual GeologMeta elements. The bootstrap and compiled queries
+    /// for RelTuple elements return empty since we no longer create those elements.
+    ///
+    /// Relation tuple data is now accessed via `Store::load_instance_data_batches()`.
     #[test]
     fn test_compiled_matches_bootstrap_rel_tuples() {
         let source = r#"
@@ -601,19 +607,33 @@ mod tests {
         let instance_slid = repl.store.resolve_name("ThreeNodes")
             .expect("Instance should exist").0;
 
-        // Compare bootstrap vs compiled
+        // Compare bootstrap vs compiled - both should return empty now
+        // since relation tuples are stored in columnar batches, not GeologMeta
         let bootstrap = repl.store.query_instance_rel_tuples(instance_slid);
         let compiled = repl.store.query_instance_rel_tuples_compiled(instance_slid);
 
-        // Same number of results
+        // Same number of results (both empty)
         assert_eq!(
             bootstrap.len(), compiled.len(),
             "Bootstrap returned {} rel_tuples, compiled returned {}",
             bootstrap.len(), compiled.len()
         );
 
-        // Should have 2 relation tuples: n1 Marked, n3 Marked
-        assert_eq!(compiled.len(), 2, "Expected 2 relation tuples");
+        // Relation tuples are no longer stored as GeologMeta elements
+        // They're in columnar batches accessed via load_instance_data_batches()
+        assert_eq!(compiled.len(), 0, "RelTuple elements are not created (tuples in columnar batches)");
+
+        // Note: In in-memory mode (no store path), columnar batches aren't persisted.
+        // The in-memory Structure still has the relation tuples - they're just not
+        // serialized to disk. For tests with persistence, use a temp dir.
+        //
+        // The relation tuples are accessible via the in-memory Structure:
+        use crate::core::RelationStorage;
+        let entry = repl.instances.get("ThreeNodes").expect("Instance entry should exist");
+        let rel_count: usize = entry.structure.relations.iter()
+            .map(|r| r.len())
+            .sum();
+        assert_eq!(rel_count, 2, "Expected 2 relation tuples in in-memory Structure");
     }
 
     /// Test compiled query with empty instance.

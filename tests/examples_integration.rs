@@ -442,10 +442,11 @@ fn test_geolog_meta_loads() {
 
     let meta = state.theories.get("GeologMeta").expect("GeologMeta theory should exist");
 
-    // GeologMeta is a large theory: 40 sorts, 76 functions, 3 relations
-    assert_eq!(meta.theory.signature.sorts.len(), 40, "GeologMeta should have 40 sorts");
-    assert_eq!(meta.theory.signature.functions.len(), 76, "GeologMeta should have 76 functions");
+    // GeologMeta is a large theory: 41 sorts, 78 functions, 3 relations, 16 axioms
+    assert_eq!(meta.theory.signature.sorts.len(), 41, "GeologMeta should have 41 sorts");
+    assert_eq!(meta.theory.signature.functions.len(), 78, "GeologMeta should have 78 functions");
     assert_eq!(meta.theory.signature.relations.len(), 3, "GeologMeta should have 3 relations");
+    assert_eq!(meta.theory.axioms.len(), 16, "GeologMeta should have 16 axioms");
 
     // Check some key sorts exist
     assert!(meta.theory.signature.lookup_sort("Theory").is_some(), "Theory sort should exist");
@@ -471,8 +472,8 @@ fn test_relalg_ir_loads() {
 
     let ir = state.theories.get("RelAlgIR").expect("RelAlgIR theory should exist");
 
-    // RelAlgIR has 79 sorts (40 from GeologMeta + 39 own)
-    assert_eq!(ir.theory.signature.sorts.len(), 79, "RelAlgIR should have 79 sorts");
+    // RelAlgIR has 80 sorts (41 from GeologMeta + 39 own)
+    assert_eq!(ir.theory.signature.sorts.len(), 80, "RelAlgIR should have 80 sorts");
 
     // Check GeologMeta sorts are correctly qualified
     assert!(ir.theory.signature.lookup_sort("GeologMeta/Srt").is_some(),

@@ -151,22 +151,12 @@ impl Store {
                     }
                 }
 
-        // 3. Process relation tuple additions (IMMUTABLE - no retractions)
-        if let Some(tuple_sort) = self.sort_ids.rel_tuple
-            && let (Some(instance_func), Some(rel_func), Some(arg_func)) = (
-                self.func_ids.rel_tuple_instance,
-                self.func_ids.rel_tuple_rel,
-                self.func_ids.rel_tuple_arg,
-            ) {
-                for tuple in self.elements_of_sort(tuple_sort) {
-                    if self.get_func(instance_func, tuple) == Some(version)
-                        && let (Some(rel), Some(arg)) =
-                            (self.get_func(rel_func, tuple), self.get_func(arg_func, tuple))
-                        {
-                            view.rel_tuples.insert(tuple, (rel, arg));
-                        }
-                }
-            }
+        // 3. Process relation tuple additions
+        // NOTE: Relation tuples are now stored in columnar batches (see `store::columnar`),
+        // not as individual GeologMeta elements. This section is a no-op until
+        // columnar batch loading is implemented.
+        //
+        // TODO: Load relation tuples from columnar batches into view.rel_tuples
 
         // 4. Process function value additions (IMMUTABLE - no retractions)
         if let Some(fv_sort) = self.sort_ids.func_val

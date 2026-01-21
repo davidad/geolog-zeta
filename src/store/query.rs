@@ -54,33 +54,15 @@ impl Store {
 
     /// Get all relation tuples of an instance (including from parent chain)
     ///
-    /// Returns (tuple_slid, rel_slid, arg_slid) triples.
-    /// NOTE: RelTuples are IMMUTABLE - no retractions (Monotonic Submodel Property)
-    pub fn get_instance_rel_tuples(&self, instance: Slid) -> Vec<(Slid, Slid, Slid)> {
-        let mut tuples = Vec::new();
-
-        // Collect tuples from all versions in the chain
-        let mut version = Some(instance);
-        while let Some(v) = version {
-            if let Some(tuple_sort) = self.sort_ids.rel_tuple
-                && let (Some(instance_func), Some(rel_func), Some(arg_func)) = (
-                    self.func_ids.rel_tuple_instance,
-                    self.func_ids.rel_tuple_rel,
-                    self.func_ids.rel_tuple_arg,
-                ) {
-                    for tuple in self.elements_of_sort(tuple_sort) {
-                        if self.get_func(instance_func, tuple) == Some(v)
-                            && let (Some(rel), Some(arg)) =
-                                (self.get_func(rel_func, tuple), self.get_func(arg_func, tuple))
-                            {
-                                tuples.push((tuple, rel, arg));
-                            }
-                    }
-                }
-            version = self.func_ids.instance_parent.and_then(|f| self.get_func(f, v));
-        }
-
-        tuples
+    /// NOTE: Relation tuples are now stored in columnar batches (see `store::columnar`),
+    /// not as individual GeologMeta elements. This function returns empty until
+    /// columnar batch loading is implemented.
+    ///
+    /// TODO: Implement columnar batch loading for relation tuples.
+    pub fn get_instance_rel_tuples(&self, _instance: Slid) -> Vec<(Slid, Slid, Slid)> {
+        // Relation tuples are stored in columnar batches, not GeologMeta elements.
+        // Return empty until columnar batch loading is implemented.
+        vec![]
     }
 
     /// Get all function values of an instance (including from parent chain)

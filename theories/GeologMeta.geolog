@@ -353,12 +353,20 @@ theory GeologMeta {
   // ============================================================
   // RELATION TUPLES (delta: additions)
   // ============================================================
-  // Records a relation tuple: rel(arg) holds
+  // Records a relation tuple: rel(args...) holds
+  //
+  // All relations use product-domain encoding uniformly (even unary).
+  // Each tuple has RelTupleArg entries for each position in the domain.
 
   RelTuple : Sort;
   RelTuple/instance : RelTuple -> Instance;  // which version asserted this
   RelTuple/rel : RelTuple -> Rel;            // which relation
-  RelTuple/arg : RelTuple -> Elem;           // argument element
+
+  // Relation tuple argument components (one per domain field)
+  RelTupleArg : Sort;
+  RelTupleArg/tuple : RelTupleArg -> RelTuple;  // which tuple this belongs to
+  RelTupleArg/elem : RelTupleArg -> Elem;       // element value for this position
+  RelTupleArg/position : RelTupleArg -> Field;  // which field of the domain product
 
   // NOTE: No RelTupleRetract sort - relation tuples are IMMUTABLE.
   // Relations are boolean-valued functions: R(a,b) is defined at element creation time.
