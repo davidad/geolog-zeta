@@ -110,6 +110,13 @@ instance_item := element_decl | equation | nested_instance
 
 Using `= chase { ... }` runs the chase algorithm during elaboration, automatically deriving facts from axioms.
 
+The chase supports:
+- **Existential conclusions**: Creates fresh elements for `∃` in axiom conclusions
+- **Equality conclusions**: Uses congruence closure to track element equivalences
+- **Fixpoint iteration**: Runs until no new facts can be derived
+
+Equality saturation enables termination for theories with unit laws (like Categories) that would otherwise loop forever.
+
 #### Element Declaration
 ```
 identifier ':' type_expr ';'
