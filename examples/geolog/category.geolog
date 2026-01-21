@@ -71,6 +71,11 @@ theory Category {
 // - Identity morphisms for each object (via ax/id_exists)
 // - Composition facts (via ax/comp_exists)
 // - Source/target for compositions (via ax/comp_src, ax/comp_tgt)
+//
+// The equality saturation (via congruence closure) collapses:
+// - id;id;id;... = id (via ax/unit_left and ax/unit_right)
+// - Duplicate compositions (via ax/comp_unique)
+// Without CC, the chase would loop forever creating id;id, id;id;id, ...
 instance Arrow : Category = chase {
   // Objects
   A : ob;
