@@ -134,9 +134,14 @@ pub fn theory_to_meta(theory: &ElaboratedTheory, _universe: &mut Universe) -> Me
         convert_param(&mut builder, param);
     }
 
-    // Convert axioms
+    // Convert axioms (using axiom_names if available, otherwise fallback to ax_N)
     for (i, axiom) in theory.theory.axioms.iter().enumerate() {
-        let axiom_name = format!("ax_{}", i);
+        let axiom_name = theory
+            .theory
+            .axiom_names
+            .get(i)
+            .cloned()
+            .unwrap_or_else(|| format!("ax_{}", i));
         convert_sequent(&mut builder, axiom, &axiom_name);
     }
 
@@ -1025,8 +1030,11 @@ pub fn structure_to_theory(
     // Reconstruct axioms (sequents)
     let sequent_elems = reader.find_by_func("Sequent/theory", theory_elem);
     let mut axioms = vec![];
+    let mut axiom_names = vec![];
 
     for sequent_elem in sequent_elems {
+        // Collect the axiom name from the sequent element
+        axiom_names.push(reader.name(sequent_elem));
         // Build binder map: Slid -> (name, DerivedSort)
         let mut binder_map: HashMap<Slid, (String, DerivedSort)> = HashMap::new();
 
@@ -1090,7 +1098,7 @@ pub fn structure_to_theory(
             name: theory_name,
             signature: sig,
             axioms,
-            axiom_names: vec![], // TODO: collect axiom names from GeologMeta
+            axiom_names,
         },
     })
 }

@@ -244,4 +244,22 @@ fn test_theory_roundtrip_with_axioms() {
 
     // Verify relation name
     assert!(reconstructed.theory.signature.lookup_rel("leq").is_some());
+
+    // Verify axiom names round-trip correctly
+    assert_eq!(
+        reconstructed.theory.axiom_names.len(),
+        2,
+        "Expected 2 axiom names, got {}",
+        reconstructed.theory.axiom_names.len()
+    );
+    assert!(
+        reconstructed.theory.axiom_names.contains(&"ax/refl".to_string()),
+        "Expected axiom names to contain 'ax/refl', got {:?}",
+        reconstructed.theory.axiom_names
+    );
+    assert!(
+        reconstructed.theory.axiom_names.contains(&"ax/trans".to_string()),
+        "Expected axiom names to contain 'ax/trans', got {:?}",
+        reconstructed.theory.axiom_names
+    );
 }
