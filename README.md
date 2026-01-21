@@ -10,12 +10,82 @@ Geolog aims to provide a highly customizable, efficient, concurrent, append-only
 ## Quick Start
 
 ```bash
-# Build and run the REPL
-cargo build --release
-cargo run
+~/dev/geolog$ cargo install --path .
+   Compiling geolog v0.1.0 (/home/dev/geolog)
+    Finished release [optimized] target(s) in 12.34s
+  Installing ~/.cargo/bin/geolog
+   Installed package `geolog v0.1.0` (executable `geolog`)
 
-# Or run with an example file
-cargo run -- examples/geolog/petri_net_showcase.geolog
+~/dev/geolog$ geolog -d foo
+geolog v0.1.0 - Geometric Logic REPL
+Type :help for help, :quit to exit
+
+Workspace: foo
+geolog> theory Graph {
+  V : Sort;
+  E : Sort;
+  src : E -> V;
+  tgt : E -> V;
+  reachable : [from: V, to: V] -> Prop;
+
+  ax/edge : forall e : E. |- [from: e src, to: e tgt] reachable;
+  ax/trans : forall x : V, y : V, z : V.
+    [from: x, to: y] reachable, [from: y, to: z] reachable
+    |- [from: x, to: z] reachable;
+}
+Defined theory Graph (2 sorts, 2 functions, 1 relations)
+
+geolog> instance G : Graph = chase {
+  a : V;
+  b : V;
+  c : V;
+  e1 : E; e1 src = a; e1 tgt = b;
+  e2 : E; e2 src = b; e2 tgt = c;
+}
+Defined instance G : Graph (5 elements) [chase: 3 iterations]
+
+geolog> :commit "graph with reachability"
+Committed: "graph with reachability" (commit #17)
+
+geolog> :quit
+Goodbye!
+
+~/dev/geolog$ geolog -d foo
+geolog v0.1.0 - Geometric Logic REPL
+Type :help for help, :quit to exit
+
+Workspace: foo
+geolog> :list
+Theories:
+  Graph (2 sorts, 2 functions, 1 relations)
+Instances:
+  G : Graph (5 elements)
+
+geolog> :inspect G
+instance G : Graph = {
+  // V (3):
+  a : V;
+  b : V;
+  c : V;
+  // E (2):
+  e1 : E;
+  e2 : E;
+  // src:
+  e1 src = a;
+  e2 src = b;
+  // tgt:
+  e1 tgt = b;
+  e2 tgt = c;
+  // reachable (3 tuples):
+  [from: a, to: b] reachable;
+  [from: b, to: c] reachable;
+  [from: a, to: c] reachable;
+}
+
+geolog> :query G reachable a
+Tuples matching reachable(a, _) in G:
+  [from: a, to: b]
+  [from: a, to: c]
 ```
 
 ## Features
