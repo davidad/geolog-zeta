@@ -1131,11 +1131,10 @@ fn persist_chase_results(
     // use the structure's UUID mapping
     for slid_u64 in structure.luids.iter().map(|_| 0).enumerate().map(|(i, _)| i) {
         let slid = Slid::from_usize(slid_u64);
-        if !struct_slid_to_uuid.contains_key(&slid) {
-            if let Some(uuid) = structure.get_uuid(slid, &state.store.universe) {
+        if !struct_slid_to_uuid.contains_key(&slid)
+            && let Some(uuid) = structure.get_uuid(slid, &state.store.universe) {
                 struct_slid_to_uuid.insert(slid, uuid);
             }
-        }
     }
 
     // Get instance UUID

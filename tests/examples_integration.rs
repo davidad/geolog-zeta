@@ -169,7 +169,7 @@ fn test_petri_net_showcase_problem0_structure() {
 
     // ReachabilityProblem structure includes the nested Marking instances
     // This test verifies the cross-references work correctly
-    assert!(problem0.structure.len() > 0, "problem0 should have elements");
+    assert!(!problem0.structure.is_empty(), "problem0 should have elements");
 }
 
 #[test]
@@ -183,7 +183,7 @@ fn test_petri_net_showcase_solution0_structure() {
     // Solution structure includes nested Trace and Iso instances
     // The trace has: 1 firing, 1 input terminal, 1 output terminal
     // Plus the isomorphism mappings
-    assert!(solution0.structure.len() > 0, "solution0 should have elements");
+    assert!(!solution0.structure.is_empty(), "solution0 should have elements");
 }
 
 #[test]
@@ -196,7 +196,7 @@ fn test_petri_net_showcase_solution2_structure() {
     // then abc consumes both an A-token and the new B-token to produce C
     let solution2 = state.instances.get("solution2").unwrap();
 
-    assert!(solution2.structure.len() > 0, "solution2 should have elements");
+    assert!(!solution2.structure.is_empty(), "solution2 should have elements");
 }
 
 /// NEGATIVE TEST: Verify that an incomplete solution correctly fails axiom checking.

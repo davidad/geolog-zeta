@@ -417,8 +417,8 @@ impl Store {
             let entry = entry.map_err(|e| format!("Failed to read dir entry: {}", e))?;
             let path = entry.path();
 
-            if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-                if name.starts_with(&prefix) && name.ends_with(".batch.bin") {
+            if let Some(name) = path.file_name().and_then(|n| n.to_str())
+                && name.starts_with(&prefix) && name.ends_with(".batch.bin") {
                     // Parse filename: {uuid}_v{version}_{edb|idb}.batch.bin
                     // or legacy format: {uuid}_v{version}.batch.bin
                     let suffix = name
@@ -450,7 +450,6 @@ impl Store {
 
                     version_batches.push((version, is_idb, batch));
                 }
-            }
         }
 
         // Sort by version, then EDB before IDB at same version

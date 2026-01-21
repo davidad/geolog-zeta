@@ -217,26 +217,23 @@ impl Store {
         // Check VarT
         if let Some(var_t_sort) = self.sort_ids.var_t {
             for var_t_slid in self.elements_of_sort(var_t_sort) {
-                if let Some(term_func) = self.func_ids.var_t_term {
-                    if self.get_func(term_func, var_t_slid) == Some(term_slid) {
+                if let Some(term_func) = self.func_ids.var_t_term
+                    && self.get_func(term_func, var_t_slid) == Some(term_slid) {
                         // Found a VarT for this term
-                        if let Some(binder_func) = self.func_ids.var_t_binder {
-                            if let Some(binder_slid) = self.get_func(binder_func, var_t_slid) {
-                                if let Some((var_name, var_sort)) = binder_to_var.get(&binder_slid) {
+                        if let Some(binder_func) = self.func_ids.var_t_binder
+                            && let Some(binder_slid) = self.get_func(binder_func, var_t_slid)
+                                && let Some((var_name, var_sort)) = binder_to_var.get(&binder_slid) {
                                     return Some(Term::Var(var_name.clone(), var_sort.clone()));
                                 }
-                            }
-                        }
                     }
-                }
             }
         }
 
         // Check AppT
         if let Some(app_t_sort) = self.sort_ids.app_t {
             for app_t_slid in self.elements_of_sort(app_t_sort) {
-                if let Some(term_func) = self.func_ids.app_t_term {
-                    if self.get_func(term_func, app_t_slid) == Some(term_slid) {
+                if let Some(term_func) = self.func_ids.app_t_term
+                    && self.get_func(term_func, app_t_slid) == Some(term_slid) {
                         // Found an AppT for this term
                         let func_slid = self
                             .func_ids
@@ -257,21 +254,20 @@ impl Store {
 
                         return Some(Term::App(func_idx, Box::new(arg)));
                     }
-                }
             }
         }
 
         // Check RecordT
         if let Some(record_t_sort) = self.sort_ids.record_t {
             for record_t_slid in self.elements_of_sort(record_t_sort) {
-                if let Some(term_func) = self.func_ids.record_t_term {
-                    if self.get_func(term_func, record_t_slid) == Some(term_slid) {
+                if let Some(term_func) = self.func_ids.record_t_term
+                    && self.get_func(term_func, record_t_slid) == Some(term_slid) {
                         // Found a RecordT for this term - collect entries
                         let mut fields = Vec::new();
                         if let Some(rec_entry_sort) = self.sort_ids.rec_entry {
                             for rec_entry_slid in self.elements_of_sort(rec_entry_sort) {
-                                if let Some(record_func) = self.func_ids.rec_entry_record {
-                                    if self.get_func(record_func, rec_entry_slid)
+                                if let Some(record_func) = self.func_ids.rec_entry_record
+                                    && self.get_func(record_func, rec_entry_slid)
                                         == Some(record_t_slid)
                                     {
                                         // Get field name (from Field)
@@ -290,8 +286,7 @@ impl Store {
                                             .func_ids
                                             .rec_entry_val
                                             .and_then(|f| self.get_func(f, rec_entry_slid))
-                                        {
-                                            if let Some(val_term) = self.reconstruct_term(
+                                            && let Some(val_term) = self.reconstruct_term(
                                                 val_slid,
                                                 binder_to_var,
                                                 func_to_idx,
@@ -299,22 +294,19 @@ impl Store {
                                             ) {
                                                 fields.push((field_name, val_term));
                                             }
-                                        }
                                     }
-                                }
                             }
                         }
                         return Some(Term::Record(fields));
                     }
-                }
             }
         }
 
         // Check ProjT
         if let Some(proj_t_sort) = self.sort_ids.proj_t {
             for proj_t_slid in self.elements_of_sort(proj_t_sort) {
-                if let Some(term_func) = self.func_ids.proj_t_term {
-                    if self.get_func(term_func, proj_t_slid) == Some(term_slid) {
+                if let Some(term_func) = self.func_ids.proj_t_term
+                    && self.get_func(term_func, proj_t_slid) == Some(term_slid) {
                         // Get base term
                         let base_slid = self
                             .func_ids
@@ -336,7 +328,6 @@ impl Store {
 
                         return Some(Term::Project(Box::new(base), field_name));
                     }
-                }
             }
         }
 
@@ -355,30 +346,28 @@ impl Store {
         // Check TrueF
         if let Some(true_f_sort) = self.sort_ids.true_f {
             for true_f_slid in self.elements_of_sort(true_f_sort) {
-                if let Some(formula_func) = self.func_ids.true_f_formula {
-                    if self.get_func(formula_func, true_f_slid) == Some(formula_slid) {
+                if let Some(formula_func) = self.func_ids.true_f_formula
+                    && self.get_func(formula_func, true_f_slid) == Some(formula_slid) {
                         return Some(Formula::True);
                     }
-                }
             }
         }
 
         // Check FalseF
         if let Some(false_f_sort) = self.sort_ids.false_f {
             for false_f_slid in self.elements_of_sort(false_f_sort) {
-                if let Some(formula_func) = self.func_ids.false_f_formula {
-                    if self.get_func(formula_func, false_f_slid) == Some(formula_slid) {
+                if let Some(formula_func) = self.func_ids.false_f_formula
+                    && self.get_func(formula_func, false_f_slid) == Some(formula_slid) {
                         return Some(Formula::False);
                     }
-                }
             }
         }
 
         // Check EqF
         if let Some(eq_f_sort) = self.sort_ids.eq_f {
             for eq_f_slid in self.elements_of_sort(eq_f_sort) {
-                if let Some(formula_func) = self.func_ids.eq_f_formula {
-                    if self.get_func(formula_func, eq_f_slid) == Some(formula_slid) {
+                if let Some(formula_func) = self.func_ids.eq_f_formula
+                    && self.get_func(formula_func, eq_f_slid) == Some(formula_slid) {
                         let lhs_slid = self
                             .func_ids
                             .eq_f_lhs
@@ -395,15 +384,14 @@ impl Store {
 
                         return Some(Formula::Eq(lhs, rhs));
                     }
-                }
             }
         }
 
         // Check RelF
         if let Some(rel_f_sort) = self.sort_ids.rel_f {
             for rel_f_slid in self.elements_of_sort(rel_f_sort) {
-                if let Some(formula_func) = self.func_ids.rel_f_formula {
-                    if self.get_func(formula_func, rel_f_slid) == Some(formula_slid) {
+                if let Some(formula_func) = self.func_ids.rel_f_formula
+                    && self.get_func(formula_func, rel_f_slid) == Some(formula_slid) {
                         let rel_slid = self
                             .func_ids
                             .rel_f_rel
@@ -419,27 +407,25 @@ impl Store {
 
                         return Some(Formula::Rel(rel_idx, arg));
                     }
-                }
             }
         }
 
         // Check ConjF
         if let Some(conj_f_sort) = self.sort_ids.conj_f {
             for conj_f_slid in self.elements_of_sort(conj_f_sort) {
-                if let Some(formula_func) = self.func_ids.conj_f_formula {
-                    if self.get_func(formula_func, conj_f_slid) == Some(formula_slid) {
+                if let Some(formula_func) = self.func_ids.conj_f_formula
+                    && self.get_func(formula_func, conj_f_slid) == Some(formula_slid) {
                         // Collect conjuncts from ConjArm
                         let mut conjuncts = Vec::new();
                         if let Some(conj_arm_sort) = self.sort_ids.conj_arm {
                             for arm_slid in self.elements_of_sort(conj_arm_sort) {
-                                if let Some(conj_func) = self.func_ids.conj_arm_conj {
-                                    if self.get_func(conj_func, arm_slid) == Some(conj_f_slid) {
-                                        if let Some(child_slid) = self
+                                if let Some(conj_func) = self.func_ids.conj_arm_conj
+                                    && self.get_func(conj_func, arm_slid) == Some(conj_f_slid)
+                                        && let Some(child_slid) = self
                                             .func_ids
                                             .conj_arm_child
                                             .and_then(|f| self.get_func(f, arm_slid))
-                                        {
-                                            if let Some(child) = self.reconstruct_formula(
+                                            && let Some(child) = self.reconstruct_formula(
                                                 child_slid,
                                                 binder_to_var,
                                                 func_to_idx,
@@ -448,34 +434,29 @@ impl Store {
                                             ) {
                                                 conjuncts.push(child);
                                             }
-                                        }
-                                    }
-                                }
                             }
                         }
                         return Some(Formula::Conj(conjuncts));
                     }
-                }
             }
         }
 
         // Check DisjF
         if let Some(disj_f_sort) = self.sort_ids.disj_f {
             for disj_f_slid in self.elements_of_sort(disj_f_sort) {
-                if let Some(formula_func) = self.func_ids.disj_f_formula {
-                    if self.get_func(formula_func, disj_f_slid) == Some(formula_slid) {
+                if let Some(formula_func) = self.func_ids.disj_f_formula
+                    && self.get_func(formula_func, disj_f_slid) == Some(formula_slid) {
                         // Collect disjuncts from DisjArm
                         let mut disjuncts = Vec::new();
                         if let Some(disj_arm_sort) = self.sort_ids.disj_arm {
                             for arm_slid in self.elements_of_sort(disj_arm_sort) {
-                                if let Some(disj_func) = self.func_ids.disj_arm_disj {
-                                    if self.get_func(disj_func, arm_slid) == Some(disj_f_slid) {
-                                        if let Some(child_slid) = self
+                                if let Some(disj_func) = self.func_ids.disj_arm_disj
+                                    && self.get_func(disj_func, arm_slid) == Some(disj_f_slid)
+                                        && let Some(child_slid) = self
                                             .func_ids
                                             .disj_arm_child
                                             .and_then(|f| self.get_func(f, arm_slid))
-                                        {
-                                            if let Some(child) = self.reconstruct_formula(
+                                            && let Some(child) = self.reconstruct_formula(
                                                 child_slid,
                                                 binder_to_var,
                                                 func_to_idx,
@@ -484,22 +465,18 @@ impl Store {
                                             ) {
                                                 disjuncts.push(child);
                                             }
-                                        }
-                                    }
-                                }
                             }
                         }
                         return Some(Formula::Disj(disjuncts));
                     }
-                }
             }
         }
 
         // Check ExistsF
         if let Some(exists_f_sort) = self.sort_ids.exists_f {
             for exists_f_slid in self.elements_of_sort(exists_f_sort) {
-                if let Some(formula_func) = self.func_ids.exists_f_formula {
-                    if self.get_func(formula_func, exists_f_slid) == Some(formula_slid) {
+                if let Some(formula_func) = self.func_ids.exists_f_formula
+                    && self.get_func(formula_func, exists_f_slid) == Some(formula_slid) {
                         // Get the binder
                         let binder_slid = self
                             .func_ids
@@ -536,7 +513,6 @@ impl Store {
 
                         return Some(Formula::Exists(var_name, dsort, Box::new(body)));
                     }
-                }
             }
         }
 

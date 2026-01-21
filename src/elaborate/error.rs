@@ -151,9 +151,9 @@ impl std::fmt::Display for ElabError {
                 if counterexamples.is_empty() {
                     write!(f, "{}: {} counterexample(s) found", axiom_desc, num_violations)
                 } else {
-                    write!(f, "{}: {} counterexample(s) found\n", axiom_desc, num_violations)?;
+                    writeln!(f, "{}: {} counterexample(s) found", axiom_desc, num_violations)?;
                     for (i, ce) in counterexamples.iter().enumerate() {
-                        write!(f, "  #{}: {}\n", i + 1, ce)?;
+                        writeln!(f, "  #{}: {}", i + 1, ce)?;
                     }
                     if *num_violations > counterexamples.len() {
                         write!(

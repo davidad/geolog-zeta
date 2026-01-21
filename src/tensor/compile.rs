@@ -605,11 +605,10 @@ pub fn compile_formula(
             // then project out the internal value variables
 
             // Special case: x = x is trivially true
-            if let (Term::Var(name1, _), Term::Var(name2, _)) = (t1, t2) {
-                if name1 == name2 {
+            if let (Term::Var(name1, _), Term::Var(name2, _)) = (t1, t2)
+                && name1 == name2 {
                     return (TensorExpr::scalar(true), vec![]);
                 }
-            }
 
             let mut fresh_counter = 0;
 

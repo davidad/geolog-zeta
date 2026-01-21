@@ -628,12 +628,11 @@ fn propagate_equations(
                 let lhs_val = structure.get_function(func_id, lhs_local);
                 let rhs_val = structure.get_function(func_id, rhs_local);
 
-                if let (Some(lv), Some(rv)) = (lhs_val, rhs_val) {
-                    if !cc.are_equal(lv, rv) {
+                if let (Some(lv), Some(rv)) = (lhs_val, rhs_val)
+                    && !cc.are_equal(lv, rv) {
                         // Congruence: f(a) = lv, f(b) = rv, a = b implies lv = rv
                         cc.add_equation(lv, rv, EquationReason::Congruence { func_id });
                     }
-                }
             }
         }
     }
