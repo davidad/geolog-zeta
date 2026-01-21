@@ -1079,6 +1079,65 @@ theorem formula_satisfaction_monotone {M M' : Structure S (Type u)}
     exact ih i t hi
 
 /-!
+### Corollary: Models Expand with Element Sets
+
+The following corollaries express the intuition that "as the element set expands,
+the set of valid models expands" — specifically, satisfaction of geometric formulas
+is preserved when we embed structures into larger ones.
+-/
+
+/-- The empty context has length 0. -/
+def Context.empty : S.Context where
+  length := 0
+  nth := Fin.elim0
+
+/-- A sentence is a formula in the empty context (no free variables). -/
+abbrev Sentence (S : Signature) [κ : SmallUniverse S] := Formula (κ := κ) Context.empty
+
+/--
+**Sentence Satisfaction Monotonicity**:
+If a geometric sentence (closed formula) is satisfied in M, it's satisfied in M'.
+
+This is the "element set expansion → model expansion" principle:
+- Adding elements to a structure preserves satisfaction of geometric sentences
+- No coordination needed to check sentence satisfaction incrementally
+
+Note: For the empty context, any two elements are equal (it's a terminal object),
+so we just use arbitrary elements `t` and show the lifted `t` works.
+-/
+theorem sentence_satisfaction_monotone {M M' : Structure S (Type u)}
+    [κ : SmallUniverse S] [G : Geometric κ (Type u)]
+    (emb : RelPreservingEmbedding M M')
+    (φ : Sentence S)
+    (t : Context.interpret M Context.empty)
+    (hsat : formulaSatisfied φ t) :
+    ∃ t' : Context.interpret M' Context.empty, formulaSatisfied φ t' := by
+  use liftEmbedContext emb.toStructureEmbedding Context.empty t
+  exact formula_satisfaction_monotone emb φ t hsat
+
+/--
+**Corollary: Theory Models Expand**
+
+For a set of sentences (closed formulas), if all sentences are satisfied in M,
+they're all satisfied in M'. This captures:
+
+> "As the element set expands, the set of structures that model the theory expands."
+
+More precisely: if M ⊨ T and M embeds into M' (preserving relations),
+then the embedded copy of M in M' still satisfies T.
+-/
+theorem sentence_set_satisfaction_monotone {M M' : Structure S (Type u)}
+    [κ : SmallUniverse S] [G : Geometric κ (Type u)]
+    (emb : RelPreservingEmbedding M M')
+    (T : Set (Sentence S))
+    (t : Context.interpret M Context.empty)
+    (hM : ∀ φ ∈ T, formulaSatisfied φ t) :
+    ∃ t' : Context.interpret M' Context.empty, ∀ φ ∈ T, formulaSatisfied φ t' := by
+  use liftEmbedContext emb.toStructureEmbedding Context.empty t
+  intro φ hφ
+  exact formula_satisfaction_monotone emb φ t (hM φ hφ)
+
+/-!
 ### Theory Satisfaction Transfer
 -/
 
