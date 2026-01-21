@@ -339,6 +339,7 @@ fn formula() -> impl Parser<Token, Formula, Error = Simple<Token>> + Clone {
 
         // Existential: exists x : T. phi1, phi2, ...
         // The body is a conjunction of formulas (comma-separated).
+        // An empty body (exists x : X.) is interpreted as True.
         // This is standard geometric logic syntax.
         let exists = just(Token::Exists)
             .ignore_then(
@@ -348,12 +349,12 @@ fn formula() -> impl Parser<Token, Formula, Error = Simple<Token>> + Clone {
                     .at_least(1),
             )
             .then_ignore(just(Token::Dot))
-            .then(formula.clone().separated_by(just(Token::Comma)).at_least(1))
+            .then(formula.clone().separated_by(just(Token::Comma)))
             .map(|(vars, body_conjuncts)| {
-                let body = if body_conjuncts.len() == 1 {
-                    body_conjuncts.into_iter().next().unwrap()
-                } else {
-                    Formula::And(body_conjuncts)
+                let body = match body_conjuncts.len() {
+                    0 => Formula::True,
+                    1 => body_conjuncts.into_iter().next().unwrap(),
+                    _ => Formula::And(body_conjuncts),
                 };
                 Formula::Exists(vars, Box::new(body))
             });
