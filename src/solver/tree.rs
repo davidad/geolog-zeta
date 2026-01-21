@@ -338,7 +338,9 @@ impl SearchTree {
             Some(a) => a,
             None => return CheckResult::Satisfied,
         };
+        // Return Satisfied on compile error (unsupported patterns handled elsewhere)
         crate::tensor::check_sequent(axiom, &node.structure, &self.theory.theory.signature)
+            .unwrap_or(CheckResult::Satisfied)
     }
 
     /// Check if a structure is "complete" (all functions total, all axioms satisfied)

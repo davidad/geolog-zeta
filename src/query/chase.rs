@@ -117,19 +117,15 @@ fn fire_axiom(
     universe: &mut Universe,
     sig: &Signature,
 ) -> Result<bool, ChaseError> {
-    // Use catch_unwind to handle unsupported formula patterns gracefully
-    let check_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        check_sequent(axiom, structure, sig)
-    }));
-
-    let violations = match check_result {
+    // Check the axiom - if compilation fails due to unsupported patterns, skip silently
+    let violations = match check_sequent(axiom, structure, sig) {
         Ok(CheckResult::Satisfied) => {
             // Axiom is already satisfied - nothing to fire
             return Ok(false);
         }
         Ok(CheckResult::Violated(vs)) => vs,
         Err(_) => {
-            // Tensor compilation panicked (unsupported pattern)
+            // Tensor compilation failed (unsupported pattern)
             // Skip this axiom silently
             return Ok(false);
         }

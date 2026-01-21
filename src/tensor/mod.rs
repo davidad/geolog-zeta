@@ -25,7 +25,7 @@ pub use builder::{conjunction, conjunction_all, disjunction, disjunction_all, ex
 pub use check::{check_sequent, check_sequent_bool, check_theory_axioms, CheckResult, Violation};
 pub use compile::{
     build_carrier_index, compile_formula, derived_sort_cardinality, relation_to_tensor,
-    sort_cardinality, CompileContext,
+    sort_cardinality, CompileContext, CompileError,
 };
 pub use expr::TensorExpr;
 pub use sparse::SparseTensor;

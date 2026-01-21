@@ -2,7 +2,7 @@
 
 use crate::core::{Sequent, Signature, Structure};
 
-use super::compile::{compile_formula, derived_sort_cardinality, CompileContext};
+use super::compile::{compile_formula, derived_sort_cardinality, CompileContext, CompileError};
 use super::sparse::DomainIterator;
 
 /// A violation of a sequent: a variable assignment where the premise holds but conclusion doesn't.
@@ -54,13 +54,13 @@ impl CheckResult {
 ///
 /// Returns `CheckResult::Satisfied` if the sequent holds, or `CheckResult::Violated`
 /// with a list of violating assignments.
-pub fn check_sequent(sequent: &Sequent, structure: &Structure, sig: &Signature) -> CheckResult {
+pub fn check_sequent(sequent: &Sequent, structure: &Structure, sig: &Signature) -> Result<CheckResult, CompileError> {
     let ctx = CompileContext::from_context(&sequent.context);
 
     // Compile premise and conclusion
-    let (premise_expr, premise_vars) = compile_formula(&sequent.premise, &ctx, structure, sig);
+    let (premise_expr, premise_vars) = compile_formula(&sequent.premise, &ctx, structure, sig)?;
     let (conclusion_expr, conclusion_vars) =
-        compile_formula(&sequent.conclusion, &ctx, structure, sig);
+        compile_formula(&sequent.conclusion, &ctx, structure, sig)?;
 
     // Materialize both
     let premise_tensor = premise_expr.materialize();
@@ -69,13 +69,13 @@ pub fn check_sequent(sequent: &Sequent, structure: &Structure, sig: &Signature) 
     // Handle edge cases
     if premise_tensor.is_empty() {
         // Vacuously true: no assignments satisfy the premise
-        return CheckResult::Satisfied;
+        return Ok(CheckResult::Satisfied);
     }
 
     // Handle case where conclusion is scalar true (no variables)
     if conclusion_vars.is_empty() && conclusion_tensor.contains(&[]) {
         // Conclusion is just "true" - always satisfied
-        return CheckResult::Satisfied;
+        return Ok(CheckResult::Satisfied);
     }
 
     // Handle case where premise has no variables (scalar) but conclusion has variables
@@ -100,7 +100,7 @@ pub fn check_sequent(sequent: &Sequent, structure: &Structure, sig: &Signature) 
 
         if conclusion_tensor.len() == expected_count {
             // All tuples covered
-            return CheckResult::Satisfied;
+            return Ok(CheckResult::Satisfied);
         }
 
         // Find violations: tuples in domain not in conclusion
@@ -112,9 +112,9 @@ pub fn check_sequent(sequent: &Sequent, structure: &Structure, sig: &Signature) 
         }
 
         return if violations.is_empty() {
-            CheckResult::Satisfied
+            Ok(CheckResult::Satisfied)
         } else {
-            CheckResult::Violated(violations)
+            Ok(CheckResult::Violated(violations))
         };
     }
 
@@ -157,62 +157,47 @@ pub fn check_sequent(sequent: &Sequent, structure: &Structure, sig: &Signature) 
     }
 
     if violations.is_empty() {
-        CheckResult::Satisfied
+        Ok(CheckResult::Satisfied)
     } else {
-        CheckResult::Violated(violations)
+        Ok(CheckResult::Violated(violations))
     }
 }
 
 /// Check if a sequent is satisfied, returning just a boolean.
+/// Returns false if compilation fails.
 pub fn check_sequent_bool(sequent: &Sequent, structure: &Structure, sig: &Signature) -> bool {
-    check_sequent(sequent, structure, sig).is_satisfied()
+    check_sequent(sequent, structure, sig)
+        .map(|r| r.is_satisfied())
+        .unwrap_or(false)
 }
 
 /// Check multiple sequents (axioms of a theory) against a structure.
 /// Returns a list of (sequent_index, violations) for each violated sequent.
 ///
-/// If tensor compilation panics (e.g., for unsupported formula patterns like
-/// function application in equality), silently skips that axiom. Forward
-/// chaining can handle these axioms differently via `eval_term_to_slid`.
+/// If tensor compilation fails (e.g., for unsupported formula patterns like
+/// record terms in equality), silently skips that axiom. Forward chaining
+/// can handle these axioms differently via `eval_term_to_slid`.
 pub fn check_theory_axioms(
     axioms: &[Sequent],
     structure: &Structure,
     sig: &Signature,
 ) -> Vec<(usize, Vec<Violation>)> {
-    // Temporarily suppress panic output for expected panics (unsupported formulas)
-    let prev_hook = std::panic::take_hook();
-    std::panic::set_hook(Box::new(|_| {
-        // Silently ignore panics - we handle them with catch_unwind
-    }));
-
-    let result = axioms
+    axioms
         .iter()
         .enumerate()
         .filter_map(|(i, seq)| {
-            // Use catch_unwind to handle panics from unsupported formula patterns
-            // (e.g., function applications in equality expressions)
-            let check_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                check_sequent(seq, structure, sig)
-            }));
-
-            match check_result {
+            match check_sequent(seq, structure, sig) {
                 Ok(CheckResult::Satisfied) => None,
                 Ok(CheckResult::Violated(vs)) => Some((i, vs)),
                 Err(_) => {
-                    // Tensor compilation panicked (e.g., unsupported term equality)
+                    // Tensor compilation failed (e.g., unsupported term in equality)
                     // Treat as satisfied for now - forward chaining will handle these
                     // axioms via a different code path (eval_term_to_slid).
-                    // NOTE: Basic function applications (f(x)=y, f(x)=g(y)) are now handled
-                    // in compile.rs; this catch_unwind is for unsupported edge cases.
                     None
                 }
             }
         })
-        .collect();
-
-    // Restore the previous panic hook
-    std::panic::set_hook(prev_hook);
-    result
+        .collect()
 }
 
 #[cfg(test)]
@@ -290,7 +275,7 @@ mod tests {
             conclusion,
         };
 
-        let result = check_sequent(&sequent, &structure, &sig);
+        let result = check_sequent(&sequent, &structure, &sig).unwrap();
 
         // Should be violated for all 3 nodes (no self-loops)
         assert!(!result.is_satisfied());
@@ -329,7 +314,7 @@ mod tests {
             conclusion: edge_xy,
         };
 
-        let result = check_sequent(&sequent, &structure, &sig);
+        let result = check_sequent(&sequent, &structure, &sig).unwrap();
 
         assert!(result.is_satisfied());
     }
@@ -396,7 +381,7 @@ mod tests {
             conclusion: edge_xz,
         };
 
-        let result = check_sequent(&sequent, &structure, &sig);
+        let result = check_sequent(&sequent, &structure, &sig).unwrap();
 
         // Should be violated: (0,1,2) satisfies premise but 0→2 is not an edge
         assert!(!result.is_satisfied());
@@ -434,7 +419,7 @@ mod tests {
             ),
         };
 
-        let result = check_sequent(&sequent, &structure, &sig);
+        let result = check_sequent(&sequent, &structure, &sig).unwrap();
 
         assert!(result.is_satisfied());
     }
@@ -523,7 +508,7 @@ mod tests {
             conclusion: edge_xz,
         };
 
-        let result = check_sequent(&sequent, &structure, &sig);
+        let result = check_sequent(&sequent, &structure, &sig).unwrap();
 
         // Now should be satisfied because we have 0→2
         assert!(result.is_satisfied());

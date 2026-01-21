@@ -9,6 +9,50 @@ use super::builder::{conjunction, conjunction_all, disjunction_all, exists};
 use super::expr::TensorExpr;
 use super::sparse::SparseTensor;
 
+/// Error type for formula/term compilation
+#[derive(Debug, Clone)]
+pub enum CompileError {
+    /// Product sort in variable term (not yet supported)
+    ProductSortInVariable,
+    /// Function with product domain (not yet supported)
+    ProductDomainFunction(String),
+    /// Function with product codomain (not yet supported)
+    ProductCodomainFunction(String),
+    /// Record term in equality (not yet supported)
+    RecordInEquality,
+    /// Projection term in equality (not yet supported)
+    ProjectionInEquality,
+    /// Variable not found in context
+    UnboundVariable(String),
+}
+
+impl std::fmt::Display for CompileError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            CompileError::ProductSortInVariable => {
+                write!(f, "product sort in variable term not yet supported")
+            }
+            CompileError::ProductDomainFunction(name) => {
+                write!(f, "function '{}' has product domain (not yet supported)", name)
+            }
+            CompileError::ProductCodomainFunction(name) => {
+                write!(f, "function '{}' has product codomain (not yet supported)", name)
+            }
+            CompileError::RecordInEquality => {
+                write!(f, "record terms in equality not yet supported")
+            }
+            CompileError::ProjectionInEquality => {
+                write!(f, "projection terms in equality not yet supported")
+            }
+            CompileError::UnboundVariable(name) => {
+                write!(f, "variable '{}' not found in context", name)
+            }
+        }
+    }
+}
+
+impl std::error::Error for CompileError {}
+
 /// Context for formula compilation, tracking variable names and their dimensions.
 #[derive(Clone, Debug)]
 pub struct CompileContext {
@@ -257,7 +301,7 @@ fn compile_rel_with_func_apps(
     term: &Term,
     structure: &Structure,
     sig: &Signature,
-) -> (TensorExpr, Vec<String>) {
+) -> Result<(TensorExpr, Vec<String>), CompileError> {
     let column_sorts = relation_column_sorts(sig, rel_id);
     let rel_tensor = relation_to_tensor(structure, rel_id, &column_sorts);
 
@@ -275,7 +319,7 @@ fn compile_rel_with_func_apps(
     // Compile all field terms
     let mut all_compiled: Vec<(TensorExpr, Vec<String>, String)> = Vec::new();
     for field_term in &field_terms {
-        let (expr, vars, value_var) = compile_term(field_term, structure, sig, &mut fresh_counter);
+        let (expr, vars, value_var) = compile_term(field_term, structure, sig, &mut fresh_counter)?;
         all_compiled.push((expr, vars, value_var));
     }
 
@@ -310,7 +354,7 @@ fn compile_rel_with_func_apps(
         final_vars = new_vars;
     }
 
-    (final_expr, final_vars)
+    Ok((final_expr, final_vars))
 }
 
 /// Get the base sort IDs from a relation's domain.
@@ -345,14 +389,14 @@ fn compile_term(
     structure: &Structure,
     sig: &Signature,
     fresh_counter: &mut usize,
-) -> (TensorExpr, Vec<String>, String) {
+) -> Result<(TensorExpr, Vec<String>, String), CompileError> {
     match term {
         Term::Var(name, sort) => {
             // Variable x evaluates to itself
             // Tensor is identity: (x, value) where value = x
             // This is the diagonal tensor
             let DerivedSort::Base(sort_id) = sort else {
-                panic!("Product sort in variable term not yet supported");
+                return Err(CompileError::ProductSortInVariable);
             };
             let size = structure.carriers[*sort_id].len() as usize;
 
@@ -387,21 +431,21 @@ fn compile_term(
                 }
             };
 
-            (expr, vars, value_var)
+            Ok((expr, vars, value_var))
         }
 
         Term::App(func_id, arg) => {
             // f(arg): first compile arg, then apply function
             let (arg_expr, arg_vars, arg_value_var) =
-                compile_term(arg.as_ref(), structure, sig, fresh_counter);
+                compile_term(arg.as_ref(), structure, sig, fresh_counter)?;
 
             // Get function info
             let func_sym = &sig.functions[*func_id];
             let DerivedSort::Base(domain_sort_id) = &func_sym.domain else {
-                panic!("Function with product domain not yet supported in term compilation");
+                return Err(CompileError::ProductDomainFunction(func_sym.name.clone()));
             };
             let DerivedSort::Base(codomain_sort_id) = &func_sym.codomain else {
-                panic!("Function with product codomain not yet supported in term compilation");
+                return Err(CompileError::ProductCodomainFunction(func_sym.name.clone()));
             };
 
             // Build function tensor: (domain, codomain) pairs
@@ -434,15 +478,15 @@ fn compile_term(
             // Existentially quantify out arg_value_var (the intermediate value)
             let (result_expr, result_vars) = exists(joined_expr, &joined_vars, &arg_value_var);
 
-            (result_expr, result_vars, result_var)
+            Ok((result_expr, result_vars, result_var))
         }
 
         Term::Record(_) => {
-            panic!("Record terms in equality not yet supported");
+            Err(CompileError::RecordInEquality)
         }
 
         Term::Project(_, _) => {
-            panic!("Projection terms in equality not yet supported");
+            Err(CompileError::ProjectionInEquality)
         }
     }
 }
@@ -455,11 +499,11 @@ pub fn compile_formula(
     _ctx: &CompileContext,
     structure: &Structure,
     sig: &Signature,
-) -> (TensorExpr, Vec<String>) {
+) -> Result<(TensorExpr, Vec<String>), CompileError> {
     match formula {
-        Formula::True => (TensorExpr::scalar(true), vec![]),
+        Formula::True => Ok((TensorExpr::scalar(true), vec![])),
 
-        Formula::False => (TensorExpr::scalar(false), vec![]),
+        Formula::False => Ok((TensorExpr::scalar(false), vec![])),
 
         Formula::Rel(rel_id, term) => {
             // Check if term contains function applications
@@ -468,32 +512,32 @@ pub fn compile_formula(
                 compile_rel_with_func_apps(*rel_id, term, structure, sig)
             } else {
                 // Simple case: direct variable binding
-                compile_rel_simple(*rel_id, term, structure, sig)
+                Ok(compile_rel_simple(*rel_id, term, structure, sig))
             }
         }
 
         Formula::Conj(formulas) => {
             if formulas.is_empty() {
-                return (TensorExpr::scalar(true), vec![]);
+                return Ok((TensorExpr::scalar(true), vec![]));
             }
 
-            let compiled: Vec<(TensorExpr, Vec<String>)> = formulas
+            let compiled: Result<Vec<(TensorExpr, Vec<String>)>, CompileError> = formulas
                 .iter()
                 .map(|f| compile_formula(f, _ctx, structure, sig))
                 .collect();
 
-            conjunction_all(compiled)
+            Ok(conjunction_all(compiled?))
         }
 
         Formula::Disj(formulas) => {
             if formulas.is_empty() {
-                return (TensorExpr::scalar(false), vec![]);
+                return Ok((TensorExpr::scalar(false), vec![]));
             }
 
             let mut compiled: Vec<(TensorExpr, Vec<String>)> = formulas
                 .iter()
                 .map(|f| compile_formula(f, _ctx, structure, sig))
-                .collect();
+                .collect::<Result<Vec<_>, _>>()?;
 
             // Collect all variables across all disjuncts
             let all_vars: std::collections::HashSet<&String> = compiled
@@ -546,12 +590,8 @@ pub fn compile_formula(
                                 full_domain_tensors.push(TensorExpr::leaf(full_tensor));
                                 new_vars.push(var.clone());
                             } else {
-                                // Variable not in context - this is an error
-                                panic!(
-                                    "Variable '{}' in disjunction not found in context. \
-                                     Context has: {:?}",
-                                    var, _ctx.vars
-                                );
+                                // Variable not in context - return error
+                                return Err(CompileError::UnboundVariable(var.clone()));
                             }
                         }
 
@@ -569,12 +609,12 @@ pub fn compile_formula(
                 }
             }
 
-            disjunction_all(compiled)
+            Ok(disjunction_all(compiled))
         }
 
         Formula::Exists(var_name, sort, inner) => {
             // Compile inner formula
-            let (inner_expr, inner_vars) = compile_formula(inner, _ctx, structure, sig);
+            let (inner_expr, inner_vars) = compile_formula(inner, _ctx, structure, sig)?;
 
             // Check if the quantified variable appears in the inner formula
             if !inner_vars.contains(var_name) {
@@ -587,14 +627,14 @@ pub fn compile_formula(
                 let domain_card = derived_sort_cardinality(structure, sort);
                 if domain_card == 0 {
                     // Empty domain: existential is false
-                    return (TensorExpr::scalar(false), inner_vars);
+                    return Ok((TensorExpr::scalar(false), inner_vars));
                 }
                 // Non-empty domain: the existential is equivalent to the inner formula
-                return (inner_expr, inner_vars);
+                return Ok((inner_expr, inner_vars));
             }
 
             // Apply existential (sum over the variable)
-            exists(inner_expr, &inner_vars, var_name)
+            Ok(exists(inner_expr, &inner_vars, var_name))
         }
 
         Formula::Eq(t1, t2) => {
@@ -607,14 +647,14 @@ pub fn compile_formula(
             // Special case: x = x is trivially true
             if let (Term::Var(name1, _), Term::Var(name2, _)) = (t1, t2)
                 && name1 == name2 {
-                    return (TensorExpr::scalar(true), vec![]);
+                    return Ok((TensorExpr::scalar(true), vec![]));
                 }
 
             let mut fresh_counter = 0;
 
             // Compile both terms
-            let (expr1, vars1, val1) = compile_term(t1, structure, sig, &mut fresh_counter);
-            let (expr2, vars2, val2) = compile_term(t2, structure, sig, &mut fresh_counter);
+            let (expr1, vars1, val1) = compile_term(t1, structure, sig, &mut fresh_counter)?;
+            let (expr2, vars2, val2) = compile_term(t2, structure, sig, &mut fresh_counter)?;
 
             // t1 = t2 means their values are equal
             // We need to:
@@ -667,7 +707,7 @@ pub fn compile_formula(
             // Project out the internal value variable val1
             let (result_expr, result_vars) = exists(joined_expr, &joined_vars, &val1);
 
-            (result_expr, result_vars)
+            Ok((result_expr, result_vars))
         }
     }
 }
@@ -721,7 +761,7 @@ mod tests {
         let (structure, sig) = make_test_structure_with_relation();
         let ctx = CompileContext::new();
 
-        let (expr, vars) = compile_formula(&Formula::True, &ctx, &structure, &sig);
+        let (expr, vars) = compile_formula(&Formula::True, &ctx, &structure, &sig).unwrap();
         let result = expr.materialize();
 
         assert!(vars.is_empty());
@@ -734,7 +774,7 @@ mod tests {
         let (structure, sig) = make_test_structure_with_relation();
         let ctx = CompileContext::new();
 
-        let (expr, vars) = compile_formula(&Formula::False, &ctx, &structure, &sig);
+        let (expr, vars) = compile_formula(&Formula::False, &ctx, &structure, &sig).unwrap();
         let result = expr.materialize();
 
         assert!(vars.is_empty());
@@ -759,7 +799,7 @@ mod tests {
         ]);
         let formula = Formula::Rel(0, term);
 
-        let (expr, vars) = compile_formula(&formula, &ctx, &structure, &sig);
+        let (expr, vars) = compile_formula(&formula, &ctx, &structure, &sig).unwrap();
         let result = expr.materialize();
 
         assert_eq!(vars, vec!["x", "y"]);
@@ -804,7 +844,7 @@ mod tests {
 
         let formula = Formula::Conj(vec![edge_xy, edge_yz]);
 
-        let (expr, vars) = compile_formula(&formula, &ctx, &structure, &sig);
+        let (expr, vars) = compile_formula(&formula, &ctx, &structure, &sig).unwrap();
         let result = expr.materialize();
 
         assert_eq!(vars, vec!["x", "y", "z"]);
@@ -849,7 +889,7 @@ mod tests {
         let inner = Formula::Conj(vec![edge_xy, edge_yz]);
         let formula = Formula::Exists("y".to_string(), DerivedSort::Base(0), Box::new(inner));
 
-        let (expr, vars) = compile_formula(&formula, &ctx, &structure, &sig);
+        let (expr, vars) = compile_formula(&formula, &ctx, &structure, &sig).unwrap();
         let result = expr.materialize();
 
         assert_eq!(vars, vec!["x", "z"]);
@@ -868,7 +908,7 @@ mod tests {
             Term::Var("y".to_string(), DerivedSort::Base(0)),
         );
 
-        let (expr, vars) = compile_formula(&formula, &ctx, &structure, &sig);
+        let (expr, vars) = compile_formula(&formula, &ctx, &structure, &sig).unwrap();
         let result = expr.materialize();
 
         assert_eq!(vars.len(), 2);
@@ -890,7 +930,7 @@ mod tests {
             Term::Var("x".to_string(), DerivedSort::Base(0)),
         );
 
-        let (expr, vars) = compile_formula(&formula, &ctx, &structure, &sig);
+        let (expr, vars) = compile_formula(&formula, &ctx, &structure, &sig).unwrap();
         let result = expr.materialize();
 
         assert!(vars.is_empty());
@@ -929,7 +969,7 @@ mod tests {
             Term::Var("y".to_string(), DerivedSort::Base(0)),
         );
 
-        let (expr, vars) = compile_formula(&formula, &ctx, &structure, &sig);
+        let (expr, vars) = compile_formula(&formula, &ctx, &structure, &sig).unwrap();
         let result = expr.materialize();
 
         // Variables should be x and y (alphabetical order)
@@ -983,7 +1023,7 @@ mod tests {
             Term::App(1, Box::new(Term::Var("y".to_string(), DerivedSort::Base(0)))),
         );
 
-        let (expr, vars) = compile_formula(&formula, &ctx, &structure, &sig);
+        let (expr, vars) = compile_formula(&formula, &ctx, &structure, &sig).unwrap();
         let result = expr.materialize();
 
         // Variables should be x and y
@@ -1016,7 +1056,7 @@ mod tests {
         );
         let formula = Formula::Exists("x".to_string(), DerivedSort::Base(node_id), Box::new(inner));
 
-        let (expr, vars) = compile_formula(&formula, &ctx, &structure, &sig);
+        let (expr, vars) = compile_formula(&formula, &ctx, &structure, &sig).unwrap();
         let result = expr.materialize();
 
         // Should be FALSE (empty) because there's no witness in empty domain
@@ -1043,7 +1083,7 @@ mod tests {
         );
         let formula = Formula::Exists("x".to_string(), DerivedSort::Base(node_id), Box::new(inner));
 
-        let (expr, vars) = compile_formula(&formula, &ctx, &structure, &sig);
+        let (expr, vars) = compile_formula(&formula, &ctx, &structure, &sig).unwrap();
         let result = expr.materialize();
 
         // Should be TRUE because there's a witness
@@ -1095,7 +1135,7 @@ mod tests {
 
         let formula = Formula::Disj(vec![r_x, s_y]);
 
-        let (expr, vars) = compile_formula(&formula, &ctx, &structure, &sig);
+        let (expr, vars) = compile_formula(&formula, &ctx, &structure, &sig).unwrap();
         let result = expr.materialize();
 
         // Result should have both x and y
@@ -1108,5 +1148,82 @@ mod tests {
         // - S(y) extended with all x: {(0,1), (1,1), (2,1)}
         // Note: the tuple order depends on variable order
         assert!(!result.is_empty());
+    }
+
+    #[test]
+    fn test_compile_formula_relation_with_func_apps() {
+        // Test: [from: e src, to: e tgt] edge  (function applications in relation term)
+        // This verifies that compile_rel_with_func_apps works correctly
+        let mut sig = Signature::new();
+        let node_id = sig.add_sort("Node".to_string());
+        let edge_id = sig.add_sort("Edge".to_string());
+
+        // Add functions src, tgt : Edge -> Node
+        sig.add_function("src".to_string(), DerivedSort::Base(edge_id), DerivedSort::Base(node_id));
+        sig.add_function("tgt".to_string(), DerivedSort::Base(edge_id), DerivedSort::Base(node_id));
+
+        // Add binary relation: reachable(from: Node, to: Node)
+        sig.add_relation(
+            "reachable".to_string(),
+            DerivedSort::Product(vec![
+                ("from".to_string(), DerivedSort::Base(node_id)),
+                ("to".to_string(), DerivedSort::Base(node_id)),
+            ]),
+        );
+
+        let mut universe = Universe::new();
+        let mut structure = Structure::new(2); // 2 sorts
+
+        // Add 3 nodes (sort 0)
+        for _ in 0..3 {
+            structure.add_element(&mut universe, node_id);
+        }
+        // Add 2 edges (sort 1)
+        for _ in 0..2 {
+            structure.add_element(&mut universe, edge_id);
+        }
+
+        // Define edges: e0: 0->1, e1: 1->2
+        structure.init_functions(&[Some(edge_id), Some(edge_id)]); // src, tgt have domain Edge
+        // e0: src=0, tgt=1
+        structure.define_function(0, Slid::from_usize(3), Slid::from_usize(0)).unwrap(); // e0.src = node0
+        structure.define_function(1, Slid::from_usize(3), Slid::from_usize(1)).unwrap(); // e0.tgt = node1
+        // e1: src=1, tgt=2
+        structure.define_function(0, Slid::from_usize(4), Slid::from_usize(1)).unwrap(); // e1.src = node1
+        structure.define_function(1, Slid::from_usize(4), Slid::from_usize(2)).unwrap(); // e1.tgt = node2
+
+        // Reachable relation: initially {(0,1), (0,2), (1,2)}
+        structure.init_relations(&[2]); // One binary relation
+        structure.assert_relation(0, vec![Slid::from_usize(0), Slid::from_usize(1)]); // 0->1
+        structure.assert_relation(0, vec![Slid::from_usize(0), Slid::from_usize(2)]); // 0->2
+        structure.assert_relation(0, vec![Slid::from_usize(1), Slid::from_usize(2)]); // 1->2
+
+        let ctx = CompileContext::new();
+
+        // Build: [from: e src, to: e tgt] reachable
+        // This should match edges e where reachable(src(e), tgt(e)) holds
+        let formula = Formula::Rel(
+            0, // reachable
+            Term::Record(vec![
+                (
+                    "from".to_string(),
+                    Term::App(0, Box::new(Term::Var("e".to_string(), DerivedSort::Base(edge_id)))), // e src
+                ),
+                (
+                    "to".to_string(),
+                    Term::App(1, Box::new(Term::Var("e".to_string(), DerivedSort::Base(edge_id)))), // e tgt
+                ),
+            ]),
+        );
+
+        let (expr, vars) = compile_formula(&formula, &ctx, &structure, &sig).unwrap();
+        let result = expr.materialize();
+
+        // The formula should match edges where reachable(src(e), tgt(e)) holds
+        // e0: src=0, tgt=1 -> reachable(0,1) holds ✓
+        // e1: src=1, tgt=2 -> reachable(1,2) holds ✓
+        // So both edges should match
+        assert_eq!(vars, vec!["e"]);
+        assert_eq!(result.len(), 2); // Both edges match
     }
 }
