@@ -102,10 +102,13 @@ ax/trans : forall x : X, y : X, z : X.
 ### Instance
 
 ```ebnf
-instance := 'instance' identifier ':' type_expr '=' '{' instance_item* '}'
+instance := 'instance' identifier ':' type_expr '=' instance_body
+instance_body := '{' instance_item* '}' | 'chase' '{' instance_item* '}'
 
 instance_item := element_decl | equation | nested_instance
 ```
+
+Using `= chase { ... }` runs the chase algorithm during elaboration, automatically deriving facts from axioms.
 
 #### Element Declaration
 ```
@@ -290,6 +293,7 @@ The `examples/geolog/` directory contains working examples:
 | `transitive_closure.geolog` | **Demonstrates chase algorithm** - computes reachability |
 | `monoid.geolog` | Algebraic monoid theory with associativity axiom |
 | `petri_net.geolog` | Petri net formalization with places, transitions, marking |
+| `petri_net_showcase.geolog` | **Full showcase** - parameterized theories, nested instances, cross-references |
 | `todo_list.geolog` | Task management example with dependencies |
 | `solver_demo.geolog` | Solver demonstration with reachability queries |
 | `relalg_simple.geolog` | Simple RelAlgIR query plan examples |
