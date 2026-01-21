@@ -801,6 +801,24 @@ impl Store {
         result
     }
 
+    /// Find a theory by name and return its Slid.
+    ///
+    /// More efficient than `reconstruct_all_theories` when you only need one.
+    pub fn find_theory_slid(&self, name: &str) -> Option<Slid> {
+        self.query_all_theories()
+            .into_iter()
+            .find(|(n, _)| n == name)
+            .map(|(_, slid)| slid)
+    }
+
+    /// Find and reconstruct a theory by name.
+    ///
+    /// Convenience method that combines `find_theory_slid` and `reconstruct_theory`.
+    pub fn find_theory_by_name(&self, name: &str) -> Option<ElaboratedTheory> {
+        self.find_theory_slid(name)
+            .and_then(|slid| self.reconstruct_theory(slid))
+    }
+
     // ========================================================================
     // Instance queries and reconstruction
     // ========================================================================
@@ -980,6 +998,24 @@ impl Store {
             }
         }
         result
+    }
+
+    /// Find an instance by name and return its Slid.
+    ///
+    /// More efficient than `reconstruct_all_instances` when you only need one.
+    pub fn find_instance_slid(&self, name: &str) -> Option<Slid> {
+        self.query_all_instances()
+            .into_iter()
+            .find(|(n, _)| n == name)
+            .map(|(_, slid)| slid)
+    }
+
+    /// Find and reconstruct an instance by name.
+    ///
+    /// Convenience method that combines `find_instance_slid` and `reconstruct_instance`.
+    pub fn find_instance_by_name(&self, name: &str) -> Option<ReconstructedInstance> {
+        self.find_instance_slid(name)
+            .and_then(|slid| self.reconstruct_instance(slid))
     }
 }
 
