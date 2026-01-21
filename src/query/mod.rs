@@ -35,6 +35,7 @@ mod store_queries;
 pub mod to_relalg;
 pub mod from_relalg;
 pub mod to_tensor_ir;
+pub mod from_tensor_ir;
 pub mod chase;
 
 pub use pattern::{Pattern, Constraint, Projection};
