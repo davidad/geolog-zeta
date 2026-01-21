@@ -119,6 +119,10 @@ theory (N : PetriNet instance) Trace {
 theory (X : Sort) (Y : Sort) Iso {
   fwd : X -> Y;
   bwd : Y -> X;
+
+  // Roundtrip axioms ensure this is a true bijection
+  fb : forall x : X. |- x fwd bwd = x;
+  bf : forall y : Y. |- y bwd fwd = y;
 }
 
 // ============================================================

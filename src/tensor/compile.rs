@@ -203,6 +203,122 @@ fn relation_column_sorts(sig: &Signature, rel_id: RelId) -> Vec<usize> {
     }
 }
 
+/// Compile a term to a tensor expression.
+///
+/// Returns (expr, vars, value_var) where:
+/// - expr is a tensor over vars (including value_var)
+/// - vars are all free variables in alphabetical order
+/// - value_var is the internal name for the term's value dimension
+///
+/// The tensor represents: for each assignment to free variables,
+/// what is the value of the term?
+fn compile_term(
+    term: &Term,
+    structure: &Structure,
+    sig: &Signature,
+    fresh_counter: &mut usize,
+) -> (TensorExpr, Vec<String>, String) {
+    match term {
+        Term::Var(name, sort) => {
+            // Variable x evaluates to itself
+            // Tensor is identity: (x, value) where value = x
+            // This is the diagonal tensor
+            let DerivedSort::Base(sort_id) = sort else {
+                panic!("Product sort in variable term not yet supported");
+            };
+            let size = structure.carriers[*sort_id].len() as usize;
+
+            // Create diagonal tensor: extent = {(i, i) | i < size}
+            let extent: BTreeSet<Vec<usize>> = (0..size).map(|i| vec![i, i]).collect();
+            let tensor = SparseTensor {
+                dims: vec![size, size],
+                extent,
+            };
+
+            // Value variable is the same as the input variable
+            // Actually we need a fresh name to track the "output" dimension
+            let value_var = format!("_val{}", *fresh_counter);
+            *fresh_counter += 1;
+
+            // The tensor has dimensions [name, value_var]
+            // We need them in alphabetical order
+            let vars = if name < &value_var {
+                vec![name.clone(), value_var.clone()]
+            } else {
+                vec![value_var.clone(), name.clone()]
+            };
+
+            let expr = if name < &value_var {
+                TensorExpr::leaf(tensor)
+            } else {
+                // Need to transpose
+                TensorExpr::Contract {
+                    inner: Box::new(TensorExpr::leaf(tensor)),
+                    index_map: vec![1, 0],
+                    output: (0..2).collect(),
+                }
+            };
+
+            (expr, vars, value_var)
+        }
+
+        Term::App(func_id, arg) => {
+            // f(arg): first compile arg, then apply function
+            let (arg_expr, arg_vars, arg_value_var) =
+                compile_term(arg.as_ref(), structure, sig, fresh_counter);
+
+            // Get function info
+            let func_sym = &sig.functions[*func_id];
+            let DerivedSort::Base(domain_sort_id) = &func_sym.domain else {
+                panic!("Function with product domain not yet supported in term compilation");
+            };
+            let DerivedSort::Base(codomain_sort_id) = &func_sym.codomain else {
+                panic!("Function with product codomain not yet supported in term compilation");
+            };
+
+            // Build function tensor: (domain, codomain) pairs
+            let func_tensor = function_to_tensor(structure, *func_id, *domain_sort_id, *codomain_sort_id);
+
+            // Fresh variable for output
+            let result_var = format!("_val{}", *fresh_counter);
+            *fresh_counter += 1;
+
+            // Function tensor has vars [arg_value_var, result_var] (we need to match arg's value)
+            let func_vars = if arg_value_var < result_var {
+                vec![arg_value_var.clone(), result_var.clone()]
+            } else {
+                vec![result_var.clone(), arg_value_var.clone()]
+            };
+
+            let func_expr = if arg_value_var < result_var {
+                TensorExpr::leaf(func_tensor)
+            } else {
+                TensorExpr::Contract {
+                    inner: Box::new(TensorExpr::leaf(func_tensor)),
+                    index_map: vec![1, 0],
+                    output: (0..2).collect(),
+                }
+            };
+
+            // Join arg_expr and func_expr on arg_value_var
+            let (joined_expr, joined_vars) = conjunction(arg_expr, &arg_vars, func_expr, &func_vars);
+
+            // Existentially quantify out arg_value_var (the intermediate value)
+            let (result_expr, result_vars) = exists(joined_expr, &joined_vars, &arg_value_var);
+
+            (result_expr, result_vars, result_var)
+        }
+
+        Term::Record(_) => {
+            panic!("Record terms in equality not yet supported");
+        }
+
+        Term::Project(_, _) => {
+            panic!("Projection terms in equality not yet supported");
+        }
+    }
+}
+
 /// Compile a formula to a tensor expression.
 ///
 /// Returns the expression and the list of free variables in order.
@@ -389,147 +505,77 @@ pub fn compile_formula(
         }
 
         Formula::Eq(t1, t2) => {
-            // Handle equality - for now, only simple variable equality
-            match (t1, t2) {
-                (Term::Var(name1, sort1), Term::Var(name2, _sort2)) => {
-                    if name1 == name2 {
-                        // x = x is always true
-                        (TensorExpr::scalar(true), vec![])
-                    } else {
-                        // x = y: diagonal tensor
-                        // Both variables must have the same sort
-                        let DerivedSort::Base(sort_id) = sort1 else {
-                            panic!("Equality on non-base sorts not yet supported");
-                        };
-                        let card = sort_cardinality(structure, *sort_id);
+            // Handle equality using recursive term compilation
+            // This supports arbitrary term expressions including nested function applications
+            //
+            // Strategy: compile both terms to tensors, join on value dimensions,
+            // then project out the internal value variables
 
-                        // Create diagonal: (x, y) where x == y
-                        let mut extent = std::collections::BTreeSet::new();
-                        for i in 0..card {
-                            extent.insert(vec![i, i]);
-                        }
-
-                        let tensor = SparseTensor {
-                            dims: vec![card, card],
-                            extent,
-                        };
-
-                        // Order: alphabetically for consistency
-                        let vars = if name1 < name2 {
-                            vec![name1.clone(), name2.clone()]
-                        } else {
-                            vec![name2.clone(), name1.clone()]
-                        };
-
-                        // If we swapped order, we need to reorder tensor dimensions
-                        // But for diagonal, it's symmetric!
-                        (TensorExpr::leaf(tensor), vars)
-                    }
-                }
-                // f(x) = y: function application equals variable
-                (Term::App(func_id, arg), Term::Var(var_name, _var_sort))
-                | (Term::Var(var_name, _var_sort), Term::App(func_id, arg)) => {
-                    // arg must be a simple variable for now
-                    let Term::Var(arg_name, _arg_sort) = arg.as_ref() else {
-                        panic!(
-                            "Nested function application in equality not yet supported: {:?} = {:?}",
-                            t1, t2
-                        );
-                    };
-
-                    // Get domain and codomain sort IDs
-                    let func_sym = &sig.functions[*func_id];
-                    let DerivedSort::Base(domain_sort_id) = &func_sym.domain else {
-                        panic!("Function with product domain in equality not yet supported");
-                    };
-                    let DerivedSort::Base(codomain_sort_id) = &func_sym.codomain else {
-                        panic!("Function with product codomain in equality not yet supported");
-                    };
-
-                    // Build function extent tensor: (arg, result) pairs
-                    let func_tensor = function_to_tensor(structure, *func_id, *domain_sort_id, *codomain_sort_id);
-
-                    // Variables: arg_name maps to dim 0, var_name maps to dim 1
-                    // Order alphabetically for consistency
-                    let (vars, needs_transpose) = if arg_name < var_name {
-                        (vec![arg_name.clone(), var_name.clone()], false)
-                    } else {
-                        (vec![var_name.clone(), arg_name.clone()], true)
-                    };
-
-                    let expr = if needs_transpose {
-                        // Swap dimensions: (arg, result) -> (result, arg)
-                        TensorExpr::Contract {
-                            inner: Box::new(TensorExpr::leaf(func_tensor)),
-                            index_map: vec![1, 0], // swap dimensions
-                            output: (0..2).collect(),
-                        }
-                    } else {
-                        TensorExpr::leaf(func_tensor)
-                    };
-
-                    (expr, vars)
-                }
-
-                // f(x) = g(y): two function applications equal
-                (Term::App(func_id1, arg1), Term::App(func_id2, arg2)) => {
-                    // Both args must be simple variables
-                    let Term::Var(arg1_name, _arg1_sort) = arg1.as_ref() else {
-                        panic!("Nested function application in equality not yet supported");
-                    };
-                    let Term::Var(arg2_name, _arg2_sort) = arg2.as_ref() else {
-                        panic!("Nested function application in equality not yet supported");
-                    };
-
-                    // Get function sorts
-                    let func1_sym = &sig.functions[*func_id1];
-                    let func2_sym = &sig.functions[*func_id2];
-                    let DerivedSort::Base(domain1_sort_id) = &func1_sym.domain else {
-                        panic!("Function with product domain in equality not yet supported");
-                    };
-                    let DerivedSort::Base(codomain1_sort_id) = &func1_sym.codomain else {
-                        panic!("Function with product codomain in equality not yet supported");
-                    };
-                    let DerivedSort::Base(domain2_sort_id) = &func2_sym.domain else {
-                        panic!("Function with product domain in equality not yet supported");
-                    };
-                    let DerivedSort::Base(codomain2_sort_id) = &func2_sym.codomain else {
-                        panic!("Function with product codomain in equality not yet supported");
-                    };
-
-                    // Build function extent tensors
-                    let func1_tensor = function_to_tensor(structure, *func_id1, *domain1_sort_id, *codomain1_sort_id);
-                    let func2_tensor = function_to_tensor(structure, *func_id2, *domain2_sort_id, *codomain2_sort_id);
-
-                    // f(x) = g(y) means: ∃z. f(x) = z ∧ g(y) = z
-                    // func1_tensor has vars [arg1_name, z], func2_tensor has vars [arg2_name, z]
-                    // We need to join on z and then existentially quantify z out
-
-                    let vars1 = vec![arg1_name.clone(), "_z".to_string()];
-                    let vars2 = vec![arg2_name.clone(), "_z".to_string()];
-
-                    // Conjunction on shared variable _z
-                    let (conj_expr, conj_vars) = conjunction(
-                        TensorExpr::leaf(func1_tensor),
-                        &vars1,
-                        TensorExpr::leaf(func2_tensor),
-                        &vars2,
-                    );
-
-                    // Existentially quantify out _z
-                    let (result_expr, result_vars) = exists(conj_expr, &conj_vars, "_z");
-
-                    (result_expr, result_vars)
-                }
-
-                _ => {
-                    // Records, projections, etc. not yet implemented
-                    panic!(
-                        "Complex term equality not yet supported: {:?} = {:?}",
-                        t1, t2
-                    );
+            // Special case: x = x is trivially true
+            if let (Term::Var(name1, _), Term::Var(name2, _)) = (t1, t2) {
+                if name1 == name2 {
+                    return (TensorExpr::scalar(true), vec![]);
                 }
             }
+
+            let mut fresh_counter = 0;
+
+            // Compile both terms
+            let (expr1, vars1, val1) = compile_term(t1, structure, sig, &mut fresh_counter);
+            let (expr2, vars2, val2) = compile_term(t2, structure, sig, &mut fresh_counter);
+
+            // t1 = t2 means their values are equal
+            // We need to:
+            // 1. Join expr1 and expr2 on their value dimensions (val1 = val2)
+            // 2. Project out the value dimensions
+
+            // First, rename val2 to val1 in vars2 so they join on the same variable
+            let vars2_renamed: Vec<String> = vars2
+                .iter()
+                .map(|v| if v == &val2 { val1.clone() } else { v.clone() })
+                .collect();
+
+            // Rename val2 to val1 in expr2 by reordering dimensions
+            // The vars are sorted alphabetically, so we need to figure out where val2 was
+            // and where val1 should go
+            let val2_pos = vars2.iter().position(|v| v == &val2).unwrap();
+
+            // Where should val1 go in the sorted vars2_renamed?
+            let mut sorted_vars2: Vec<String> = vars2_renamed.clone();
+            sorted_vars2.sort();
+            let val1_pos_in_sorted = sorted_vars2.iter().position(|v| v == &val1).unwrap();
+
+            // Build index map for reordering
+            let expr2_reordered = if val2_pos != val1_pos_in_sorted {
+                // Need to reorder dimensions
+                let mut index_map: Vec<usize> = (0..vars2.len()).collect();
+                // The dimension at val2_pos needs to go to val1_pos_in_sorted
+                index_map.remove(val2_pos);
+                index_map.insert(val1_pos_in_sorted, val2_pos);
+
+                // Actually, we need the inverse mapping for Contract
+                let mut inverse_map = vec![0; vars2.len()];
+                for (new_pos, &old_pos) in index_map.iter().enumerate() {
+                    inverse_map[old_pos] = new_pos;
+                }
+
+                TensorExpr::Contract {
+                    inner: Box::new(expr2),
+                    index_map: inverse_map,
+                    output: (0..vars2.len()).collect(),
+                }
+            } else {
+                expr2
+            };
+
+            // Now join on val1
+            let (joined_expr, joined_vars) =
+                conjunction(expr1, &vars1, expr2_reordered, &sorted_vars2);
+
+            // Project out the internal value variable val1
+            let (result_expr, result_vars) = exists(joined_expr, &joined_vars, &val1);
+
+            (result_expr, result_vars)
         }
     }
 }
