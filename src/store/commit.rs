@@ -57,37 +57,57 @@ impl Store {
             return Some((binding.target, binding.kind));
         }
 
-        // Otherwise, search through name bindings from HEAD backwards
-        let head = self.head?;
-
-        let nb_sort = self.sort_ids.name_binding?;
-        let commit_func = self.func_ids.name_binding_commit?;
-        let theory_func = self.func_ids.name_binding_theory?;
-        let instance_func = self.func_ids.name_binding_instance?;
-
-        // Walk commits from head backwards
-        let mut current = Some(head);
-        while let Some(commit) = current {
-            // Find all NameBindings for this commit
-            for nb_slid in self.elements_of_sort(nb_sort) {
-                if self.get_func(commit_func, nb_slid) == Some(commit) {
-                    // Check if this binding is for our name
-                    let nb_name = self.get_element_name(nb_slid);
-                    if nb_name.starts_with(&format!("nb_{}_", name)) {
-                        // Found it! Return the target
-                        if let Some(theory) = self.get_func(theory_func, nb_slid) {
-                            return Some((theory, BindingKind::Theory));
-                        }
-                        if let Some(instance) = self.get_func(instance_func, nb_slid) {
-                            return Some((instance, BindingKind::Instance));
+        // Search through name bindings from HEAD backwards (if we have commits)
+        if let (Some(head), Some(nb_sort), Some(commit_func), Some(theory_func), Some(instance_func)) = (
+            self.head,
+            self.sort_ids.name_binding,
+            self.func_ids.name_binding_commit,
+            self.func_ids.name_binding_theory,
+            self.func_ids.name_binding_instance,
+        ) {
+            let mut current = Some(head);
+            while let Some(commit) = current {
+                // Find all NameBindings for this commit
+                for nb_slid in self.elements_of_sort(nb_sort) {
+                    if self.get_func(commit_func, nb_slid) == Some(commit) {
+                        // Check if this binding is for our name
+                        let nb_name = self.get_element_name(nb_slid);
+                        if nb_name.starts_with(&format!("nb_{}_", name)) {
+                            // Found it! Return the target
+                            if let Some(theory) = self.get_func(theory_func, nb_slid) {
+                                return Some((theory, BindingKind::Theory));
+                            }
+                            if let Some(instance) = self.get_func(instance_func, nb_slid) {
+                                return Some((instance, BindingKind::Instance));
+                            }
                         }
                     }
                 }
-            }
 
-            // Move to parent commit
-            let parent_func = self.func_ids.commit_parent?;
-            current = self.get_func(parent_func, commit);
+                // Move to parent commit
+                if let Some(parent_func) = self.func_ids.commit_parent {
+                    current = self.get_func(parent_func, commit);
+                } else {
+                    break;
+                }
+            }
+        }
+
+        // Fallback: search directly in meta Structure for uncommitted theories/instances
+        // This handles the case where data exists in meta.bin but no commit was made yet
+        if let Some(theory_sort) = self.sort_ids.theory {
+            for slid in self.elements_of_sort(theory_sort) {
+                if self.get_element_name(slid) == name {
+                    return Some((slid, BindingKind::Theory));
+                }
+            }
+        }
+        if let Some(instance_sort) = self.sort_ids.instance {
+            for slid in self.elements_of_sort(instance_sort) {
+                if self.get_element_name(slid) == name {
+                    return Some((slid, BindingKind::Instance));
+                }
+            }
         }
 
         None
