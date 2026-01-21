@@ -438,8 +438,10 @@ fn axiom_decl() -> impl Parser<Token, AxiomDecl, Error = Simple<Token>> + Clone 
         .then(type_expr())
         .map(|(names, ty)| QuantifiedVar { names, ty });
 
+    // Allow empty quantifier list: `forall .` means no universally quantified variables
+    // This is useful for "unconditional" axioms like `forall . |- exists x : X. ...`
     let quantified_vars = just(Token::Forall)
-        .ignore_then(quantified_var.separated_by(just(Token::Comma)).at_least(1))
+        .ignore_then(quantified_var.separated_by(just(Token::Comma)))
         .then_ignore(just(Token::Dot));
 
     // Hypotheses before |- (optional, comma separated)
