@@ -141,7 +141,7 @@ fn manual_fuzz_edge_cases() {
             }
             s.push_str("Sort");
             for _ in 0..depth {
-                s.push_str("]");
+                s.push(']');
             }
             s.push_str(" -> Prop; }");
             s

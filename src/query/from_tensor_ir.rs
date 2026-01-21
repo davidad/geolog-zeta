@@ -789,16 +789,16 @@ impl<'a> InterpretContext<'a> {
 
         for elem_idx in structure.carriers[self.ids.carrier_source].iter() {
             let elem = Slid::from_usize(elem_idx as usize);
-            if let Some(s) = self.get_func_value(self.funcs.carrier_source_source, elem) {
-                if s == source {
-                    let srt = self
-                        .get_func_value(self.funcs.carrier_source_srt, elem)
-                        .ok_or_else(|| {
-                            TensorIRError::InvalidOp("CarrierSource missing srt".into())
-                        })?;
-                    let sort_idx = self.get_srt_sort_idx(srt)?;
-                    return Ok(Some(ParsedOp::LeafCarrier { sort_idx, out_wire }));
-                }
+            if let Some(s) = self.get_func_value(self.funcs.carrier_source_source, elem)
+                && s == source
+            {
+                let srt = self
+                    .get_func_value(self.funcs.carrier_source_srt, elem)
+                    .ok_or_else(|| {
+                        TensorIRError::InvalidOp("CarrierSource missing srt".into())
+                    })?;
+                let sort_idx = self.get_srt_sort_idx(srt)?;
+                return Ok(Some(ParsedOp::LeafCarrier { sort_idx, out_wire }));
             }
         }
         Ok(None)
@@ -814,13 +814,13 @@ impl<'a> InterpretContext<'a> {
 
         for elem_idx in structure.carriers[self.ids.relation_source].iter() {
             let elem = Slid::from_usize(elem_idx as usize);
-            if let Some(s) = self.get_func_value(self.funcs.relation_source_source, elem) {
-                if s == source {
-                    // TODO: Look up relation index from GeologMeta/Rel element
-                    return Err(TensorIRError::Unsupported(
-                        "RelationSource not yet implemented".into(),
-                    ));
-                }
+            if let Some(s) = self.get_func_value(self.funcs.relation_source_source, elem)
+                && s == source
+            {
+                // TODO: Look up relation index from GeologMeta/Rel element
+                return Err(TensorIRError::Unsupported(
+                    "RelationSource not yet implemented".into(),
+                ));
             }
         }
         Ok(None)
@@ -836,12 +836,12 @@ impl<'a> InterpretContext<'a> {
 
         for elem_idx in structure.carriers[self.ids.function_source].iter() {
             let elem = Slid::from_usize(elem_idx as usize);
-            if let Some(s) = self.get_func_value(self.funcs.function_source_source, elem) {
-                if s == source {
-                    return Err(TensorIRError::Unsupported(
-                        "FunctionSource not yet implemented".into(),
-                    ));
-                }
+            if let Some(s) = self.get_func_value(self.funcs.function_source_source, elem)
+                && s == source
+            {
+                return Err(TensorIRError::Unsupported(
+                    "FunctionSource not yet implemented".into(),
+                ));
             }
         }
         Ok(None)
@@ -857,16 +857,16 @@ impl<'a> InterpretContext<'a> {
 
         for elem_idx in structure.carriers[self.ids.equality_source].iter() {
             let elem = Slid::from_usize(elem_idx as usize);
-            if let Some(s) = self.get_func_value(self.funcs.equality_source_source, elem) {
-                if s == source {
-                    let srt = self
-                        .get_func_value(self.funcs.equality_source_srt, elem)
-                        .ok_or_else(|| {
-                            TensorIRError::InvalidOp("EqualitySource missing srt".into())
-                        })?;
-                    let sort_idx = self.get_srt_sort_idx(srt)?;
-                    return Ok(Some(ParsedOp::LeafEquality { sort_idx, out_wire }));
-                }
+            if let Some(s) = self.get_func_value(self.funcs.equality_source_source, elem)
+                && s == source
+            {
+                let srt = self
+                    .get_func_value(self.funcs.equality_source_srt, elem)
+                    .ok_or_else(|| {
+                        TensorIRError::InvalidOp("EqualitySource missing srt".into())
+                    })?;
+                let sort_idx = self.get_srt_sort_idx(srt)?;
+                return Ok(Some(ParsedOp::LeafEquality { sort_idx, out_wire }));
             }
         }
         Ok(None)
@@ -882,32 +882,37 @@ impl<'a> InterpretContext<'a> {
 
         for elem_idx in structure.carriers[self.ids.constant_source].iter() {
             let elem_slid = Slid::from_usize(elem_idx as usize);
-            if let Some(s) = self.get_func_value(self.funcs.constant_source_source, elem_slid) {
-                if s == source {
-                    let elem_ref = self
-                        .get_func_value(self.funcs.constant_source_elem, elem_slid)
-                        .ok_or_else(|| {
-                            TensorIRError::InvalidOp("ConstantSource missing elem".into())
-                        })?;
+            if let Some(s) = self.get_func_value(self.funcs.constant_source_source, elem_slid)
+                && s == source
+            {
+                let elem_ref = self
+                    .get_func_value(self.funcs.constant_source_elem, elem_slid)
+                    .ok_or_else(|| {
+                        TensorIRError::InvalidOp("ConstantSource missing elem".into())
+                    })?;
 
-                    // Look up the original target element from elem_value_mapping
-                    let elem = self.instance.elem_value_mapping.get(&elem_ref).copied().ok_or_else(|| {
+                // Look up the original target element from elem_value_mapping
+                let elem = self
+                    .instance
+                    .elem_value_mapping
+                    .get(&elem_ref)
+                    .copied()
+                    .ok_or_else(|| {
                         TensorIRError::InvalidOp(format!(
                             "ConstantSource elem {:?} not in elem_value_mapping",
                             elem_ref
                         ))
                     })?;
 
-                    // Determine sort from element
-                    // TODO: Proper sort lookup - for now assume sort 0
-                    let sort_idx = 0;
+                // Determine sort from element
+                // TODO: Proper sort lookup - for now assume sort 0
+                let sort_idx = 0;
 
-                    return Ok(Some(ParsedOp::LeafConstant {
-                        elem,
-                        sort_idx,
-                        out_wire,
-                    }));
-                }
+                return Ok(Some(ParsedOp::LeafConstant {
+                    elem,
+                    sort_idx,
+                    out_wire,
+                }));
             }
         }
         Ok(None)
@@ -927,43 +932,41 @@ impl<'a> InterpretContext<'a> {
         for elem_idx in structure.carriers[self.ids.type_index].iter() {
             let elem = Slid::from_usize(elem_idx as usize);
 
-            // Get IndexedType owner
-            if let Some(owner) = self.get_func_value(self.funcs.type_index_owner, elem) {
-                // Get IndexedType/type to find TensorType
-                if let Some(owner_type) = self.get_func_value(self.funcs.indexed_type_type, owner) {
-                    if owner_type == tensor_type {
-                        // Get position and IndexSpace
-                        let position = self
-                            .get_func_value(self.funcs.type_index_position, elem)
-                            .map(|p| p.index())
-                            .unwrap_or(type_indices.len());
+            // Get IndexedType owner and its type to find TensorType
+            if let Some(owner) = self.get_func_value(self.funcs.type_index_owner, elem)
+                && let Some(owner_type) = self.get_func_value(self.funcs.indexed_type_type, owner)
+                && owner_type == tensor_type
+            {
+                // Get position and IndexSpace
+                let position = self
+                    .get_func_value(self.funcs.type_index_position, elem)
+                    .map(|p| p.index())
+                    .unwrap_or(type_indices.len());
 
-                        let space = self
-                            .get_func_value(self.funcs.type_index_space, elem)
-                            .ok_or_else(|| {
-                                TensorIRError::InvalidOp("TypeIndex missing space".into())
-                            })?;
+                let space = self
+                    .get_func_value(self.funcs.type_index_space, elem)
+                    .ok_or_else(|| {
+                        TensorIRError::InvalidOp("TypeIndex missing space".into())
+                    })?;
 
-                        // Get sort from IndexSpace
-                        let srt = self
-                            .get_func_value(self.funcs.index_space_srt, space)
-                            .ok_or_else(|| {
-                                TensorIRError::InvalidOp("IndexSpace missing srt".into())
-                            })?;
+                // Get sort from IndexSpace
+                let srt = self
+                    .get_func_value(self.funcs.index_space_srt, space)
+                    .ok_or_else(|| {
+                        TensorIRError::InvalidOp("IndexSpace missing srt".into())
+                    })?;
 
-                        let sort_idx = self.get_srt_sort_idx(srt)?;
+                let sort_idx = self.get_srt_sort_idx(srt)?;
 
-                        // Get carrier size from target
-                        let dim = self
-                            .target
-                            .carriers
-                            .get(sort_idx)
-                            .map(|c| c.len() as usize)
-                            .unwrap_or(0);
+                // Get carrier size from target
+                let dim = self
+                    .target
+                    .carriers
+                    .get(sort_idx)
+                    .map(|c| c.len() as usize)
+                    .unwrap_or(0);
 
-                        type_indices.push((position, dim));
-                    }
-                }
+                type_indices.push((position, dim));
             }
         }
 

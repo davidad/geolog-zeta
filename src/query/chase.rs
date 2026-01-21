@@ -505,6 +505,7 @@ fn check_formula_satisfied(
 /// 1. Search the carrier of S for an existing witness w where body[x↦w] holds
 /// 2. If found, do nothing (witness exists)
 /// 3. If not found, create a fresh element w and fire body as conclusion with x↦w
+#[allow(clippy::too_many_arguments)]
 fn fire_existential(
     var_name: &str,
     sort: &DerivedSort,

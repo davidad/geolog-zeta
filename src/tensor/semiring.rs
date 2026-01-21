@@ -316,16 +316,16 @@ mod tests {
     #[test]
     fn test_bool_semiring() {
         // Addition is OR
-        assert_eq!(false.add(&false), false);
-        assert_eq!(false.add(&true), true);
-        assert_eq!(true.add(&false), true);
-        assert_eq!(true.add(&true), true);
+        assert!(!false.add(&false));
+        assert!(false.add(&true));
+        assert!(true.add(&false));
+        assert!(true.add(&true));
 
         // Multiplication is AND
-        assert_eq!(false.mul(&false), false);
-        assert_eq!(false.mul(&true), false);
-        assert_eq!(true.mul(&false), false);
-        assert_eq!(true.mul(&true), true);
+        assert!(!false.mul(&false));
+        assert!(!false.mul(&true));
+        assert!(!true.mul(&false));
+        assert!(true.mul(&true));
 
         // Zero and one
         assert!(bool::zero().is_zero());
@@ -336,11 +336,11 @@ mod tests {
     fn test_bool_delta() {
         // Insert: false → true
         assert_eq!(false.diff(&true), BoolDelta::INSERT);
-        assert_eq!(false.apply_delta(&BoolDelta::INSERT), true);
+        assert!(false.apply_delta(&BoolDelta::INSERT));
 
         // Delete: true → false
         assert_eq!(true.diff(&false), BoolDelta::DELETE);
-        assert_eq!(true.apply_delta(&BoolDelta::DELETE), false);
+        assert!(!true.apply_delta(&BoolDelta::DELETE));
 
         // No change
         assert_eq!(false.diff(&false), BoolDelta::NONE);

@@ -328,7 +328,7 @@ impl ReplState {
                 }
                 ast::Declaration::Query(q) => {
                     let result = self.execute_query(q)?;
-                    results.push(ExecuteResult::Query(result));
+                    results.push(ExecuteResult::Query(Box::new(result)));
                 }
             }
         }
@@ -410,7 +410,7 @@ impl ReplState {
             EnumerationResult::Found { model, .. } => Ok(QueryResult::Found {
                 query_name: q.name.clone(),
                 theory_name: resolved.theory_name,
-                model,
+                model: Box::new(model),
                 time_ms,
             }),
             EnumerationResult::Unsat { .. } => Ok(QueryResult::Unsat {
@@ -1463,7 +1463,7 @@ pub enum ExecuteResult {
         theory_name: String,
         num_elements: usize,
     },
-    Query(QueryResult),
+    Query(Box<QueryResult>),
 }
 
 /// Result of executing a query
@@ -1473,7 +1473,7 @@ pub enum QueryResult {
     Found {
         query_name: String,
         theory_name: String,
-        model: crate::core::Structure,
+        model: Box<crate::core::Structure>,
         time_ms: f64,
     },
     /// No solution exists

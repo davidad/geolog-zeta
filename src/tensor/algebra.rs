@@ -167,8 +167,8 @@ pub trait TensorSym {
 
         // Renumber: indices > max(i,j) shift down by 1
         let max_ij = i.max(j);
-        for k in (max_ij + 1)..n {
-            index_map[k] -= 1;
+        for val in &mut index_map[(max_ij + 1)..] {
+            *val -= 1;
         }
 
         let output: BTreeSet<usize> = (0..(n - 1)).collect();

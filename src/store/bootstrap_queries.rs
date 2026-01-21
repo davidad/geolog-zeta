@@ -207,6 +207,7 @@ impl Store {
     }
 
     /// Reconstruct a Term from its Term slid.
+    #[allow(clippy::only_used_in_recursion)]
     fn reconstruct_term(
         &self,
         term_slid: Slid,

@@ -301,7 +301,7 @@ fn handle_geolog(state: &mut ReplState, source: &str) {
                         );
                     }
                     ExecuteResult::Query(result) => {
-                        handle_query_result(state, result);
+                        handle_query_result(state, *result);
                     }
                 }
             }
@@ -727,7 +727,7 @@ fn handle_compile(state: &mut ReplState, instance_name: &str, sort_name: &str) {
     use geolog::universe::Universe;
 
     // First, load TensorIR if needed (before borrowing instances)
-    if state.theories.get("TensorIR").is_none() {
+    if !state.theories.contains_key("TensorIR") {
         eprintln!("TensorIR theory not loaded. Loading it now...");
         let meta_content = std::fs::read_to_string("theories/GeologMeta.geolog")
             .unwrap_or_else(|_| {

@@ -822,7 +822,7 @@ fn verify_dbsp_compiles_and_parses(
 
     // Verify some structure was created
     assert!(
-        relalg_instance.structure.len() > 0,
+        !relalg_instance.structure.is_empty(),
         "{}: RelAlgIR instance should have elements",
         description
     );

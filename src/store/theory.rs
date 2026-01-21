@@ -313,6 +313,7 @@ impl Store {
     /// - `term`: The term to persist
     /// - `sig_result`: Mapping from signature indices to Slids
     /// - `binders`: Mapping from variable names to their Binder Slids
+    #[allow(clippy::only_used_in_recursion)]
     pub fn persist_term(
         &mut self,
         theory: Slid,
