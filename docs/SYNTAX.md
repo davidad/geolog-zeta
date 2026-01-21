@@ -84,7 +84,7 @@ leq : [x: X, y: X] -> Prop;      // Binary relation
 ```
 path ':' 'forall' quantified_vars '.' premises '|-' conclusion ';'
 
-quantified_vars := var_group (',' var_group)*
+quantified_vars := (var_group (',' var_group)*)?  // May be empty!
 var_group := identifier (',' identifier)* ':' type_expr
 premises := formula (',' formula)*    // May be empty
 ```
@@ -97,6 +97,10 @@ ax/refl : forall x : X. |- [x: x, y: x] leq;
 // With premises
 ax/trans : forall x : X, y : X, z : X.
   [x: x, y: y] leq, [x: y, y: z] leq |- [x: x, y: z] leq;
+
+// Empty quantifier - unconditional axiom
+// Useful for asserting existence without preconditions
+ax/nonempty : forall . |- exists x : X.;
 ```
 
 ### Instance
@@ -210,7 +214,8 @@ atomic := equality | relation_app
 equality := term '=' term
 relation_app := term identifier     // 'x R' means R(x)
 
-exists := 'exists' quantified_vars '.' formula
+exists := 'exists' quantified_vars '.' formulas?  // Body may be empty (= True)
+formulas := formula (',' formula)*
 disjunction := formula ('\/' formula)+
 paren_formula := '(' formula ')'
 ```
@@ -221,7 +226,8 @@ Examples:
 ```
 x = y                           // Equality
 [x: a, y: b] leq               // Relation application
-exists z : X. [x: x, y: z] leq // Existential
+exists z : X. [x: x, y: z] leq // Existential with condition
+exists z : X.                  // Existential with empty body (= exists z. True)
 phi \/ psi                     // Disjunction
 ```
 
