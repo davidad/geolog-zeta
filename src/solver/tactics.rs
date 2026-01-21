@@ -425,8 +425,7 @@ impl Tactic for PropagateEquationsTactic {
     fn run(&mut self, tree: &mut SearchTree, node: NodeId, budget: &Budget) -> TacticResult {
         let start = std::time::Instant::now();
         let mut steps = 0;
-        #[allow(unused_variables)]
-        let mut new_equations = 0;
+        let mut _new_equations = 0;
 
         // Process pending equations
         loop {
@@ -496,7 +495,7 @@ impl Tactic for PropagateEquationsTactic {
                         rv,
                         super::types::EquationReason::Congruence { func_id },
                     );
-                    new_equations += 1;
+                    _new_equations += 1;
                 }
             }
         }
