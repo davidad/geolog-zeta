@@ -407,6 +407,8 @@ pub struct Theory {
     pub name: String,
     pub signature: Signature,
     pub axioms: Vec<Sequent>,
+    /// Axiom names (parallel to axioms vec), e.g. "ax/input_complete"
+    pub axiom_names: Vec<String>,
 }
 
 /// A theory can have parameters (other theories it depends on)

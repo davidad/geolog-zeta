@@ -17,6 +17,7 @@ fn simple_theory_with_relation() -> Theory {
         name: "Graph".to_string(),
         signature: sig,
         axioms: vec![],
+        axiom_names: vec![],
     }
 }
 
@@ -46,6 +47,7 @@ fn transitive_closure_theory() -> Theory {
         name: "TransitiveClosure".to_string(),
         signature: sig,
         axioms: vec![base_axiom],
+        axiom_names: vec!["ax/base".to_string()],
     }
 }
 
@@ -300,6 +302,7 @@ fn preorder_theory() -> Theory {
         name: "Preorder".to_string(),
         signature: sig,
         axioms: vec![refl_axiom, trans_axiom],
+        axiom_names: vec!["ax/refl".to_string(), "ax/trans".to_string()],
     }
 }
 

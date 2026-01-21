@@ -300,7 +300,8 @@ impl Store {
         let theory = Theory {
             name: theory_name,
             signature,
-            axioms: vec![], // TODO: persist and reconstruct axioms
+            axioms: vec![],      // TODO: persist and reconstruct axioms
+            axiom_names: vec![], // TODO: persist and reconstruct axiom names
         };
 
         Some(ElaboratedTheory {

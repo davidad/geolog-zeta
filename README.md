@@ -25,7 +25,7 @@ cargo run -- examples/geolog/petri_net_showcase.geolog
 - **Parameterized Theories**: Theories can depend on instances of other theories
 - **Nested Instances**: Inline instance definitions within instances
 - **Relations**: Binary and n-ary predicates with product domains
-- **Axioms**: Horn clauses with existentials and disjunctions in conclusions
+- **Axioms**: Geometric sequents, automatically checked with tensor algebra
 - **Chase Algorithm**: Automatic inference of derived facts
 - **Interactive REPL**: Explore and modify instances dynamically
 - **Version Control**: Commit and track changes to instances

@@ -23,6 +23,7 @@ fn test_theory_to_structure() {
             name: "PetriNet".to_string(),
             signature: sig,
             axioms: vec![],
+            axiom_names: vec![],
         },
     };
 
@@ -102,6 +103,7 @@ fn test_theory_roundtrip() {
             name: "PetriNet".to_string(),
             signature: sig,
             axioms: vec![],
+            axiom_names: vec![],
         },
     };
 
@@ -213,6 +215,7 @@ fn test_theory_roundtrip_with_axioms() {
             name: "Preorder".to_string(),
             signature: sig,
             axioms: vec![reflexivity, transitivity],
+            axiom_names: vec!["ax/refl".to_string(), "ax/trans".to_string()],
         },
     };
 

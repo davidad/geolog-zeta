@@ -11,7 +11,7 @@ use crate::tensor::check_theory_axioms;
 use crate::universe::Universe;
 
 use super::env::Env;
-use super::error::{ElabError, ElabResult};
+use super::error::{CounterExample, ElabError, ElabResult};
 
 // Re-use remapping utilities from theory elaboration
 use super::theory::{collect_type_args_from_theory_type, build_param_subst, remap_sort_for_param_import};
@@ -965,12 +965,64 @@ fn elaborate_instance_ctx_inner(
     let violations = check_theory_axioms(&axioms, &structure, &theory.theory.signature);
 
     if !violations.is_empty() {
-        // Report the first violation (could be extended to report all)
+        // Report the first violation with detailed counterexamples
         let (axiom_idx, violation_list) = &violations[0];
+
+        // Get the actual axiom name from the theory
+        let axiom_name = theory
+            .theory
+            .axiom_names
+            .get(*axiom_idx)
+            .cloned();
+
+        // Build counterexamples with element names (limit to 5 for readability)
+        let axiom = &theory.theory.axioms[*axiom_idx];
+        let counterexamples: Vec<CounterExample> = violation_list
+            .iter()
+            .take(5)
+            .map(|v| {
+                let bindings: Vec<(String, String)> = v
+                    .variable_names
+                    .iter()
+                    .zip(&v.assignment)
+                    .map(|(var_name, &idx)| {
+                        // Look up the variable's sort from the axiom context by name
+                        let elem_name = axiom
+                            .context
+                            .vars
+                            .iter()
+                            .find(|(name, _)| name == var_name)
+                            .and_then(|(_, sort)| {
+                                // Get the sort id (assuming DerivedSort::Base for now)
+                                if let DerivedSort::Base(sort_id) = sort {
+                                    // Get the Slid at index idx from the carrier (RoaringTreemap)
+                                    structure.carriers.get(*sort_id).and_then(|carrier| {
+                                        // Iterate to the idx-th element
+                                        carrier.iter().nth(idx).map(|slid_u64| {
+                                            let slid = Slid::from_usize(slid_u64 as usize);
+                                            slid_to_name
+                                                .get(&slid)
+                                                .cloned()
+                                                .unwrap_or_else(|| format!("#{}", idx))
+                                        })
+                                    })
+                                } else {
+                                    None
+                                }
+                            })
+                            .unwrap_or_else(|| format!("#{}", idx));
+                        (var_name.clone(), elem_name)
+                    })
+                    .collect();
+                CounterExample { bindings }
+            })
+            .collect();
+
         return Err(ElabError::AxiomViolation {
             axiom_index: *axiom_idx,
-            axiom_name: Some(format!("axiom_{}", axiom_idx)),
+            axiom_name,
             num_violations: violation_list.len(),
+            counterexamples,
         });
     }
 

@@ -2,6 +2,24 @@
 
 use crate::core::DerivedSort;
 
+/// A concrete counterexample showing which variable bindings violate an axiom.
+#[derive(Clone, Debug)]
+pub struct CounterExample {
+    /// (variable_name, element_name) pairs showing the violating assignment
+    pub bindings: Vec<(String, String)>,
+}
+
+impl std::fmt::Display for CounterExample {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let parts: Vec<String> = self
+            .bindings
+            .iter()
+            .map(|(var, elem)| format!("{} = {}", var, elem))
+            .collect();
+        write!(f, "{{{}}}", parts.join(", "))
+    }
+}
+
 /// Elaboration errors
 #[derive(Clone, Debug)]
 pub enum ElabError {
@@ -47,6 +65,8 @@ pub enum ElabError {
         axiom_index: usize,
         axiom_name: Option<String>,
         num_violations: usize,
+        /// Concrete counterexamples (limited to first few for readability)
+        counterexamples: Vec<CounterExample>,
     },
     /// Chase algorithm failed (e.g., didn't converge)
     ChaseFailed(String),
@@ -120,19 +140,29 @@ impl std::fmt::Display for ElabError {
                 axiom_index,
                 axiom_name,
                 num_violations,
+                counterexamples,
             } => {
-                if let Some(name) = axiom_name {
-                    write!(
-                        f,
-                        "axiom '{}' (#{}) violated: {} counterexample(s) found",
-                        name, axiom_index, num_violations
-                    )
+                let axiom_desc = if let Some(name) = axiom_name {
+                    format!("axiom '{}' (#{}) violated", name, axiom_index)
                 } else {
-                    write!(
-                        f,
-                        "axiom #{} violated: {} counterexample(s) found",
-                        axiom_index, num_violations
-                    )
+                    format!("axiom #{} violated", axiom_index)
+                };
+
+                if counterexamples.is_empty() {
+                    write!(f, "{}: {} counterexample(s) found", axiom_desc, num_violations)
+                } else {
+                    write!(f, "{}: {} counterexample(s) found\n", axiom_desc, num_violations)?;
+                    for (i, ce) in counterexamples.iter().enumerate() {
+                        write!(f, "  #{}: {}\n", i + 1, ce)?;
+                    }
+                    if *num_violations > counterexamples.len() {
+                        write!(
+                            f,
+                            "  ... and {} more",
+                            num_violations - counterexamples.len()
+                        )?;
+                    }
+                    Ok(())
                 }
             }
             ElabError::ChaseFailed(msg) => write!(f, "chase failed: {}", msg),

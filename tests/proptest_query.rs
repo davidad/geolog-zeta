@@ -600,6 +600,7 @@ mod chase_proptest {
             name: "Graph".to_string(),
             signature: sig,
             axioms: vec![],
+            axiom_names: vec![],
         }
     }
 

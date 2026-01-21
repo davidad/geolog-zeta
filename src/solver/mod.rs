@@ -281,6 +281,7 @@ mod unified_api_tests {
                 name: "ExistsR".to_string(),
                 signature: sig,
                 axioms: vec![axiom],
+                axiom_names: vec!["ax/exists_r".to_string()],
             },
         })
     }
@@ -369,6 +370,7 @@ mod unified_api_tests {
                 name: "Inconsistent".to_string(),
                 signature: sig,
                 axioms: vec![axiom],
+                axiom_names: vec!["ax/inconsistent".to_string()],
             },
         });
 
@@ -394,7 +396,8 @@ mod unified_api_tests {
             theory: Theory {
                 name: "Trivial".to_string(),
                 signature: sig,
-                axioms: vec![], // No axioms!
+                axioms: vec![],
+                axiom_names: vec![],
             },
         });
 

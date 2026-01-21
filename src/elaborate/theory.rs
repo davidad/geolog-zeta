@@ -373,6 +373,7 @@ pub fn elaborate_theory(env: &mut Env, theory: &ast::TheoryDecl) -> ElabResult<E
 
     // Third pass: elaborate axioms
     let mut axioms = Vec::new();
+    let mut axiom_names = Vec::new();
     for item in &theory.body {
         if let ast::TheoryItem::Axiom(ax) = &item.node {
             // Build context from quantified variables
@@ -399,6 +400,9 @@ pub fn elaborate_theory(env: &mut Env, theory: &ast::TheoryDecl) -> ElabResult<E
             // Elaborate conclusion
             let conclusion = elaborate_formula(&local_env, &ctx, &ax.conclusion)?;
 
+            // Collect axiom name (e.g., "ax/input_complete")
+            axiom_names.push(ax.name.to_string());
+
             axioms.push(Sequent {
                 context: ctx,
                 premise,
@@ -413,6 +417,7 @@ pub fn elaborate_theory(env: &mut Env, theory: &ast::TheoryDecl) -> ElabResult<E
             name: theory.name.clone(),
             signature: local_env.signature,
             axioms,
+            axiom_names,
         },
     })
 }

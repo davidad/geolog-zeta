@@ -821,6 +821,7 @@ mod tests {
                 name: "Simple".to_string(),
                 signature: sig,
                 axioms: vec![],
+                axiom_names: vec![],
             },
         })
     }
@@ -973,6 +974,7 @@ mod tests {
                 name: "Inconsistent".to_string(),
                 signature: sig,
                 axioms: vec![axiom],
+                axiom_names: vec!["ax/inconsistent".to_string()],
             },
         });
 
@@ -1015,6 +1017,7 @@ mod tests {
                 name: "AllEqual".to_string(),
                 signature: sig,
                 axioms: vec![axiom],
+                axiom_names: vec!["ax/all_equal".to_string()],
             },
         });
 
@@ -1067,6 +1070,7 @@ mod tests {
                 name: "AllEqual".to_string(),
                 signature: sig,
                 axioms: vec![axiom],
+                axiom_names: vec!["ax/all_equal".to_string()],
             },
         });
 
@@ -1124,6 +1128,7 @@ mod tests {
                 name: "AllEqual".to_string(),
                 signature: sig,
                 axioms: vec![axiom],
+                axiom_names: vec!["ax/all_equal".to_string()],
             },
         });
 
@@ -1184,6 +1189,7 @@ mod tests {
                 name: "ExistsR".to_string(),
                 signature: sig,
                 axioms: vec![axiom],
+                axiom_names: vec!["ax/exists_r".to_string()],
             },
         });
 
@@ -1262,6 +1268,7 @@ mod tests {
                 name: "ExistsEdge".to_string(),
                 signature: sig,
                 axioms: vec![axiom],
+                axiom_names: vec!["ax/exists_edge".to_string()],
             },
         });
 
@@ -1357,6 +1364,7 @@ mod tests {
                 name: "ExistsR".to_string(),
                 signature: sig,
                 axioms: vec![axiom],
+                axiom_names: vec!["ax/exists_r".to_string()],
             },
         });
 

@@ -1090,6 +1090,7 @@ pub fn structure_to_theory(
             name: theory_name,
             signature: sig,
             axioms,
+            axiom_names: vec![], // TODO: collect axiom names from GeologMeta
         },
     })
 }

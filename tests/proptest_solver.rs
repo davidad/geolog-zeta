@@ -33,6 +33,7 @@ fn arb_trivial_theory() -> impl Strategy<Value = Rc<ElaboratedTheory>> {
                 name: "Trivial".to_string(),
                 signature: sig,
                 axioms: vec![],
+                axiom_names: vec![],
             },
         })
     })
@@ -56,6 +57,7 @@ fn arb_inconsistent_theory() -> impl Strategy<Value = Rc<ElaboratedTheory>> {
                 name: "Inconsistent".to_string(),
                 signature: sig,
                 axioms: vec![axiom],
+                axiom_names: vec!["ax/inconsistent".to_string()],
             },
         })
     })
@@ -92,12 +94,18 @@ fn arb_existential_theory() -> impl Strategy<Value = Rc<ElaboratedTheory>> {
             });
         }
 
+        // Generate axiom names
+        let axiom_names: Vec<String> = (0..axioms.len())
+            .map(|i| format!("ax/exists_{}", i))
+            .collect();
+
         Rc::new(ElaboratedTheory {
             params: vec![],
             theory: Theory {
                 name: "Existential".to_string(),
                 signature: sig,
                 axioms,
+                axiom_names,
             },
         })
     })
@@ -234,12 +242,17 @@ fn arb_relation_theory() -> impl Strategy<Value = Rc<ElaboratedTheory>> {
             });
         }
 
+        let axiom_names: Vec<String> = (0..axioms.len())
+            .map(|i| format!("ax/rel_{}", i))
+            .collect();
+
         Rc::new(ElaboratedTheory {
             params: vec![],
             theory: Theory {
                 name: "Relations".to_string(),
                 signature: sig,
                 axioms,
+                axiom_names,
             },
         })
     })
@@ -280,6 +293,7 @@ fn arb_function_theory() -> impl Strategy<Value = Rc<ElaboratedTheory>> {
                 name: "FunctionTheory".to_string(),
                 signature: sig,
                 axioms,
+                axiom_names: vec!["ax/fixpoint".to_string()],
             },
         })
     })
