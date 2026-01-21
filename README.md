@@ -16,10 +16,8 @@ Geolog aims to provide a highly customizable, efficient, concurrent, append-only
   Installing ~/.cargo/bin/geolog
    Installed package `geolog v0.1.0` (executable `geolog`)
 
+# Session 1: Define a theory
 ~/dev/geolog$ geolog -d foo
-geolog v0.1.0 - Geometric Logic REPL
-Type :help for help, :quit to exit
-
 Workspace: foo
 geolog> theory Graph {
   V : Sort;
@@ -35,14 +33,19 @@ geolog> theory Graph {
 }
 Defined theory Graph (2 sorts, 2 functions, 1 relations, 2 axioms)
 
+geolog> :quit
+Goodbye!
+
+# Session 2: Create an instance with chase (theory auto-persisted!)
+~/dev/geolog$ geolog -d foo
+Workspace: foo
 geolog> instance G : Graph = chase {
-  a : V;
-  b : V;
-  c : V;
-  e1 : E; e1 src = a; e1 tgt = b;
-  e2 : E; e2 src = b; e2 tgt = c;
+  a, b, c : V;
+  e1, e2 : E;
+  e1 src = a; e1 tgt = b;
+  e2 src = b; e2 tgt = c;
 }
-Defined instance G : Graph (5 elements) [chase: 3 iterations]
+Defined instance G : Graph (5 elements)
 
 geolog> :inspect G
 instance G : Graph = {
@@ -65,16 +68,11 @@ instance G : Graph = {
   [from: a, to: c] reachable;
 }
 
-geolog> :commit "graph with reachability"
-Committed: "graph with reachability" (commit #17)
-
 geolog> :quit
 Goodbye!
 
+# Session 3: Everything persisted automatically!
 ~/dev/geolog$ geolog -d foo
-geolog v0.1.0 - Geometric Logic REPL
-Type :help for help, :quit to exit
-
 Workspace: foo
 geolog> :list
 Theories:
