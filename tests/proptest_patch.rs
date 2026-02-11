@@ -19,7 +19,7 @@ proptest! {
             max_elements_per_sort: 8,
         })
     ) {
-        let empty_patch = Patch::new(None, structure.num_sorts(), structure.num_functions());
+        let empty_patch = Patch::new(None, structure.num_sorts(), structure.num_functions(), structure.relations.len());
         let mut naming = NamingIndex::new();
 
         let result = apply_patch(&structure, &empty_patch, &mut universe, &mut naming);

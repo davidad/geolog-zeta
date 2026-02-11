@@ -1,0 +1,79 @@
+// Directed Graph: vertices and edges with source/target functions
+//
+// This is the canonical example of a "presheaf" - a functor from a small
+// category (the "walking arrow" • → •) to Set.
+
+theory Graph {
+  V : Sort;  // Vertices
+  E : Sort;  // Edges
+
+  src : E -> V;  // Source of an edge
+  tgt : E -> V;  // Target of an edge
+}
+
+// A simple triangle graph: A → B → C → A
+instance Triangle : Graph = {
+  // Vertices
+  A : V;
+  B : V;
+  C : V;
+
+  // Edges
+  ab : E;
+  bc : E;
+  ca : E;
+
+  // Edge endpoints
+  ab src = A;
+  ab tgt = B;
+  bc src = B;
+  bc tgt = C;
+  ca src = C;
+  ca tgt = A;
+}
+
+// A self-loop: one vertex with an edge to itself
+instance Loop : Graph = {
+  v : V;
+  e : E;
+  e src = v;
+  e tgt = v;
+}
+
+// The "walking arrow": two vertices, one edge
+instance Arrow : Graph = {
+  s : V;
+  t : V;
+  f : E;
+  f src = s;
+  f tgt = t;
+}
+
+// A more complex graph: diamond shape with two paths from top to bottom
+//
+//       top
+//      /   \
+//    left  right
+//      \   /
+//      bottom
+//
+instance Diamond : Graph = {
+  top : V;
+  left : V;
+  right : V;
+  bottom : V;
+
+  top_left : E;
+  top_right : E;
+  left_bottom : E;
+  right_bottom : E;
+
+  top_left src = top;
+  top_left tgt = left;
+  top_right src = top;
+  top_right tgt = right;
+  left_bottom src = left;
+  left_bottom tgt = bottom;
+  right_bottom src = right;
+  right_bottom tgt = bottom;
+}

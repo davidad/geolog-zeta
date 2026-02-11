@@ -1,0 +1,36 @@
+// Test: Trace coverage axiom (simplified)
+
+theory PetriNet {
+  P : Sort;
+  T : Sort;
+  out : Sort;
+  out/src : out -> T;
+  out/tgt : out -> P;
+}
+
+theory (N : PetriNet instance) Trace {
+  F : Sort;
+  F/of : F -> N/T;
+
+  output_terminal : Sort;
+  output_terminal/src : output_terminal -> [firing : F, arc : N/out];
+
+  // Simplified ax5: for every arc and firing, if the arc's source is the firing's transition,
+  // create an output terminal
+  ax5 : forall f : F, arc : N/out. |- exists o : output_terminal. o output_terminal/src = [firing: f, arc: arc];
+}
+
+instance SimpleNet : PetriNet = {
+  A : P;
+  B : P;
+  t : T;
+  arc_out : out;
+  arc_out out/src = t;
+  arc_out out/tgt = B;
+}
+
+// Trace with just a firing - chase should create a terminal
+instance TestTrace : SimpleNet Trace = chase {
+  f1 : F;
+  f1 F/of = SimpleNet/t;
+}

@@ -22,7 +22,8 @@ macro_rules! define_id_with_rkyv {
         #[archive(check_bytes)]
         #[repr(transparent)]
         $v struct $name {
-            rep: $repr,
+            /// The underlying representation (public for zero-copy archived access)
+            pub rep: $repr,
         }
 
         impl NumericId for $name {
@@ -79,8 +80,8 @@ define_id_with_rkyv!(
 );
 
 /// A Slid that can be stored in Option without doubling size.
-/// Uses NonMaxUsize so that Option<NonMaxUsize> is the same size as usize,
-/// with usize::MAX serving as the niche for None.
+/// Uses `NonMaxUsize` so that `Option<NonMaxUsize>` is the same size as `usize`,
+/// with `usize::MAX` serving as the niche for `None`.
 pub type OptSlid = Option<NonMaxUsize>;
 
 /// Convert a Slid to OptSlid.

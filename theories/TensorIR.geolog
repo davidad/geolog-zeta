@@ -1,0 +1,571 @@
+// TensorIR: String Diagram IR for Tensor Algebra
+//
+// This theory expresses computation as string diagrams over tensor operations.
+// It subsumes RelAlgIR: relational algebra operations are special cases of
+// tensor operations over the Boolean semiring.
+//
+// Key insight: Tensors are functions [Product of finite sets] -> Semiring.
+// - A relation R(x, y) is a Bool-valued tensor R : |X| × |Y| → Bool
+// - A carrier A is a Bool-valued 1-tensor A : |A| → Bool (characteristic function)
+// - Join is tensor product followed by contraction
+// - Projection is contraction (sum over dropped indices)
+// - Filter is Hadamard product with predicate tensor
+// - Union is semiring addition
+//
+// This theory also supports incremental computation:
+// - DBSP operators (Delay, Diff, Integrate) for streaming/temporal data
+// - Monotone delta tracking for efficient axiom rechecking
+//
+// See loose_thoughts/2026-01-21_20:35_overnight_tensor_ir_session.md for design.
+//
+// This theory extends GeologMeta to get Srt, Func, Elem, etc.
+
+theory TensorIR extends GeologMeta {
+
+  // ============================================================
+  // SEMIRINGS
+  // ============================================================
+  // Values flow over semirings. Each wire carries a specific semiring type.
+  // Common semirings:
+  // - Bool (∧, ∨, false, true): set membership, relational algebra
+  // - ℕ (×, +, 0, 1): bag semantics, multiplicities
+  // - ℤ (×, +, 0, 1): Z-sets, differential dataflow, DBSP
+  // - (ℕ, min): tropical semiring for optimization
+
+  Semiring : Sort;
+
+  // Standard semiring constants
+  bool_semiring : Semiring;  // (∧, ∨, false, true) - set membership
+  int_semiring : Semiring;   // (×, +, 0, 1) over ℤ - Z-sets, DBSP
+  nat_semiring : Semiring;   // (×, +, 0, 1) over ℕ - bag semantics
+
+  // ============================================================
+  // INDEX SPACES (dimensions of tensors)
+  // ============================================================
+  // Each index ranges over a finite set. In geolog, these are carriers of sorts.
+  // An IndexSpace is a reference to a sort's carrier.
+
+  IndexSpace : Sort;
+  IndexSpace/srt : IndexSpace -> GeologMeta/Srt;  // which sort's carrier
+
+  // ============================================================
+  // TENSOR TYPES (schemas for wires)
+  // ============================================================
+  // A TensorType describes the shape: list of indices + value semiring.
+  // Example: R(x,y) has type [X, Y] -> Bool
+
+  TensorType : Sort;
+  TensorType/semiring : TensorType -> Semiring;
+
+  // Scalar type (0 indices) - a TensorType with no indices
+  ScalarType : Sort;
+  ScalarType/type : ScalarType -> TensorType;
+  // semiring is derivable via: TensorType/semiring ∘ ScalarType/type
+
+  // Indexed type (n indices)
+  IndexedType : Sort;
+  IndexedType/type : IndexedType -> TensorType;
+
+  // Index entries (ordered list of index spaces for a tensor type)
+  TypeIndex : Sort;
+  TypeIndex/owner : TypeIndex -> IndexedType;
+  TypeIndex/space : TypeIndex -> IndexSpace;
+  TypeIndex/position : TypeIndex -> Nat;  // 0-indexed position
+
+  // ============================================================
+  // WIRES (edges carrying tensor streams)
+  // ============================================================
+  // Each wire carries a stream of tensors with a fixed type.
+
+  Wire : Sort;
+  Wire/type : Wire -> TensorType;
+
+  // ============================================================
+  // OPERATIONS (boxes in the string diagram)
+  // ============================================================
+
+  Op : Sort;
+
+  // ============================================================
+  // TENSOR PRIMITIVES
+  // ============================================================
+
+  // ------------------------------------------------------------
+  // Leaf: load data from a source (carrier, relation, function graph)
+  // ------------------------------------------------------------
+  // () → Tensor[indices...]
+  // This is the primary way to bring geolog data into the tensor world.
+
+  LeafOp : Sort;
+  LeafOp/op : LeafOp -> Op;
+  LeafOp/out : LeafOp -> Wire;
+  LeafOp/source : LeafOp -> LeafSource;
+
+  // What kind of data the leaf loads
+  LeafSource : Sort;
+
+  // Carrier: all elements of a sort as a 1-tensor (characteristic function)
+  // Result: |S| → Bool, where entry i is true iff element i exists
+  CarrierSource : Sort;
+  CarrierSource/source : CarrierSource -> LeafSource;
+  CarrierSource/srt : CarrierSource -> GeologMeta/Srt;
+
+  // Relation: all tuples of a relation as an n-tensor
+  // Result: |S₁| × ... × |Sₙ| → Bool
+  RelationSource : Sort;
+  RelationSource/source : RelationSource -> LeafSource;
+  RelationSource/rel : RelationSource -> GeologMeta/Rel;
+
+  // Function graph: f(x) = y encoded as 2-tensor
+  // Result: |Dom| × |Cod| → Bool, where (i,j) = true iff f(i) = j
+  FunctionSource : Sort;
+  FunctionSource/source : FunctionSource -> LeafSource;
+  FunctionSource/func : FunctionSource -> GeologMeta/Func;
+
+  // Equality: diagonal tensor δᵢⱼ = (i == j ? 1 : 0)
+  // Result: |S| × |S| → Bool
+  EqualitySource : Sort;
+  EqualitySource/source : EqualitySource -> LeafSource;
+  EqualitySource/srt : EqualitySource -> GeologMeta/Srt;
+
+  // Constant: specific element indicator
+  // Result: |S| → Bool, where only the element's index is true
+  ConstantSource : Sort;
+  ConstantSource/source : ConstantSource -> LeafSource;
+  ConstantSource/elem : ConstantSource -> GeologMeta/Elem;
+
+  // ------------------------------------------------------------
+  // Scalar: emit a constant scalar value
+  // ------------------------------------------------------------
+  // () → Scalar(S)
+
+  ScalarOp : Sort;
+  ScalarOp/op : ScalarOp -> Op;
+  ScalarOp/out : ScalarOp -> Wire;
+  ScalarOp/value : ScalarOp -> ScalarValue;
+
+  ScalarValue : Sort;
+
+  BoolValue : Sort;
+  BoolValue/value : BoolValue -> ScalarValue;
+  BoolValue/data : BoolValue -> Bool;  // true or false
+
+  IntValue : Sort;
+  IntValue/value : IntValue -> ScalarValue;
+  // IntValue/data would need integer support in geolog
+
+  // ------------------------------------------------------------
+  // Zero: emit an all-zero tensor
+  // ------------------------------------------------------------
+  // () → Tensor[indices...] where all entries are semiring zero
+
+  ZeroOp : Sort;
+  ZeroOp/op : ZeroOp -> Op;
+  ZeroOp/out : ZeroOp -> Wire;
+
+  // ============================================================
+  // BINARY TENSOR OPERATIONS
+  // ============================================================
+
+  // ------------------------------------------------------------
+  // Product (⊗): Kronecker/outer product
+  // ------------------------------------------------------------
+  // Tensor[I...] × Tensor[J...] → Tensor[I..., J...]
+  // (A ⊗ B)[i,j] = A[i] ⊗ B[j]
+
+  ProductOp : Sort;
+  ProductOp/op : ProductOp -> Op;
+  ProductOp/left_in : ProductOp -> Wire;
+  ProductOp/right_in : ProductOp -> Wire;
+  ProductOp/out : ProductOp -> Wire;
+
+  // ------------------------------------------------------------
+  // Sum (⊕): pointwise addition
+  // ------------------------------------------------------------
+  // Tensor[I...] × Tensor[I...] → Tensor[I...]
+  // (A ⊕ B)[i] = A[i] ⊕ B[i]
+  // Requires same shape.
+
+  SumOp : Sort;
+  SumOp/op : SumOp -> Op;
+  SumOp/left_in : SumOp -> Wire;
+  SumOp/right_in : SumOp -> Wire;
+  SumOp/out : SumOp -> Wire;
+
+  // Schema well-formedness: inputs must have same type
+  ax/wf/sum_schema_left : forall s : SumOp, wl : Wire, wr : Wire, wo : Wire.
+    s SumOp/left_in = wl, s SumOp/right_in = wr, s SumOp/out = wo |-
+      wl Wire/type = wo Wire/type;
+
+  ax/wf/sum_schema_right : forall s : SumOp, wl : Wire, wr : Wire, wo : Wire.
+    s SumOp/left_in = wl, s SumOp/right_in = wr, s SumOp/out = wo |-
+      wr Wire/type = wo Wire/type;
+
+  // ------------------------------------------------------------
+  // Hadamard (⊙): pointwise multiplication
+  // ------------------------------------------------------------
+  // Tensor[I...] × Tensor[I...] → Tensor[I...]
+  // (A ⊙ B)[i] = A[i] ⊗ B[i]
+  // For Bool: intersection. For ℤ: componentwise multiply.
+
+  HadamardOp : Sort;
+  HadamardOp/op : HadamardOp -> Op;
+  HadamardOp/left_in : HadamardOp -> Wire;
+  HadamardOp/right_in : HadamardOp -> Wire;
+  HadamardOp/out : HadamardOp -> Wire;
+
+  // Schema well-formedness: inputs must have same type
+  ax/wf/hadamard_schema_left : forall h : HadamardOp, wl : Wire, wr : Wire, wo : Wire.
+    h HadamardOp/left_in = wl, h HadamardOp/right_in = wr, h HadamardOp/out = wo |-
+      wl Wire/type = wo Wire/type;
+
+  ax/wf/hadamard_schema_right : forall h : HadamardOp, wl : Wire, wr : Wire, wo : Wire.
+    h HadamardOp/left_in = wl, h HadamardOp/right_in = wr, h HadamardOp/out = wo |-
+      wr Wire/type = wo Wire/type;
+
+  // ============================================================
+  // CONTRACTION (the key operation)
+  // ============================================================
+  // Contraction subsumes:
+  // - Trace: sum over diagonal
+  // - Matrix multiplication: product then contract shared indices
+  // - Projection: keep some indices, sum over others
+  // - Join condition: identify indices then keep or discard
+  //
+  // General form: given index_map : [N] → [M] and output ⊆ [M]
+  // - Indices mapping to same target must be equal (constraint)
+  // - Target indices in output appear in result
+  // - Target indices not in output are summed over
+
+  ContractOp : Sort;
+  ContractOp/op : ContractOp -> Op;
+  ContractOp/in : ContractOp -> Wire;
+  ContractOp/out : ContractOp -> Wire;
+
+  // Index mapping entries (how input indices map to target indices)
+  // Multiple input indices can map to the same target (equality constraint)
+  ContractMap : Sort;
+  ContractMap/contract : ContractMap -> ContractOp;
+  ContractMap/input_pos : ContractMap -> Nat;   // which input index (0-indexed)
+  ContractMap/target : ContractMap -> Nat;      // which target index
+
+  // Output indices (which target indices appear in result)
+  ContractOutput : Sort;
+  ContractOutput/contract : ContractOutput -> ContractOp;
+  ContractOutput/target : ContractOutput -> Nat;  // which target index to keep
+
+  // ============================================================
+  // DERIVED/CONVENIENCE OPERATIONS
+  // ============================================================
+  // These can be expressed as compositions of primitives but are
+  // common enough to merit direct representation.
+
+  // ------------------------------------------------------------
+  // Negate: flip signs (for Z-set differences)
+  // ------------------------------------------------------------
+  // Only meaningful for ℤ semiring. Maps multiplicity m to -m.
+
+  NegateOp : Sort;
+  NegateOp/op : NegateOp -> Op;
+  NegateOp/in : NegateOp -> Wire;
+  NegateOp/out : NegateOp -> Wire;
+
+  // Schema: preserves type
+  ax/wf/negate_schema : forall n : NegateOp, wi : Wire, wo : Wire.
+    n NegateOp/in = wi, n NegateOp/out = wo |- wi Wire/type = wo Wire/type;
+
+  // ------------------------------------------------------------
+  // Distinct: collapse multiplicities to 0/1
+  // ------------------------------------------------------------
+  // Useful for converting ℤ/ℕ tensors to Bool.
+
+  DistinctOp : Sort;
+  DistinctOp/op : DistinctOp -> Op;
+  DistinctOp/in : DistinctOp -> Wire;
+  DistinctOp/out : DistinctOp -> Wire;
+
+  // ============================================================
+  // DBSP TEMPORAL OPERATORS
+  // ============================================================
+  // For incremental/streaming computation over discrete time.
+
+  // ------------------------------------------------------------
+  // Delay (z⁻¹): output at time t is input at time t-1
+  // ------------------------------------------------------------
+  // CRITICAL: Delays break instantaneous cycles, making feedback well-founded.
+
+  DelayOp : Sort;
+  DelayOp/op : DelayOp -> Op;
+  DelayOp/in : DelayOp -> Wire;
+  DelayOp/out : DelayOp -> Wire;
+
+  // Schema: preserves type
+  ax/wf/delay_schema : forall d : DelayOp, wi : Wire, wo : Wire.
+    d DelayOp/in = wi, d DelayOp/out = wo |- wi Wire/type = wo Wire/type;
+
+  // ------------------------------------------------------------
+  // Differentiate (δ): compute changes since last timestep
+  // ------------------------------------------------------------
+  // δ = 1 - z⁻¹
+  // Output is the delta (what changed from t-1 to t).
+
+  DiffOp : Sort;
+  DiffOp/op : DiffOp -> Op;
+  DiffOp/in : DiffOp -> Wire;
+  DiffOp/out : DiffOp -> Wire;
+
+  // Schema: preserves type
+  ax/wf/diff_schema : forall d : DiffOp, wi : Wire, wo : Wire.
+    d DiffOp/in = wi, d DiffOp/out = wo |- wi Wire/type = wo Wire/type;
+
+  // ------------------------------------------------------------
+  // Integrate (∫): accumulate over time
+  // ------------------------------------------------------------
+  // ∫ = Σ = running sum of all inputs.
+  // Has implicit delay semantics; breaks instantaneous cycles.
+
+  IntegrateOp : Sort;
+  IntegrateOp/op : IntegrateOp -> Op;
+  IntegrateOp/in : IntegrateOp -> Wire;
+  IntegrateOp/out : IntegrateOp -> Wire;
+
+  // Schema: preserves type
+  ax/wf/integrate_schema : forall i : IntegrateOp, wi : Wire, wo : Wire.
+    i IntegrateOp/in = wi, i IntegrateOp/out = wo |- wi Wire/type = wo Wire/type;
+
+  // ============================================================
+  // AXIOM CHECKING OPERATIONS
+  // ============================================================
+  // Special operations for incremental axiom checking.
+
+  // ------------------------------------------------------------
+  // Border: extract the "new" part of a tensor after dimension growth
+  // ------------------------------------------------------------
+  // Given new dimensions and old dimensions, outputs only tuples
+  // where at least one index is in the new range.
+  // This is the key operation for MonotoneSubmodel incrementality.
+
+  BorderOp : Sort;
+  BorderOp/op : BorderOp -> Op;
+  BorderOp/in : BorderOp -> Wire;
+  BorderOp/out : BorderOp -> Wire;
+
+  // Old dimensions (the border is relative to these)
+  BorderDim : Sort;
+  BorderDim/border : BorderDim -> BorderOp;
+  BorderDim/position : BorderDim -> Nat;  // which dimension
+  BorderDim/old_size : BorderDim -> Nat;  // previous size
+
+  // ============================================================
+  // REACHABILITY RELATIONS (for cycle analysis)
+  // ============================================================
+
+  reaches : [from: Wire, to: Wire] -> Prop;
+
+  // Basic reachability through each operation
+  ax/reaches/product/left : forall p : ProductOp, wl : Wire, wo : Wire.
+    p ProductOp/left_in = wl, p ProductOp/out = wo |- [from: wl, to: wo] reaches;
+
+  ax/reaches/product/right : forall p : ProductOp, wr : Wire, wo : Wire.
+    p ProductOp/right_in = wr, p ProductOp/out = wo |- [from: wr, to: wo] reaches;
+
+  ax/reaches/sum/left : forall s : SumOp, wl : Wire, wo : Wire.
+    s SumOp/left_in = wl, s SumOp/out = wo |- [from: wl, to: wo] reaches;
+
+  ax/reaches/sum/right : forall s : SumOp, wr : Wire, wo : Wire.
+    s SumOp/right_in = wr, s SumOp/out = wo |- [from: wr, to: wo] reaches;
+
+  ax/reaches/hadamard/left : forall h : HadamardOp, wl : Wire, wo : Wire.
+    h HadamardOp/left_in = wl, h HadamardOp/out = wo |- [from: wl, to: wo] reaches;
+
+  ax/reaches/hadamard/right : forall h : HadamardOp, wr : Wire, wo : Wire.
+    h HadamardOp/right_in = wr, h HadamardOp/out = wo |- [from: wr, to: wo] reaches;
+
+  ax/reaches/contract : forall c : ContractOp, wi : Wire, wo : Wire.
+    c ContractOp/in = wi, c ContractOp/out = wo |- [from: wi, to: wo] reaches;
+
+  ax/reaches/negate : forall n : NegateOp, wi : Wire, wo : Wire.
+    n NegateOp/in = wi, n NegateOp/out = wo |- [from: wi, to: wo] reaches;
+
+  ax/reaches/distinct : forall d : DistinctOp, wi : Wire, wo : Wire.
+    d DistinctOp/in = wi, d DistinctOp/out = wo |- [from: wi, to: wo] reaches;
+
+  ax/reaches/delay : forall d : DelayOp, wi : Wire, wo : Wire.
+    d DelayOp/in = wi, d DelayOp/out = wo |- [from: wi, to: wo] reaches;
+
+  ax/reaches/diff : forall d : DiffOp, wi : Wire, wo : Wire.
+    d DiffOp/in = wi, d DiffOp/out = wo |- [from: wi, to: wo] reaches;
+
+  ax/reaches/integrate : forall i : IntegrateOp, wi : Wire, wo : Wire.
+    i IntegrateOp/in = wi, i IntegrateOp/out = wo |- [from: wi, to: wo] reaches;
+
+  ax/reaches/border : forall b : BorderOp, wi : Wire, wo : Wire.
+    b BorderOp/in = wi, b BorderOp/out = wo |- [from: wi, to: wo] reaches;
+
+  // Transitive closure
+  ax/reaches/trans : forall w1 : Wire, w2 : Wire, w3 : Wire.
+    [from: w1, to: w2] reaches, [from: w2, to: w3] reaches |-
+      [from: w1, to: w3] reaches;
+
+  // ============================================================
+  // INSTANTANEOUS REACHABILITY (for cycle detection)
+  // ============================================================
+  // Paths that do NOT go through DelayOp or IntegrateOp.
+
+  reaches_instant : [from: Wire, to: Wire] -> Prop;
+
+  // Same as reaches, EXCEPT delay and integrate
+  ax/reaches_instant/product/left : forall p : ProductOp, wl : Wire, wo : Wire.
+    p ProductOp/left_in = wl, p ProductOp/out = wo |- [from: wl, to: wo] reaches_instant;
+
+  ax/reaches_instant/product/right : forall p : ProductOp, wr : Wire, wo : Wire.
+    p ProductOp/right_in = wr, p ProductOp/out = wo |- [from: wr, to: wo] reaches_instant;
+
+  ax/reaches_instant/sum/left : forall s : SumOp, wl : Wire, wo : Wire.
+    s SumOp/left_in = wl, s SumOp/out = wo |- [from: wl, to: wo] reaches_instant;
+
+  ax/reaches_instant/sum/right : forall s : SumOp, wr : Wire, wo : Wire.
+    s SumOp/right_in = wr, s SumOp/out = wo |- [from: wr, to: wo] reaches_instant;
+
+  ax/reaches_instant/hadamard/left : forall h : HadamardOp, wl : Wire, wo : Wire.
+    h HadamardOp/left_in = wl, h HadamardOp/out = wo |- [from: wl, to: wo] reaches_instant;
+
+  ax/reaches_instant/hadamard/right : forall h : HadamardOp, wr : Wire, wo : Wire.
+    h HadamardOp/right_in = wr, h HadamardOp/out = wo |- [from: wr, to: wo] reaches_instant;
+
+  ax/reaches_instant/contract : forall c : ContractOp, wi : Wire, wo : Wire.
+    c ContractOp/in = wi, c ContractOp/out = wo |- [from: wi, to: wo] reaches_instant;
+
+  ax/reaches_instant/negate : forall n : NegateOp, wi : Wire, wo : Wire.
+    n NegateOp/in = wi, n NegateOp/out = wo |- [from: wi, to: wo] reaches_instant;
+
+  ax/reaches_instant/distinct : forall d : DistinctOp, wi : Wire, wo : Wire.
+    d DistinctOp/in = wi, d DistinctOp/out = wo |- [from: wi, to: wo] reaches_instant;
+
+  // DiffOp is instantaneous (uses delay internally but outputs immediately)
+  ax/reaches_instant/diff : forall d : DiffOp, wi : Wire, wo : Wire.
+    d DiffOp/in = wi, d DiffOp/out = wo |- [from: wi, to: wo] reaches_instant;
+
+  ax/reaches_instant/border : forall b : BorderOp, wi : Wire, wo : Wire.
+    b BorderOp/in = wi, b BorderOp/out = wo |- [from: wi, to: wo] reaches_instant;
+
+  // NOTE: No axioms for DelayOp or IntegrateOp - they break instantaneous reachability
+
+  // Transitive closure
+  ax/reaches_instant/trans : forall w1 : Wire, w2 : Wire, w3 : Wire.
+    [from: w1, to: w2] reaches_instant, [from: w2, to: w3] reaches_instant |-
+      [from: w1, to: w3] reaches_instant;
+
+  // ============================================================
+  // WELL-FORMEDNESS: NO INSTANTANEOUS CYCLES
+  // ============================================================
+
+  ax/wf/no_instant_cycle : forall w : Wire.
+    [from: w, to: w] reaches_instant |- false;
+
+  // ============================================================
+  // NATURALS (for positions)
+  // ============================================================
+  // Simple Peano encoding for index positions.
+
+  Nat : Sort;
+  zero : Nat;
+  succ : Nat -> Nat;
+
+  // ============================================================
+  // BOOLEANS (for scalar values)
+  // ============================================================
+
+  Bool : Sort;
+  bool_true : Bool;
+  bool_false : Bool;
+
+  // ============================================================
+  // ALGEBRAIC LAWS (for optimization)
+  // ============================================================
+  // Wire equivalence: two wires produce semantically identical results
+
+  equiv : [a: Wire, b: Wire] -> Prop;
+
+  ax/equiv/refl : forall w : Wire. |- [a: w, b: w] equiv;
+
+  ax/equiv/sym : forall w1 : Wire, w2 : Wire.
+    [a: w1, b: w2] equiv |- [a: w2, b: w1] equiv;
+
+  ax/equiv/trans : forall w1 : Wire, w2 : Wire, w3 : Wire.
+    [a: w1, b: w2] equiv, [a: w2, b: w3] equiv |- [a: w1, b: w3] equiv;
+
+  // ------------------------------------------------------------
+  // Sum Laws
+  // ------------------------------------------------------------
+
+  // Sum is commutative: A ⊕ B ≡ B ⊕ A
+  ax/sum_comm : forall s1 : SumOp, wl : Wire, wr : Wire, wo : Wire.
+    s1 SumOp/left_in = wl, s1 SumOp/right_in = wr, s1 SumOp/out = wo |-
+      exists s2 : SumOp.
+        s2 SumOp/left_in = wr, s2 SumOp/right_in = wl,
+        [a: wo, b: s2 SumOp/out] equiv;
+
+  // Sum with Zero: A ⊕ 0 ≡ A
+  ax/sum_zero : forall s : SumOp, z : ZeroOp, wi : Wire, wz : Wire, wo : Wire.
+    z ZeroOp/out = wz, s SumOp/left_in = wi, s SumOp/right_in = wz, s SumOp/out = wo |-
+      [a: wo, b: wi] equiv;
+
+  // ------------------------------------------------------------
+  // Product Laws
+  // ------------------------------------------------------------
+
+  // Product with scalar 1: 1 ⊗ A ≡ A (up to index shift)
+  // This requires careful handling of indices; simplified here.
+
+  // ------------------------------------------------------------
+  // Hadamard Laws
+  // ------------------------------------------------------------
+
+  // Hadamard is commutative
+  ax/hadamard_comm : forall h1 : HadamardOp, wl : Wire, wr : Wire, wo : Wire.
+    h1 HadamardOp/left_in = wl, h1 HadamardOp/right_in = wr, h1 HadamardOp/out = wo |-
+      exists h2 : HadamardOp.
+        h2 HadamardOp/left_in = wr, h2 HadamardOp/right_in = wl,
+        [a: wo, b: h2 HadamardOp/out] equiv;
+
+  // Hadamard with Zero: 0 ⊙ A ≡ 0
+  ax/hadamard_zero : forall h : HadamardOp, z : ZeroOp, wi : Wire, wz : Wire, wo : Wire.
+    z ZeroOp/out = wz, h HadamardOp/left_in = wz, h HadamardOp/right_in = wi, h HadamardOp/out = wo |-
+      exists z2 : ZeroOp. [a: wo, b: z2 ZeroOp/out] equiv;
+
+  // ------------------------------------------------------------
+  // Negate Laws
+  // ------------------------------------------------------------
+
+  // Double negation: Negate(Negate(A)) ≡ A
+  ax/negate_involution : forall n1 : NegateOp, n2 : NegateOp, wi : Wire, wm : Wire, wo : Wire.
+    n1 NegateOp/in = wi, n1 NegateOp/out = wm,
+    n2 NegateOp/in = wm, n2 NegateOp/out = wo |-
+      [a: wo, b: wi] equiv;
+
+  // ------------------------------------------------------------
+  // Contraction Laws
+  // ------------------------------------------------------------
+
+  // Contraction is linear: Contract(A ⊕ B) ≡ Contract(A) ⊕ Contract(B)
+  // (when contraction specs match)
+
+  // ------------------------------------------------------------
+  // DBSP Laws
+  // ------------------------------------------------------------
+
+  // Delay distributes over Sum: z⁻¹(A ⊕ B) ≡ z⁻¹(A) ⊕ z⁻¹(B)
+  ax/delay_sum : forall s : SumOp, d : DelayOp, wl : Wire, wr : Wire, ws : Wire, wo : Wire.
+    s SumOp/left_in = wl, s SumOp/right_in = wr, s SumOp/out = ws,
+    d DelayOp/in = ws, d DelayOp/out = wo |-
+      exists dl : DelayOp, dr : DelayOp, s2 : SumOp.
+        dl DelayOp/in = wl, dr DelayOp/in = wr,
+        s2 SumOp/left_in = dl DelayOp/out, s2 SumOp/right_in = dr DelayOp/out,
+        [a: wo, b: s2 SumOp/out] equiv;
+
+  // Diff is inverse of Integrate: δ(∫(A)) ≡ A (for streams of changes)
+  // Note: This holds for delta-streams; not true for general streams.
+
+  // Integrate is inverse of Diff: ∫(δ(A)) ≡ A - A₀ (up to initial value)
+}

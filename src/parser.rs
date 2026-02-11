@@ -20,6 +20,38 @@ fn to_span(span: Span) -> crate::ast::Span {
     crate::ast::Span::new(span.start, span.end)
 }
 
+/// Assign positional names ("0", "1", ...) to unnamed fields in a record
+/// Only unnamed fields consume positional indices, so named fields can be reordered freely:
+/// `[a, on: b, c]` → `[("0", a), ("on", b), ("1", c)]`
+/// `[on: b, a, c]` → `[("on", b), ("0", a), ("1", c)]`
+///
+/// Returns Err with the duplicate field name if duplicates are found.
+fn assign_positional_names_checked<T>(
+    fields: Vec<(Option<String>, T)>,
+) -> Result<Vec<(String, T)>, String> {
+    let mut positional_idx = 0usize;
+    let mut seen = std::collections::HashSet::new();
+    let mut result = Vec::with_capacity(fields.len());
+
+    for (name, val) in fields {
+        let field_name = match name {
+            Some(n) => n,
+            None => {
+                let n = positional_idx.to_string();
+                positional_idx += 1;
+                n
+            }
+        };
+
+        if !seen.insert(field_name.clone()) {
+            return Err(field_name);
+        }
+        result.push((field_name, val));
+    }
+
+    Ok(result)
+}
+
 // ============================================================================
 // Helpers
 // ============================================================================
@@ -49,54 +81,98 @@ fn path() -> impl Parser<Token, Path, Error = Simple<Token>> + Clone {
 }
 
 // ============================================================================
-// Types
+// Types (Concatenative Stack-Based Parsing)
 // ============================================================================
 
-/// Parse a type expression
-/// Returns (type_with_app_instance, type_with_arrow) to handle both cases
+/// Parse a full type expression with arrows (concatenative style)
+///
+/// `A B -> C D -> E` becomes tokens: [A, B, C, D, E, Arrow, Arrow]
+/// which evaluates right-to-left: A B -> (C D -> E)
+///
+/// Uses a single recursive() to handle mutual recursion between type expressions
+/// (for parentheses and record fields) and atomic type tokens.
 fn type_expr_impl() -> impl Parser<Token, TypeExpr, Error = Simple<Token>> + Clone {
     recursive(|type_expr_rec| {
-        let sort = just(Token::Sort).to(TypeExpr::Sort);
-        let prop = just(Token::Prop).to(TypeExpr::Prop);
+        // === Atomic type tokens (non-recursive) ===
+        let sort = just(Token::Sort).to(TypeToken::Sort);
+        let prop = just(Token::Prop).to(TypeToken::Prop);
+        let instance = just(Token::Instance).to(TypeToken::Instance);
+        let path_tok = path().map(TypeToken::Path);
 
-        let path_type = path().map(TypeExpr::Path);
-
-        // Record type: [field : Type, ...]
-        let record_field = ident()
+        // Record type: [field: Type, ...] or [Type, ...] or mixed
+        // Named field: `name: Type`
+        let named_type_field = ident()
             .then_ignore(just(Token::Colon))
-            .then(type_expr_rec.clone());
+            .then(type_expr_rec.clone())
+            .map(|(name, ty)| (Some(name), ty));
+        // Positional field: `Type`
+        let positional_type_field = type_expr_rec.clone().map(|ty| (None, ty));
+        let record_field = choice((named_type_field, positional_type_field));
 
-        let record_type = record_field
+        let record = record_field
             .separated_by(just(Token::Comma))
             .delimited_by(just(Token::LBracket), just(Token::RBracket))
-            .map(TypeExpr::Record);
-
-        // Parenthesized type
-        let paren_type = type_expr_rec
-            .clone()
-            .delimited_by(just(Token::LParen), just(Token::RParen));
-
-        // Atomic types (no left recursion)
-        let atom = choice((sort, prop, record_type, paren_type, path_type));
-
-        // Type application (juxtaposition) and `instance` suffix
-        let with_app_and_instance = atom
-            .clone()
-            .then(choice((just(Token::Instance).to(None), atom.clone().map(Some))).repeated())
-            .foldl(|acc, item| match item {
-                None => TypeExpr::Instance(Box::new(acc)),
-                Some(arg) => TypeExpr::App(Box::new(acc), Box::new(arg)),
+            .try_map(|fields, span| {
+                assign_positional_names_checked(fields)
+                    .map(TypeToken::Record)
+                    .map_err(|dup| Simple::custom(span, format!("duplicate field name: {}", dup)))
             });
 
-        // Arrow type
-        with_app_and_instance
-            .clone()
-            .then(
-                just(Token::Arrow)
-                    .ignore_then(with_app_and_instance.clone())
-                    .repeated(),
-            )
-            .foldl(|a, b| TypeExpr::Arrow(Box::new(a), Box::new(b)))
+        // Single atomic token
+        let single_token = choice((sort, prop, instance, record, path_tok)).map(|t| vec![t]);
+
+        // Parenthesized expression - flatten tokens into parent sequence
+        let paren_expr = type_expr_rec
+            .delimited_by(just(Token::LParen), just(Token::RParen))
+            .map(|expr: TypeExpr| expr.tokens);
+
+        // A "chunk item" is either a paren group or a single token
+        let chunk_item = choice((paren_expr, single_token));
+
+        // A "chunk" is one or more items (before an arrow or end)
+        let chunk = chunk_item
+            .repeated()
+            .at_least(1)
+            .map(|items: Vec<Vec<TypeToken>>| items.into_iter().flatten().collect::<Vec<_>>());
+
+        // Full type expression: chunks separated by arrows
+        chunk
+            .separated_by(just(Token::Arrow))
+            .at_least(1)
+            .map(|chunks: Vec<Vec<TypeToken>>| {
+                // For right-associative arrows:
+                // chunks: [[A, B], [C, D], [E]]
+                // result: [A, B, C, D, E, Arrow, Arrow]
+                //
+                // The evaluator processes Arrow tokens right-to-left:
+                // Stack after all tokens pushed: [A, B, C, D, E]
+                // Arrow 1: pop C,D -> push Arrow{C,D} -> [A, B, Arrow{C,D}, E]
+                // Wait, that's not right either...
+                //
+                // Actually the order should be:
+                // [A, B, Arrow, C, D, Arrow, E] for left-to-right application
+                // But we want (A B) -> ((C D) -> E) for right-associative
+                //
+                // For postfix arrows:
+                // [A, B, C, D, E, Arrow, Arrow] means:
+                // - Push A, B, C, D, E
+                // - Arrow: pop E, pop D -> push Arrow{D,E}
+                // - Arrow: pop Arrow{D,E}, pop C -> push Arrow{C, Arrow{D,E}}
+                // Hmm, this also doesn't work well for multi-token chunks.
+                //
+                // Actually, let's just flatten all and append arrows.
+                // The evaluator will be responsible for parsing chunks correctly.
+
+                let num_arrows = chunks.len() - 1;
+                let mut tokens: Vec<TypeToken> = chunks.into_iter().flatten().collect();
+
+                // Add Arrow tokens at end
+                for _ in 0..num_arrows {
+                    tokens.push(TypeToken::Arrow);
+                }
+
+                TypeExpr { tokens }
+            })
     })
 }
 
@@ -106,35 +182,55 @@ fn type_expr() -> impl Parser<Token, TypeExpr, Error = Simple<Token>> + Clone {
 }
 
 /// Parse a type expression without top-level arrows (for function domain position)
+///
+/// This parses a single "chunk" - type tokens without arrows at the top level.
+/// Used for places like function domain where we don't want `A -> B` to be ambiguous.
 fn type_expr_no_arrow() -> impl Parser<Token, TypeExpr, Error = Simple<Token>> + Clone {
     recursive(|_type_expr_rec| {
-        let sort = just(Token::Sort).to(TypeExpr::Sort);
-        let prop = just(Token::Prop).to(TypeExpr::Prop);
+        // Atomic type tokens
+        let sort = just(Token::Sort).to(TypeToken::Sort);
+        let prop = just(Token::Prop).to(TypeToken::Prop);
+        let instance = just(Token::Instance).to(TypeToken::Instance);
+        let path_tok = path().map(TypeToken::Path);
 
-        let path_type = path().map(TypeExpr::Path);
-
-        // Record type - allows full type expressions inside
-        let record_field = ident()
+        // Record type: [field: Type, ...] or [Type, ...] or mixed
+        // Named field: `name: Type`
+        let named_type_field = ident()
             .then_ignore(just(Token::Colon))
-            .then(type_expr_impl());
+            .then(type_expr_impl())
+            .map(|(name, ty)| (Some(name), ty));
+        // Positional field: `Type`
+        let positional_type_field = type_expr_impl().map(|ty| (None, ty));
+        let record_field = choice((named_type_field, positional_type_field));
 
-        let record_type = record_field
+        let record = record_field
             .separated_by(just(Token::Comma))
             .delimited_by(just(Token::LBracket), just(Token::RBracket))
-            .map(TypeExpr::Record);
+            .try_map(|fields, span| {
+                assign_positional_names_checked(fields)
+                    .map(TypeToken::Record)
+                    .map_err(|dup| Simple::custom(span, format!("duplicate field name: {}", dup)))
+            });
 
-        // Parenthesized type - allows full type expressions inside
-        let paren_type = type_expr_impl().delimited_by(just(Token::LParen), just(Token::RParen));
+        // Single atomic token
+        let single_token = choice((sort, prop, instance, record, path_tok)).map(|t| vec![t]);
 
-        // Atomic types
-        let atom = choice((sort, prop, record_type, paren_type, path_type));
+        // Parenthesized expression - can contain full type expr with arrows
+        let paren_expr = type_expr_impl()
+            .delimited_by(just(Token::LParen), just(Token::RParen))
+            .map(|expr: TypeExpr| expr.tokens);
 
-        // Type application and instance, but NO arrows
-        atom.clone()
-            .then(choice((just(Token::Instance).to(None), atom.clone().map(Some))).repeated())
-            .foldl(|acc, item| match item {
-                None => TypeExpr::Instance(Box::new(acc)),
-                Some(arg) => TypeExpr::App(Box::new(acc), Box::new(arg)),
+        // A "chunk item" is either a paren group or a single token
+        let chunk_item = choice((paren_expr, single_token));
+
+        // One or more items, no arrows
+        chunk_item
+            .repeated()
+            .at_least(1)
+            .map(|items: Vec<Vec<TypeToken>>| {
+                TypeExpr {
+                    tokens: items.into_iter().flatten().collect(),
+                }
             })
     })
 }
@@ -147,13 +243,24 @@ fn term() -> impl Parser<Token, Term, Error = Simple<Token>> + Clone {
     recursive(|term| {
         let path_term = path().map(Term::Path);
 
-        // Record literal: [field: term, ...]
-        let record_field = ident().then_ignore(just(Token::Colon)).then(term.clone());
+        // Record literal: [field: term, ...] or [term, ...] or mixed
+        // Named field: `name: value`
+        // Positional field: `value` (gets name "0", "1", etc.)
+        let named_field = ident()
+            .then_ignore(just(Token::Colon))
+            .then(term.clone())
+            .map(|(name, val)| (Some(name), val));
+        let positional_field = term.clone().map(|val| (None, val));
+        let record_field = choice((named_field, positional_field));
 
         let record_term = record_field
             .separated_by(just(Token::Comma))
             .delimited_by(just(Token::LBracket), just(Token::RBracket))
-            .map(Term::Record);
+            .try_map(|fields, span| {
+                assign_positional_names_checked(fields)
+                    .map(Term::Record)
+                    .map_err(|dup| Simple::custom(span, format!("duplicate field name: {}", dup)))
+            });
 
         // Parenthesized term
         let paren_term = term
@@ -190,6 +297,33 @@ enum TermPostfix {
     App(Term),
 }
 
+/// Parse a record term specifically: [field: term, ...] or [term, ...] or mixed
+/// Used for relation assertions where we need a standalone record parser.
+fn record_term() -> impl Parser<Token, Term, Error = Simple<Token>> + Clone {
+    recursive(|rec_term| {
+        let path_term = path().map(Term::Path);
+        let inner_term = choice((rec_term.clone(), path_term.clone()));
+
+        // Named field: `name: value`
+        let named_field = ident()
+            .then_ignore(just(Token::Colon))
+            .then(inner_term.clone())
+            .map(|(name, val)| (Some(name), val));
+        // Positional field: `value`
+        let positional_field = inner_term.map(|val| (None, val));
+        let record_field = choice((named_field, positional_field));
+
+        record_field
+            .separated_by(just(Token::Comma))
+            .delimited_by(just(Token::LBracket), just(Token::RBracket))
+            .try_map(|fields, span| {
+                assign_positional_names_checked(fields)
+                    .map(Term::Record)
+                    .map_err(|dup| Simple::custom(span, format!("duplicate field name: {}", dup)))
+            })
+    })
+}
+
 // ============================================================================
 // Formulas
 // ============================================================================
@@ -203,7 +337,10 @@ fn formula() -> impl Parser<Token, Formula, Error = Simple<Token>> + Clone {
             .then(type_expr())
             .map(|(names, ty)| QuantifiedVar { names, ty });
 
-        // Existential: exists x : T. phi
+        // Existential: exists x : T. phi1, phi2, ...
+        // The body is a conjunction of formulas (comma-separated).
+        // An empty body (exists x : X.) is interpreted as True.
+        // This is standard geometric logic syntax.
         let exists = just(Token::Exists)
             .ignore_then(
                 quantified_var
@@ -212,8 +349,15 @@ fn formula() -> impl Parser<Token, Formula, Error = Simple<Token>> + Clone {
                     .at_least(1),
             )
             .then_ignore(just(Token::Dot))
-            .then(formula.clone())
-            .map(|(vars, body)| Formula::Exists(vars, Box::new(body)));
+            .then(formula.clone().separated_by(just(Token::Comma)))
+            .map(|(vars, body_conjuncts)| {
+                let body = match body_conjuncts.len() {
+                    0 => Formula::True,
+                    1 => body_conjuncts.into_iter().next().unwrap(),
+                    _ => Formula::And(body_conjuncts),
+                };
+                Formula::Exists(vars, Box::new(body))
+            });
 
         // Parenthesized formula
         let paren_formula = formula
@@ -245,11 +389,31 @@ fn formula() -> impl Parser<Token, Formula, Error = Simple<Token>> + Clone {
                 }
             });
 
-        let atom = choice((exists, paren_formula, term_based));
+        // Literals
+        let true_lit = just(Token::True).to(Formula::True);
+        let false_lit = just(Token::False).to(Formula::False);
+
+        let atom = choice((true_lit, false_lit, exists, paren_formula, term_based));
+
+        // Conjunction: phi /\ psi (binds tighter than disjunction)
+        let conjunction = atom
+            .clone()
+            .then(just(Token::And).ignore_then(atom.clone()).repeated())
+            .foldl(|a, b| {
+                // Flatten into a single And with multiple conjuncts
+                match a {
+                    Formula::And(mut conjuncts) => {
+                        conjuncts.push(b);
+                        Formula::And(conjuncts)
+                    }
+                    _ => Formula::And(vec![a, b]),
+                }
+            });
 
         // Disjunction: phi \/ psi
-        atom.clone()
-            .then(just(Token::Or).ignore_then(atom.clone()).repeated())
+        conjunction
+            .clone()
+            .then(just(Token::Or).ignore_then(conjunction.clone()).repeated())
             .foldl(|a, b| {
                 // Flatten into a single Or with multiple disjuncts
                 match a {
@@ -275,8 +439,10 @@ fn axiom_decl() -> impl Parser<Token, AxiomDecl, Error = Simple<Token>> + Clone 
         .then(type_expr())
         .map(|(names, ty)| QuantifiedVar { names, ty });
 
+    // Allow empty quantifier list: `forall .` means no universally quantified variables
+    // This is useful for "unconditional" axioms like `forall . |- exists x : X. ...`
     let quantified_vars = just(Token::Forall)
-        .ignore_then(quantified_var.separated_by(just(Token::Comma)).at_least(1))
+        .ignore_then(quantified_var.separated_by(just(Token::Comma)))
         .then_ignore(just(Token::Dot));
 
     // Hypotheses before |- (optional, comma separated)
@@ -360,26 +526,78 @@ fn param() -> impl Parser<Token, Param, Error = Simple<Token>> + Clone {
 }
 
 fn theory_decl() -> impl Parser<Token, TheoryDecl, Error = Simple<Token>> + Clone {
-    // Allow multiple parameter groups: (X : Sort) (Y : Sort)
+    // Optional `extends ParentTheory`
+    let extends_clause = ident()
+        .try_map(|s, span| {
+            if s == "extends" {
+                Ok(())
+            } else {
+                Err(Simple::custom(span, "expected 'extends'"))
+            }
+        })
+        .ignore_then(path())
+        .or_not();
+
+    // A param group in parens: (X : Type, Y : Type)
     let param_group = param()
         .separated_by(just(Token::Comma))
         .at_least(1)
         .delimited_by(just(Token::LParen), just(Token::RParen));
 
-    let params = param_group
-        .repeated()
-        .map(|groups| groups.into_iter().flatten().collect());
+    // After 'theory', we may have:
+    // 1. One or more param groups followed by an identifier: (X:T) (Y:U) Name
+    // 2. Just an identifier (no params): Name
+    // 3. Just '{' (missing name - ERROR)
+    //
+    // Strategy: Parse by looking at the first token after 'theory':
+    // - If '(' -> parse params, then expect name
+    // - If identifier -> that's the name, no params
+    // - If '{' -> error: missing name
 
-    just(Token::Theory)
-        .ignore_then(params)
+    // Helper to parse params then name
+    let params_then_name = param_group
+        .repeated()
+        .at_least(1)
+        .map(|groups: Vec<Vec<Param>>| groups.into_iter().flatten().collect::<Vec<Param>>())
         .then(ident())
+        .map(|(params, name)| (params, name));
+
+    // No params, just a name
+    let just_name = ident().map(|name| (Vec::<Param>::new(), name));
+
+    // Error case: '{' with no name - emit error at the '{' token's location
+    // Use `just` to peek at '{' and capture its position, then emit a helpful error
+    // We DON'T consume the '{' because we need it for the body parser
+    let missing_name = just(Token::LBrace)
+        .map_with_span(|_, span: Span| span) // Capture '{' token's span
+        .rewind() // Rewind to not consume '{' - we need it for the body
+        .validate(|brace_span, _, emit| {
+            emit(Simple::custom(
+                brace_span,
+                "expected theory name - anonymous theories are not allowed. \
+                 Use: theory MyTheoryName { ... }",
+            ));
+            // Return dummy values for error recovery
+            (Vec::<Param>::new(), "_anonymous_".to_string())
+        });
+
+    // Parse theory keyword, then params+name in one of the three ways
+    // Order matters: try params first (if '('), then name (if ident), then error (if '{')
+    just(Token::Theory)
+        .ignore_then(choice((params_then_name, just_name, missing_name)))
+        .then(extends_clause)
         .then(
             theory_item()
                 .map_with_span(|item, span| Spanned::new(item, to_span(span)))
                 .repeated()
                 .delimited_by(just(Token::LBrace), just(Token::RBrace)),
         )
-        .map(|((params, name), body)| TheoryDecl { params, name, body })
+        .map(|(((params, name), extends), body)| TheoryDecl {
+            params,
+            name,
+            extends,
+            body,
+        })
 }
 
 fn instance_item() -> impl Parser<Token, InstanceItem, Error = Simple<Token>> + Clone {
@@ -400,19 +618,22 @@ fn instance_item() -> impl Parser<Token, InstanceItem, Error = Simple<Token>> + 
                     name,
                     InstanceDecl {
                         // Type will be inferred during elaboration
-                        theory: TypeExpr::Path(Path::single("_inferred".to_string())),
+                        theory: TypeExpr::single_path(Path::single("_inferred".to_string())),
                         name: String::new(),
                         body,
+                        needs_chase: false,
                     },
                 )
             });
 
-        // Element declaration: A : P;
+        // Element declaration: A : P; or a, b, c : P;
         let element = ident()
+            .separated_by(just(Token::Comma))
+            .at_least(1)
             .then_ignore(just(Token::Colon))
             .then(type_expr())
             .then_ignore(just(Token::Semicolon))
-            .map(|(name, ty)| InstanceItem::Element(name, ty));
+            .map(|(names, ty)| InstanceItem::Element(names, ty));
 
         // Equation: term = term;
         let equation = term()
@@ -421,52 +642,92 @@ fn instance_item() -> impl Parser<Token, InstanceItem, Error = Simple<Token>> + 
             .then_ignore(just(Token::Semicolon))
             .map(|(l, r)| InstanceItem::Equation(l, r));
 
-        // Try nested first (ident = {), then element (ident :), then equation
-        choice((nested, element, equation))
+        // Relation assertion: [field: value, ...] relation_name; (multi-ary)
+        //                  or: element relation_name; (unary)
+        // Multi-ary with explicit record
+        let relation_assertion_record = record_term()
+            .then(ident())
+            .then_ignore(just(Token::Semicolon))
+            .map(|(term, rel)| InstanceItem::RelationAssertion(term, rel));
+
+        // Unary relation: element relation_name;
+        // This parses as: path followed by another ident, then semicolon
+        // We wrap the element in a single-field record for uniform handling
+        let relation_assertion_unary = path()
+            .map(Term::Path)
+            .then(ident())
+            .then_ignore(just(Token::Semicolon))
+            .map(|(elem, rel)| InstanceItem::RelationAssertion(elem, rel));
+
+        // Try nested first (ident = {), then element (ident :), then record relation ([ ...),
+        // then unary relation (ident ident ;), then equation (fallback with =)
+        choice((nested, element, relation_assertion_record, relation_assertion_unary, equation))
     })
+}
+
+/// Parse a single type token without 'instance' (for instance declaration headers)
+fn type_token_no_instance() -> impl Parser<Token, TypeToken, Error = Simple<Token>> + Clone {
+    let sort = just(Token::Sort).to(TypeToken::Sort);
+    let prop = just(Token::Prop).to(TypeToken::Prop);
+    // No instance token here!
+
+    let path_tok = path().map(TypeToken::Path);
+
+    // Record type with full type expressions inside
+    let record_field = ident()
+        .then_ignore(just(Token::Colon))
+        .then(type_expr_impl());
+
+    let record = record_field
+        .separated_by(just(Token::Comma))
+        .delimited_by(just(Token::LBracket), just(Token::RBracket))
+        .map(TypeToken::Record);
+
+    choice((sort, prop, record, path_tok))
 }
 
 /// Parse a type expression without the `instance` suffix (for instance declaration headers)
 fn type_expr_no_instance() -> impl Parser<Token, TypeExpr, Error = Simple<Token>> + Clone {
-    recursive(|_type_expr_rec| {
-        let sort = just(Token::Sort).to(TypeExpr::Sort);
-        let prop = just(Token::Prop).to(TypeExpr::Prop);
-        let path_type = path().map(TypeExpr::Path);
+    // Parenthesized type - parse inner full type expr
+    let paren_expr = type_expr_impl()
+        .delimited_by(just(Token::LParen), just(Token::RParen))
+        .map(|expr| expr.tokens);
 
-        let record_field = ident()
-            .then_ignore(just(Token::Colon))
-            .then(type_expr_impl());
+    // Single token (no instance allowed)
+    let single = type_token_no_instance().map(|t| vec![t]);
 
-        let record_type = record_field
-            .separated_by(just(Token::Comma))
-            .delimited_by(just(Token::LBracket), just(Token::RBracket))
-            .map(TypeExpr::Record);
+    // Either paren group or single token
+    let item = choice((paren_expr, single));
 
-        let paren_type = type_expr_impl().delimited_by(just(Token::LParen), just(Token::RParen));
-
-        let atom = choice((sort, prop, record_type, paren_type, path_type));
-
-        // Type application only, NO instance suffix
-        atom.clone()
-            .then(atom.clone().repeated())
-            .foldl(|acc, arg| TypeExpr::App(Box::new(acc), Box::new(arg)))
-    })
+    // Collect all tokens
+    item.repeated()
+        .at_least(1)
+        .map(|items| TypeExpr {
+            tokens: items.into_iter().flatten().collect(),
+        })
 }
 
 fn instance_decl() -> impl Parser<Token, InstanceDecl, Error = Simple<Token>> + Clone {
-    // New syntax: instance Name : Type = { ... }
+    // Syntax: instance Name : Type = { ... }
+    //     or: instance Name : Type = chase { ... }
     just(Token::Instance)
         .ignore_then(ident())
         .then_ignore(just(Token::Colon))
         .then(type_expr_no_instance())
         .then_ignore(just(Token::Eq))
+        .then(just(Token::Chase).or_not())
         .then(
             instance_item()
                 .map_with_span(|item, span| Spanned::new(item, to_span(span)))
                 .repeated()
                 .delimited_by(just(Token::LBrace), just(Token::RBrace)),
         )
-        .map(|((name, theory), body)| InstanceDecl { theory, name, body })
+        .map(|(((name, theory), needs_chase), body)| InstanceDecl {
+            theory,
+            name,
+            body,
+            needs_chase: needs_chase.is_some(),
+        })
 }
 
 fn query_decl() -> impl Parser<Token, QueryDecl, Error = Simple<Token>> + Clone {

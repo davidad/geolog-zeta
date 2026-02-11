@@ -23,7 +23,7 @@ use std::path::{Path, PathBuf};
 /// Provides bidirectional mapping between UUIDs and Luids:
 /// - `intern(uuid)` → Luid (get or create)
 /// - `get(luid)` → Uuid
-/// - `lookup(uuid)` → Option<Luid>
+/// - `lookup(uuid)` → `Option<Luid>`
 ///
 /// The universe is persisted to disk and can be memory-mapped for
 /// efficient access without loading everything into memory.

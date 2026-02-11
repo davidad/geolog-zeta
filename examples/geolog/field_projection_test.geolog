@@ -1,0 +1,12 @@
+// Test: Field projection syntax
+
+theory FieldProjectionTest {
+  A : Sort;
+  B : Sort;
+
+  R : Sort;
+  R/data : R -> [x: A, y: B];
+
+  // Axiom using field projection: r R/data .x
+  ax1 : forall r : R, a : A. r R/data .x = a |- true;
+}

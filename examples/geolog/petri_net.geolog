@@ -1,0 +1,135 @@
+// Petri Net: a bipartite graph between places and transitions
+//
+// Petri nets model concurrent systems. Places hold tokens, transitions
+// fire when their input places have tokens, consuming inputs and
+// producing outputs.
+//
+// This encoding uses explicit "arc" sorts for input/output connections,
+// which is more faithful to the categorical semantics (a span).
+
+theory PetriNet {
+  P : Sort;    // Places
+  T : Sort;    // Transitions
+  In : Sort;   // Input arcs (from place to transition)
+  Out : Sort;  // Output arcs (from transition to place)
+
+  // Input arc endpoints
+  in/place : In -> P;
+  in/trans : In -> T;
+
+  // Output arc endpoints
+  out/trans : Out -> T;
+  out/place : Out -> P;
+}
+
+// A simple producer-consumer net:
+//
+//   (ready) --[produce]--> (buffer) --[consume]--> (done)
+//
+instance ProducerConsumer : PetriNet = {
+  // Places
+  ready : P;
+  buffer : P;
+  done : P;
+
+  // Transitions
+  produce : T;
+  consume : T;
+
+  // Input arcs
+  i1 : In;
+  i1 in/place = ready;
+  i1 in/trans = produce;
+
+  i2 : In;
+  i2 in/place = buffer;
+  i2 in/trans = consume;
+
+  // Output arcs
+  o1 : Out;
+  o1 out/trans = produce;
+  o1 out/place = buffer;
+
+  o2 : Out;
+  o2 out/trans = consume;
+  o2 out/place = done;
+}
+
+// Mutual exclusion: two processes competing for a shared resource
+//
+//   (idle1) --[enter1]--> (crit1) --[exit1]--> (idle1)
+//                 ^                    |
+//                 |      (mutex)       |
+//                 |                    v
+//   (idle2) --[enter2]--> (crit2) --[exit2]--> (idle2)
+//
+instance MutualExclusion : PetriNet = {
+  // Places for process 1
+  idle1 : P;
+  crit1 : P;
+
+  // Places for process 2
+  idle2 : P;
+  crit2 : P;
+
+  // Shared mutex token
+  mutex : P;
+
+  // Transitions
+  enter1 : T;
+  exit1 : T;
+  enter2 : T;
+  exit2 : T;
+
+  // Process 1 enters: needs idle1 AND mutex
+  i_enter1_idle : In;
+  i_enter1_idle in/place = idle1;
+  i_enter1_idle in/trans = enter1;
+
+  i_enter1_mutex : In;
+  i_enter1_mutex in/place = mutex;
+  i_enter1_mutex in/trans = enter1;
+
+  o_enter1 : Out;
+  o_enter1 out/trans = enter1;
+  o_enter1 out/place = crit1;
+
+  // Process 1 exits: releases mutex
+  i_exit1 : In;
+  i_exit1 in/place = crit1;
+  i_exit1 in/trans = exit1;
+
+  o_exit1_idle : Out;
+  o_exit1_idle out/trans = exit1;
+  o_exit1_idle out/place = idle1;
+
+  o_exit1_mutex : Out;
+  o_exit1_mutex out/trans = exit1;
+  o_exit1_mutex out/place = mutex;
+
+  // Process 2 enters: needs idle2 AND mutex
+  i_enter2_idle : In;
+  i_enter2_idle in/place = idle2;
+  i_enter2_idle in/trans = enter2;
+
+  i_enter2_mutex : In;
+  i_enter2_mutex in/place = mutex;
+  i_enter2_mutex in/trans = enter2;
+
+  o_enter2 : Out;
+  o_enter2 out/trans = enter2;
+  o_enter2 out/place = crit2;
+
+  // Process 2 exits: releases mutex
+  i_exit2 : In;
+  i_exit2 in/place = crit2;
+  i_exit2 in/trans = exit2;
+
+  o_exit2_idle : Out;
+  o_exit2_idle out/trans = exit2;
+  o_exit2_idle out/place = idle2;
+
+  o_exit2_mutex : Out;
+  o_exit2_mutex out/trans = exit2;
+  o_exit2_mutex out/place = mutex;
+}

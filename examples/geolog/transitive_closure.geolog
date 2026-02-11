@@ -1,0 +1,77 @@
+// Transitive Closure Example
+//
+// This example demonstrates the chase algorithm computing transitive
+// closure of a relation. We define a Graph theory with Edge and Path
+// relations, where Path is the transitive closure of Edge.
+//
+// Run with:
+//   cargo run -- examples/geolog/transitive_closure.geolog
+// Then:
+//   :source examples/geolog/transitive_closure.geolog
+//   :inspect Chain
+//   :chase Chain
+//
+// The chase will derive Path tuples for all reachable pairs:
+// - Edge(a,b), Edge(b,c), Edge(c,d) as base facts
+// - Path(a,b), Path(b,c), Path(c,d) from base axiom
+// - Path(a,c), Path(b,d) from one step of transitivity
+// - Path(a,d) from two steps of transitivity
+
+theory Graph {
+  V : Sort;
+
+  // Direct edges in the graph
+  Edge : [src: V, tgt: V] -> Prop;
+
+  // Reachability (transitive closure of Edge)
+  Path : [src: V, tgt: V] -> Prop;
+
+  // Base case: every edge is a path
+  ax/base : forall x, y : V.
+    [src: x, tgt: y] Edge |- [src: x, tgt: y] Path;
+
+  // Inductive case: paths compose
+  ax/trans : forall x, y, z : V.
+    [src: x, tgt: y] Path, [src: y, tgt: z] Path |- [src: x, tgt: z] Path;
+}
+
+// A linear chain: a -> b -> c -> d
+// Chase derives Path tuples from Edge via ax/base and ax/trans.
+instance Chain : Graph = chase {
+  a : V;
+  b : V;
+  c : V;
+  d : V;
+
+  // Edges form a chain
+  [src: a, tgt: b] Edge;
+  [src: b, tgt: c] Edge;
+  [src: c, tgt: d] Edge;
+}
+
+// A diamond: a -> b, a -> c, b -> d, c -> d
+// Chase derives all reachable paths.
+instance Diamond : Graph = chase {
+  top : V;
+  left : V;
+  right : V;
+  bottom : V;
+
+  // Two paths from top to bottom
+  [src: top, tgt: left] Edge;
+  [src: top, tgt: right] Edge;
+  [src: left, tgt: bottom] Edge;
+  [src: right, tgt: bottom] Edge;
+}
+
+// A cycle: a -> b -> c -> a
+// Chase derives all reachable paths (full connectivity).
+instance Cycle : Graph = chase {
+  x : V;
+  y : V;
+  z : V;
+
+  [src: x, tgt: y] Edge;
+  [src: y, tgt: z] Edge;
+  [src: z, tgt: x] Edge;
+}

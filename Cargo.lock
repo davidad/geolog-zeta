@@ -366,9 +366,11 @@ dependencies = [
  "egglog-union-find",
  "indexmap 2.12.1",
  "insta",
+ "itertools",
  "memmap2",
  "nonminmax",
  "proptest",
+ "rand",
  "rkyv",
  "roaring",
  "rustyline",
@@ -465,6 +467,15 @@ dependencies = [
  "console",
  "once_cell",
  "similar",
+]
+
+[[package]]
+name = "itertools"
+version = "0.13.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "413ee7dfc52ee1a4949ceeb7dbc8a33f2d6c088194d9f922fb8318faf1f01186"
+dependencies = [
+ "either",
 ]
 
 [[package]]

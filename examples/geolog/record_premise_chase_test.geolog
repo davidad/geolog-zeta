@@ -1,0 +1,23 @@
+// Test: Chase with record literals in premises
+
+theory RecordPremiseTest {
+  A : Sort;
+  B : Sort;
+
+  R : Sort;
+  R/data : R -> [x: A, y: B];
+
+  // Derived sort for processed items
+  Processed : Sort;
+  Processed/r : Processed -> R;
+
+  // Axiom: given r with data [x: a, y: b], create a Processed for it
+  ax1 : forall r : R, a : A, b : B. r R/data = [x: a, y: b] |- exists p : Processed. p Processed/r = r;
+}
+
+instance Test : RecordPremiseTest = {
+  a1 : A;
+  b1 : B;
+  r1 : R;
+  r1 R/data = [x: a1, y: b1];
+}

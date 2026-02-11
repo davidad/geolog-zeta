@@ -1,0 +1,29 @@
+// Multi-parameter theory instantiation test
+
+theory (X : Sort) (Y : Sort) Iso {
+  fwd : X -> Y;
+  bwd : Y -> X;
+  fb : forall x : X. |- x fwd bwd = x;
+  bf : forall y : Y. |- y bwd fwd = y;
+}
+
+theory A { a : Sort; }
+theory B { b : Sort; }
+
+instance As : A = {
+  a1 : a;
+  a2 : a;
+}
+
+instance Bs : B = {
+  b1 : b;
+  b2 : b;
+}
+
+// Can we create an Iso instance with sort parameters?
+instance AB_Iso : As/a Bs/b Iso = {
+  a1 fwd = Bs/b1;
+  a2 fwd = Bs/b2;
+  b1 bwd = As/a1;
+  b2 bwd = As/a2;
+}

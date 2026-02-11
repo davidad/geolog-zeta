@@ -4,6 +4,7 @@
 //! designed as a unified language for database schemas, queries, and migrations.
 
 pub mod ast;
+pub mod cc;
 pub mod core;
 pub mod elaborate;
 pub mod error;
@@ -11,15 +12,19 @@ pub mod id;
 pub mod lexer;
 pub mod meta;
 pub mod naming;
+pub mod overlay;
 pub mod parser;
 pub mod patch;
 pub mod pretty;
+pub mod query;
 pub mod repl;
+pub mod serialize;
 pub mod solver;
+pub mod store;
 pub mod tensor;
 pub mod universe;
 pub mod version;
-pub mod workspace;
+pub mod zerocopy;
 
 pub use ast::*;
 pub use lexer::lexer;

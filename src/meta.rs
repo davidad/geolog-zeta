@@ -11,8 +11,8 @@ use std::collections::HashMap;
 use std::sync::{Arc, OnceLock};
 
 use crate::core::{
-    DerivedSort, ElaboratedTheory, Formula, Sequent, Signature, SortId, Structure, Term,
-    TheoryParam,
+    Context, DerivedSort, ElaboratedTheory, Formula, FuncId, RelId, Sequent, Signature, SortId,
+    Structure, Term, TheoryParam,
 };
 use crate::elaborate::{Env, elaborate_theory};
 use crate::id::{NumericId, Slid};
@@ -134,9 +134,14 @@ pub fn theory_to_meta(theory: &ElaboratedTheory, _universe: &mut Universe) -> Me
         convert_param(&mut builder, param);
     }
 
-    // Convert axioms
+    // Convert axioms (using axiom_names if available, otherwise fallback to ax_N)
     for (i, axiom) in theory.theory.axioms.iter().enumerate() {
-        let axiom_name = format!("ax_{}", i);
+        let axiom_name = theory
+            .theory
+            .axiom_names
+            .get(i)
+            .cloned()
+            .unwrap_or_else(|| format!("ax_{}", i));
         convert_sequent(&mut builder, axiom, &axiom_name);
     }
 
@@ -541,14 +546,13 @@ pub struct MetaReader<'a> {
     structure: &'a Structure,
     universe: &'a Universe,
     naming: &'a NamingIndex,
-    sig: &'a Signature,
+    /// The GeologMeta theory (Arc keeps signature alive)
+    meta: Arc<ElaboratedTheory>,
     // Cached function IDs for quick lookup
     func_ids: HashMap<&'static str, FuncId>,
     // Cached sort IDs
     sort_ids: HashMap<&'static str, SortId>,
 }
-
-use crate::core::FuncId;
 
 impl<'a> MetaReader<'a> {
     pub fn new(structure: &'a Structure, universe: &'a Universe, naming: &'a NamingIndex) -> Self {
@@ -632,13 +636,11 @@ impl<'a> MetaReader<'a> {
             }
         }
 
-        // We need to keep sig alive, but it's behind Arc. Let's store the Arc.
-        // Actually, we can just clone the relevant parts we need.
         Self {
             structure,
             universe,
             naming,
-            sig: Box::leak(Box::new(meta.theory.signature.clone())),
+            meta,
             func_ids,
             sort_ids,
         }
@@ -680,7 +682,7 @@ impl<'a> MetaReader<'a> {
         };
 
         // Get the domain sort for this function
-        let func = &self.sig.functions[func_id];
+        let func = &self.meta.theory.signature.functions[func_id];
         let DerivedSort::Base(domain_sort) = &func.domain else {
             return vec![]; // Product domains not supported yet
         };
@@ -695,6 +697,248 @@ impl<'a> MetaReader<'a> {
         }
         results
     }
+}
+
+/// Reconstruct a DerivedSort from its GeologMeta representation
+fn reconstruct_dsort(
+    reader: &MetaReader,
+    dsort_elem: Slid,
+    slid_to_sort_id: &HashMap<Slid, SortId>,
+) -> DerivedSort {
+    // Check if it's a BaseDS (find BaseDS where BaseDS/dsort = dsort_elem)
+    let base_elems = reader.find_by_func("BaseDS/dsort", dsort_elem);
+    if !base_elems.is_empty() {
+        let base_elem = base_elems[0];
+        if let Some(srt_elem) = reader.follow("BaseDS/srt", base_elem)
+            && let Some(&sort_id) = slid_to_sort_id.get(&srt_elem)
+        {
+            return DerivedSort::Base(sort_id);
+        }
+    }
+
+    // Check if it's a ProdDS
+    let prod_elems = reader.find_by_func("ProdDS/dsort", dsort_elem);
+    if !prod_elems.is_empty() {
+        let prod_elem = prod_elems[0];
+        let field_elems = reader.find_by_func("Field/prod", prod_elem);
+
+        let mut fields = vec![];
+        for field_elem in field_elems {
+            let field_name = reader.name(field_elem);
+            // Recursively reconstruct field type
+            if let Some(type_dsort) = reader.follow("Field/type", field_elem) {
+                let field_type = reconstruct_dsort(reader, type_dsort, slid_to_sort_id);
+                fields.push((field_name, field_type));
+            }
+        }
+        return DerivedSort::Product(fields);
+    }
+
+    // Default to unit
+    DerivedSort::unit()
+}
+
+/// Recursively reconstruct a Term from its GeologMeta representation
+fn reconstruct_term_inner(
+    reader: &MetaReader,
+    term_elem: Slid,
+    binder_map: &HashMap<Slid, (String, DerivedSort)>,
+    slid_to_func_id: &HashMap<Slid, FuncId>,
+) -> Option<Term> {
+    // Check VarT
+    let var_elems = reader.find_by_func("VarT/term", term_elem);
+    if !var_elems.is_empty() {
+        let var_t = var_elems[0];
+        if let Some(binder) = reader.follow("VarT/binder", var_t)
+            && let Some((name, sort)) = binder_map.get(&binder) {
+                return Some(Term::Var(name.clone(), sort.clone()));
+            }
+        return None;
+    }
+
+    // Check AppT
+    let app_elems = reader.find_by_func("AppT/term", term_elem);
+    if !app_elems.is_empty() {
+        let app_t = app_elems[0];
+        if let Some(func_elem) = reader.follow("AppT/func", app_t)
+            && let Some(&func_id) = slid_to_func_id.get(&func_elem)
+            && let Some(arg_term) = reader.follow("AppT/arg", app_t)
+        {
+            // Recursively reconstruct argument term
+            if let Some(arg) = reconstruct_term_inner(reader, arg_term, binder_map, slid_to_func_id) {
+                return Some(Term::App(func_id, Box::new(arg)));
+            }
+        }
+        return None;
+    }
+
+    // Check ProjT
+    let proj_elems = reader.find_by_func("ProjT/term", term_elem);
+    if !proj_elems.is_empty() {
+        let proj_t = proj_elems[0];
+        let field_name = reader
+            .follow("ProjT/field", proj_t)
+            .map(|f| reader.name(f))
+            .unwrap_or_default();
+        if let Some(base_term) = reader.follow("ProjT/base", proj_t) {
+            // Recursively reconstruct base term
+            if let Some(base) = reconstruct_term_inner(reader, base_term, binder_map, slid_to_func_id) {
+                return Some(Term::Project(Box::new(base), field_name));
+            }
+        }
+        return None;
+    }
+
+    // Check RecordT
+    let rec_elems = reader.find_by_func("RecordT/term", term_elem);
+    if !rec_elems.is_empty() {
+        let rec_t = rec_elems[0];
+        let entry_elems = reader.find_by_func("RecEntry/record", rec_t);
+        let mut fields = vec![];
+        for entry_elem in entry_elems {
+            let field_name = reader
+                .follow("RecEntry/field", entry_elem)
+                .map(|f| reader.name(f))
+                .unwrap_or_default();
+            if let Some(val_term) = reader.follow("RecEntry/val", entry_elem) {
+                // Recursively reconstruct value term
+                if let Some(val) = reconstruct_term_inner(reader, val_term, binder_map, slid_to_func_id) {
+                    fields.push((field_name, val));
+                }
+            }
+        }
+        return Some(Term::Record(fields));
+    }
+
+    None
+}
+
+/// Recursively reconstruct a Formula from its GeologMeta representation
+fn reconstruct_formula_inner(
+    reader: &MetaReader,
+    formula_elem: Slid,
+    binder_map: &HashMap<Slid, (String, DerivedSort)>,
+    slid_to_sort_id: &HashMap<Slid, SortId>,
+    slid_to_func_id: &HashMap<Slid, FuncId>,
+    slid_to_rel_id: &HashMap<Slid, RelId>,
+) -> Option<Formula> {
+    // Check TrueF
+    let true_elems = reader.find_by_func("TrueF/formula", formula_elem);
+    if !true_elems.is_empty() {
+        return Some(Formula::True);
+    }
+
+    // Check FalseF
+    let false_elems = reader.find_by_func("FalseF/formula", formula_elem);
+    if !false_elems.is_empty() {
+        return Some(Formula::False);
+    }
+
+    // Check EqF
+    let eq_elems = reader.find_by_func("EqF/formula", formula_elem);
+    if !eq_elems.is_empty() {
+        let eq_f = eq_elems[0];
+        if let Some(lhs_term) = reader.follow("EqF/lhs", eq_f)
+            && let Some(rhs_term) = reader.follow("EqF/rhs", eq_f)
+            && let Some(lhs) = reconstruct_term_inner(reader, lhs_term, binder_map, slid_to_func_id)
+            && let Some(rhs) = reconstruct_term_inner(reader, rhs_term, binder_map, slid_to_func_id)
+        {
+            return Some(Formula::Eq(lhs, rhs));
+        }
+        return None;
+    }
+
+    // Check RelF
+    let rel_elems = reader.find_by_func("RelF/formula", formula_elem);
+    if !rel_elems.is_empty() {
+        let rel_f = rel_elems[0];
+        if let Some(rel_elem) = reader.follow("RelF/rel", rel_f)
+            && let Some(&rel_id) = slid_to_rel_id.get(&rel_elem)
+            && let Some(arg_term) = reader.follow("RelF/arg", rel_f)
+            && let Some(arg) = reconstruct_term_inner(reader, arg_term, binder_map, slid_to_func_id)
+        {
+            return Some(Formula::Rel(rel_id, arg));
+        }
+        return None;
+    }
+
+    // Check ConjF
+    let conj_elems = reader.find_by_func("ConjF/formula", formula_elem);
+    if !conj_elems.is_empty() {
+        let conj_f = conj_elems[0];
+        let arm_elems = reader.find_by_func("ConjArm/conj", conj_f);
+        let mut children = vec![];
+        for arm_elem in arm_elems {
+            if let Some(child_formula) = reader.follow("ConjArm/child", arm_elem)
+                && let Some(child) = reconstruct_formula_inner(
+                    reader,
+                    child_formula,
+                    binder_map,
+                    slid_to_sort_id,
+                    slid_to_func_id,
+                    slid_to_rel_id,
+                ) {
+                    children.push(child);
+                }
+        }
+        return Some(Formula::Conj(children));
+    }
+
+    // Check DisjF
+    let disj_elems = reader.find_by_func("DisjF/formula", formula_elem);
+    if !disj_elems.is_empty() {
+        let disj_f = disj_elems[0];
+        let arm_elems = reader.find_by_func("DisjArm/disj", disj_f);
+        let mut children = vec![];
+        for arm_elem in arm_elems {
+            if let Some(child_formula) = reader.follow("DisjArm/child", arm_elem)
+                && let Some(child) = reconstruct_formula_inner(
+                    reader,
+                    child_formula,
+                    binder_map,
+                    slid_to_sort_id,
+                    slid_to_func_id,
+                    slid_to_rel_id,
+                ) {
+                    children.push(child);
+                }
+        }
+        return Some(Formula::Disj(children));
+    }
+
+    // Check ExistsF
+    let exists_elems = reader.find_by_func("ExistsF/formula", formula_elem);
+    if !exists_elems.is_empty() {
+        let exists_f = exists_elems[0];
+        // Get the binder for this existential
+        if let Some(binder_elem) = reader.follow("ExistsF/binder", exists_f) {
+            let var_name = reader.name(binder_elem);
+            let var_sort = reader
+                .follow("Binder/type", binder_elem)
+                .map(|d| reconstruct_dsort(reader, d, slid_to_sort_id))
+                .unwrap_or_else(DerivedSort::unit);
+
+            // Create new binder map with this binder
+            let mut new_binder_map = binder_map.clone();
+            new_binder_map.insert(binder_elem, (var_name.clone(), var_sort.clone()));
+
+            // Recursively reconstruct body
+            if let Some(body_formula) = reader.follow("ExistsF/body", exists_f)
+                && let Some(body) = reconstruct_formula_inner(
+                    reader,
+                    body_formula,
+                    &new_binder_map,
+                    slid_to_sort_id,
+                    slid_to_func_id,
+                    slid_to_rel_id,
+                ) {
+                    return Some(Formula::Exists(var_name, var_sort, Box::new(body)));
+                }
+        }
+        return None;
+    }
+
+    None
 }
 
 /// Convert a GeologMeta Structure back to an ElaboratedTheory
@@ -729,47 +973,7 @@ pub fn structure_to_theory(
         slid_to_sort_id.insert(*srt_elem, sort_id);
     }
 
-    // Helper to reconstruct DerivedSort from DSort element
-    let reconstruct_dsort = |reader: &MetaReader, dsort_elem: Slid| -> DerivedSort {
-        // Check if it's a BaseDS (find BaseDS where BaseDS/dsort = dsort_elem)
-        let base_elems = reader.find_by_func("BaseDS/dsort", dsort_elem);
-        if !base_elems.is_empty() {
-            let base_elem = base_elems[0];
-            if let Some(srt_elem) = reader.follow("BaseDS/srt", base_elem)
-                && let Some(&sort_id) = slid_to_sort_id.get(&srt_elem) {
-                    return DerivedSort::Base(sort_id);
-                }
-        }
-
-        // Check if it's a ProdDS
-        let prod_elems = reader.find_by_func("ProdDS/dsort", dsort_elem);
-        if !prod_elems.is_empty() {
-            let prod_elem = prod_elems[0];
-            let field_elems = reader.find_by_func("Field/prod", prod_elem);
-
-            let mut fields = vec![];
-            for field_elem in field_elems {
-                // Field name is looked up directly from NamingIndex
-                let field_name = reader.name(field_elem);
-
-                // Recursive call would need the full closure; for now, assume base types in products
-                if let Some(type_dsort) = reader.follow("Field/type", field_elem) {
-                    let base_elems = reader.find_by_func("BaseDS/dsort", type_dsort);
-                    if !base_elems.is_empty()
-                        && let Some(srt_elem) = reader.follow("BaseDS/srt", base_elems[0])
-                        && let Some(&sort_id) = slid_to_sort_id.get(&srt_elem) {
-                            fields.push((field_name, DerivedSort::Base(sort_id)));
-                        }
-                }
-            }
-            return DerivedSort::Product(fields);
-        }
-
-        // Default to unit if we can't figure it out
-        DerivedSort::unit()
-    };
-
-    // Reconstruct functions
+    // Reconstruct functions (using standalone reconstruct_dsort helper)
     let func_elems = reader.find_by_func("Func/theory", theory_elem);
     let mut slid_to_func_id: HashMap<Slid, FuncId> = HashMap::new();
 
@@ -778,12 +982,12 @@ pub fn structure_to_theory(
 
         let domain = reader
             .follow("Func/dom", *func_elem)
-            .map(|d| reconstruct_dsort(&reader, d))
+            .map(|d| reconstruct_dsort(&reader, d, &slid_to_sort_id))
             .unwrap_or_else(DerivedSort::unit);
 
         let codomain = reader
             .follow("Func/cod", *func_elem)
-            .map(|c| reconstruct_dsort(&reader, c))
+            .map(|c| reconstruct_dsort(&reader, c, &slid_to_sort_id))
             .unwrap_or_else(DerivedSort::unit);
 
         let func_id = sig.add_function(name, domain, codomain);
@@ -799,7 +1003,7 @@ pub fn structure_to_theory(
 
         let domain = reader
             .follow("Rel/dom", *rel_elem)
-            .map(|d| reconstruct_dsort(&reader, d))
+            .map(|d| reconstruct_dsort(&reader, d, &slid_to_sort_id))
             .unwrap_or_else(DerivedSort::unit);
 
         let rel_id = sig.add_relation(name, domain);
@@ -824,9 +1028,69 @@ pub fn structure_to_theory(
     }
 
     // Reconstruct axioms (sequents)
-    // This is more complex - for now, we'll skip axiom reconstruction
-    // as it requires rebuilding the full formula/term AST
-    let axioms = vec![]; // TODO: Full axiom reconstruction
+    let sequent_elems = reader.find_by_func("Sequent/theory", theory_elem);
+    let mut axioms = vec![];
+    let mut axiom_names = vec![];
+
+    for sequent_elem in sequent_elems {
+        // Collect the axiom name from the sequent element
+        axiom_names.push(reader.name(sequent_elem));
+        // Build binder map: Slid -> (name, DerivedSort)
+        let mut binder_map: HashMap<Slid, (String, DerivedSort)> = HashMap::new();
+
+        // Get context variables (CtxVar elements for this sequent)
+        let ctx_var_elems = reader.find_by_func("CtxVar/sequent", sequent_elem);
+        let mut context_vars = vec![];
+
+        for ctx_var_elem in ctx_var_elems {
+            let var_name = reader.name(ctx_var_elem);
+            if let Some(binder_elem) = reader.follow("CtxVar/binder", ctx_var_elem) {
+                let var_sort = reader
+                    .follow("Binder/type", binder_elem)
+                    .map(|d| reconstruct_dsort(&reader, d, &slid_to_sort_id))
+                    .unwrap_or_else(DerivedSort::unit);
+                binder_map.insert(binder_elem, (var_name.clone(), var_sort.clone()));
+                context_vars.push((var_name, var_sort));
+            }
+        }
+
+        let context = Context { vars: context_vars };
+
+        // Get premise and conclusion using standalone recursive helpers
+        let premise = reader
+            .follow("Sequent/premise", sequent_elem)
+            .and_then(|f| {
+                reconstruct_formula_inner(
+                    &reader,
+                    f,
+                    &binder_map,
+                    &slid_to_sort_id,
+                    &slid_to_func_id,
+                    &slid_to_rel_id,
+                )
+            })
+            .unwrap_or(Formula::True);
+
+        let conclusion = reader
+            .follow("Sequent/conclusion", sequent_elem)
+            .and_then(|f| {
+                reconstruct_formula_inner(
+                    &reader,
+                    f,
+                    &binder_map,
+                    &slid_to_sort_id,
+                    &slid_to_func_id,
+                    &slid_to_rel_id,
+                )
+            })
+            .unwrap_or(Formula::True);
+
+        axioms.push(Sequent {
+            context,
+            premise,
+            conclusion,
+        });
+    }
 
     Ok(ElaboratedTheory {
         params,
@@ -834,10 +1098,9 @@ pub fn structure_to_theory(
             name: theory_name,
             signature: sig,
             axioms,
+            axiom_names,
         },
     })
 }
-
-use crate::core::RelId;
 
 // Unit tests moved to tests/unit_meta.rs

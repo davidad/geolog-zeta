@@ -1,0 +1,9 @@
+// Multi-parameter theory test (Iso from vision)
+
+// First just try sorts as parameters
+theory (X : Sort) (Y : Sort) Iso {
+  fwd : X -> Y;
+  bwd : Y -> X;
+  // Axioms would need chained function application...
+  // fb : forall x : X. |- x fwd bwd = x;
+}

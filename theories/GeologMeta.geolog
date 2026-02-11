@@ -275,4 +275,126 @@ theory GeologMeta {
   ax/wf/ctx : forall v : VarT, b : Binder, cv : CtxVar, s : Sequent.
     v VarT/binder = b, cv CtxVar/binder = b, cv CtxVar/sequent = s |-
       [node: v VarT/term Term/node, seq: s] in_seq;
+
+  // ============================================================
+  // COMMITS (version control checkpoints)
+  // ============================================================
+  // Commits form a DAG. Each commit represents a point-in-time
+  // snapshot of all name bindings.
+
+  Commit : Sort;
+  Commit/parent : Commit -> Commit;  // previous commit (optional for initial)
+  // Note: For merge commits, we'd need a relation for multiple parents
+
+  // ============================================================
+  // NAME BINDINGS (mutable pointers via append-only log)
+  // ============================================================
+  // A NameBinding records that, as of a given commit, a name
+  // points to a specific theory or instance version.
+  //
+  // Names are strings stored in NamingIndex (by UUID).
+  // The "current" binding for a name is the most recent one
+  // reachable from HEAD commit.
+
+  NameBinding : Sort;
+  NameBinding/commit : NameBinding -> Commit;  // when this binding was made
+
+  // What the name points to (exactly one of these is defined):
+  NameBinding/theory : NameBinding -> Theory;
+  NameBinding/instance : NameBinding -> Instance;
+
+  // ============================================================
+  // INSTANCES (immutable, patch-based versioning)
+  // ============================================================
+  // An Instance is an immutable snapshot. "Modifying" an instance
+  // creates a new Instance with parent pointer and delta.
+  //
+  // To materialize: chase parent chain, union additions, apply retractions.
+
+  Instance : Sort;
+  Instance/parent : Instance -> Instance;   // base version (optional for v0)
+  Instance/theory : Instance -> Theory;     // which theory this instantiates
+
+  // ============================================================
+  // INSTANCE ELEMENTS (delta: additions)
+  // ============================================================
+  // Elements added in a specific instance version.
+  // The actual UUID is tracked via the element's Luid in Universe.
+
+  Elem : Sort;
+  Elem/instance : Elem -> Instance;   // which version introduced this
+  Elem/sort : Elem -> Srt;            // which sort of the theory
+
+  // ============================================================
+  // ELEMENT RETRACTIONS (delta: tombstones)
+  // ============================================================
+  // Marks an element as retracted in a specific version.
+  // The element still exists in the log, but is filtered from materialized view.
+
+  ElemRetract : Sort;
+  ElemRetract/instance : ElemRetract -> Instance;  // which version retracted
+  ElemRetract/elem : ElemRetract -> Elem;          // what was retracted
+
+  // ============================================================
+  // FUNCTION VALUES (delta: additions)
+  // ============================================================
+  // Records a function value: func(arg) = result
+
+  FuncVal : Sort;
+  FuncVal/instance : FuncVal -> Instance;  // which version defined this
+  FuncVal/func : FuncVal -> Func;          // which function
+  FuncVal/arg : FuncVal -> Elem;           // domain element (or product elem)
+  FuncVal/result : FuncVal -> Elem;        // codomain element
+
+  // NOTE: No FuncValRetract sort - function values are IMMUTABLE.
+  // To "change" a function value, retract the domain element and create a new one.
+  // This ensures the Monotonic Submodel Property (see incremental_index_design.md).
+
+  // ============================================================
+  // RELATION TUPLES (delta: additions)
+  // ============================================================
+  // Records a relation tuple: rel(args...) holds
+  //
+  // All relations use product-domain encoding uniformly (even unary).
+  // Each tuple has RelTupleArg entries for each position in the domain.
+
+  RelTuple : Sort;
+  RelTuple/instance : RelTuple -> Instance;  // which version asserted this
+  RelTuple/rel : RelTuple -> Rel;            // which relation
+
+  // Relation tuple argument components (one per domain field)
+  RelTupleArg : Sort;
+  RelTupleArg/tuple : RelTupleArg -> RelTuple;  // which tuple this belongs to
+  RelTupleArg/elem : RelTupleArg -> Elem;       // element value for this position
+  RelTupleArg/position : RelTupleArg -> Field;  // which field of the domain product
+
+  // NOTE: No RelTupleRetract sort - relation tuples are IMMUTABLE.
+  // Relations are boolean-valued functions: R(a,b) is defined at element creation time.
+  // To "change" a relation value, retract the involved elements and create new ones.
+  // This ensures the Monotonic Submodel Property (see incremental_index_design.md).
+
+  // ============================================================
+  // THEORY VERSIONING (same pattern as instances)
+  // ============================================================
+  // Theories are also immutable and patch-based.
+  // Theory/parent allows incremental theory extension.
+
+  Theory/parent : Theory -> Theory;  // base version (optional for v0)
+
+  // Theory element retractions (for removing sorts/funcs/rels)
+  SrtRetract : Sort;
+  SrtRetract/theory : SrtRetract -> Theory;
+  SrtRetract/srt : SrtRetract -> Srt;
+
+  FuncRetract : Sort;
+  FuncRetract/theory : FuncRetract -> Theory;
+  FuncRetract/func : FuncRetract -> Func;
+
+  RelRetract : Sort;
+  RelRetract/theory : RelRetract -> Theory;
+  RelRetract/rel : RelRetract -> Rel;
+
+  SequentRetract : Sort;
+  SequentRetract/theory : SequentRetract -> Theory;
+  SequentRetract/sequent : SequentRetract -> Sequent;
 }

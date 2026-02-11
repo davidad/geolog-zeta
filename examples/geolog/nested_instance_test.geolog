@@ -1,0 +1,33 @@
+// Test: Nested instance declarations (following vision pattern)
+
+theory Place {
+  P : Sort;
+}
+
+theory (Pl : Place instance) Token {
+  token : Sort;
+  token/of : token -> Pl/P;
+}
+
+theory (Pl : Place instance) Problem {
+  initial_marking : Pl Token instance;
+  target_marking : Pl Token instance;
+}
+
+// Create a place instance
+instance MyPlaces : Place = {
+  p1 : P;
+  p2 : P;
+}
+
+// Test nested instance declarations
+instance TestProblem : MyPlaces Problem = {
+  initial_marking = {
+    t1 : token;
+    t1 token/of = MyPlaces/p1;
+  };
+  target_marking = {
+    t2 : token;
+    t2 token/of = MyPlaces/p2;
+  };
+}

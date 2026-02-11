@@ -6,7 +6,8 @@
 use crate::core::Structure;
 use crate::id::Uuid;
 use crate::naming::NamingIndex;
-use crate::patch::{Patch, apply_patch, diff, to_initial_patch};
+use crate::core::{Sequent, Signature};
+use crate::patch::{apply_patch_checked, ApplyPatchError, Patch, apply_patch, diff, to_initial_patch};
 use crate::universe::Universe;
 
 use rkyv::ser::Serializer;
@@ -16,6 +17,41 @@ use std::collections::BTreeMap;
 use std::fs::{self, File};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+
+/// Error type for checked checkout operations.
+#[derive(Clone, Debug)]
+pub enum CheckoutError {
+    /// The commit was not found in the repository
+    CommitNotFound(Uuid),
+    /// No patches to apply (empty history)
+    NoPatches,
+    /// A patch failed to apply or violated axioms
+    PatchFailed {
+        patch_index: usize,
+        commit: Uuid,
+        error: ApplyPatchError,
+    },
+}
+
+impl std::fmt::Display for CheckoutError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            CheckoutError::CommitNotFound(uuid) => write!(f, "Commit {} not found", uuid),
+            CheckoutError::NoPatches => write!(f, "No patches to apply"),
+            CheckoutError::PatchFailed {
+                patch_index,
+                commit,
+                error,
+            } => write!(
+                f,
+                "Patch {} (commit {}) failed: {}",
+                patch_index, commit, error
+            ),
+        }
+    }
+}
+
+impl std::error::Error for CheckoutError {}
 
 /// A version-controlled state for managing structure history.
 ///
@@ -199,6 +235,72 @@ impl VersionedState {
         Ok(structure)
     }
 
+    /// Checkout a commit with incremental axiom checking.
+    ///
+    /// Like `checkout`, but validates each patch against the theory's axioms.
+    /// Only checks tuples involving new elements (incremental checking).
+    ///
+    /// This is the main entry point for loading commits from other workspaces
+    /// where you want to verify the commit doesn't violate axioms.
+    ///
+    /// # Arguments
+    /// - `commit`: The commit UUID to checkout
+    /// - `axioms`: The theory's axioms to check
+    /// - `sig`: The theory's signature
+    ///
+    /// # Returns
+    /// - `Ok(Structure)` if checkout succeeds and all axioms are satisfied
+    /// - `Err` if checkout fails or any patch violates axioms
+    pub fn checkout_checked(
+        &mut self,
+        commit: Uuid,
+        axioms: &[Sequent],
+        sig: &Signature,
+    ) -> Result<Structure, CheckoutError> {
+        // Build the chain of patches from root to target
+        let mut chain = Vec::new();
+        let mut current = Some(commit);
+
+        while let Some(c) = current {
+            let patch = self
+                .patches
+                .get(&c)
+                .ok_or(CheckoutError::CommitNotFound(c))?;
+            chain.push(patch.clone());
+            current = patch.source_commit;
+        }
+
+        // Reverse to apply from root to target
+        chain.reverse();
+
+        // Apply patches in order with checking
+        let mut structure = if let Some(first_patch) = chain.first() {
+            Structure::new(first_patch.num_sorts)
+        } else {
+            return Err(CheckoutError::NoPatches);
+        };
+
+        let mut checkout_naming = NamingIndex::new();
+
+        for (patch_idx, patch) in chain.iter().enumerate() {
+            structure = apply_patch_checked(
+                &structure,
+                patch,
+                &mut self.universe,
+                &mut checkout_naming,
+                axioms,
+                sig,
+            )
+            .map_err(|e| CheckoutError::PatchFailed {
+                patch_index: patch_idx,
+                commit: patch.target_commit,
+                error: e,
+            })?;
+        }
+
+        Ok(structure)
+    }
+
     /// Commit a structure, creating a new patch from the current HEAD
     ///
     /// Returns the new commit's UUID.
@@ -268,5 +370,80 @@ impl VersionedState {
         self.patches.len()
     }
 }
+
+// ============================================================================
+// Standalone Functions for Cross-Host Commit Loading
+// ============================================================================
+
+/// Load a patch file and apply it to a structure with incremental axiom checking.
+///
+/// This is the main entry point for loading commits from other workspaces.
+/// It loads the patch from disk, applies it to the base structure, and
+/// validates that all axioms are satisfied (only checking new tuples).
+///
+/// # Arguments
+/// - `patch_path`: Path to the .patch file
+/// - `base`: The structure before the patch
+/// - `universe`: For UUID resolution (will be modified)
+/// - `naming`: For name resolution (will be modified)
+/// - `axioms`: The theory's axioms to check
+/// - `sig`: The theory's signature
+///
+/// # Returns
+/// - `Ok((Patch, Structure))` if patch loads, applies, and validates
+/// - `Err` if loading fails or axioms are violated
+pub fn load_and_apply_patch_checked(
+    patch_path: &Path,
+    base: &Structure,
+    universe: &mut Universe,
+    naming: &mut NamingIndex,
+    axioms: &[Sequent],
+    sig: &Signature,
+) -> Result<(Patch, Structure), LoadPatchError> {
+    // Load the patch file
+    let mut file = File::open(patch_path)
+        .map_err(|e| LoadPatchError::IoError(e.to_string()))?;
+
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes)
+        .map_err(|e| LoadPatchError::IoError(e.to_string()))?;
+
+    // Validate and deserialize
+    let archived = check_archived_root::<Patch>(&bytes)
+        .map_err(|e| LoadPatchError::DeserializeError(e.to_string()))?;
+
+    let patch: Patch = archived
+        .deserialize(&mut rkyv::Infallible)
+        .map_err(|_| LoadPatchError::DeserializeError("rkyv deserialize failed".to_string()))?;
+
+    // Apply with checking
+    let new_structure = apply_patch_checked(base, &patch, universe, naming, axioms, sig)
+        .map_err(LoadPatchError::ApplyError)?;
+
+    Ok((patch, new_structure))
+}
+
+/// Error type for loading patches from files.
+#[derive(Clone, Debug)]
+pub enum LoadPatchError {
+    /// I/O error reading the file
+    IoError(String),
+    /// Failed to deserialize the patch
+    DeserializeError(String),
+    /// Patch application or validation failed
+    ApplyError(ApplyPatchError),
+}
+
+impl std::fmt::Display for LoadPatchError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            LoadPatchError::IoError(msg) => write!(f, "I/O error: {}", msg),
+            LoadPatchError::DeserializeError(msg) => write!(f, "Deserialize error: {}", msg),
+            LoadPatchError::ApplyError(e) => write!(f, "Apply error: {}", e),
+        }
+    }
+}
+
+impl std::error::Error for LoadPatchError {}
 
 // Unit tests moved to tests/unit_version.rs

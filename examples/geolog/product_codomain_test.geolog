@@ -1,0 +1,51 @@
+// Test: Product Codomain Support
+//
+// This tests the new feature where functions can have product codomains,
+// allowing record literal assignments like:
+//   elem func = [field1: v1, field2: v2];
+
+theory ProductCodomainTest {
+  A : Sort;
+  B : Sort;
+  C : Sort;
+
+  // Function with product codomain: maps A elements to (B, C) pairs
+  pair_of : A -> [left: B, right: C];
+}
+
+instance TestInstance : ProductCodomainTest = {
+  // Elements
+  a1 : A;
+  b1 : B;
+  b2 : B;
+  c1 : C;
+
+  // Assign product codomain value using record literal
+  a1 pair_of = [left: b1, right: c1];
+}
+
+// A more realistic example: Edges in a graph
+theory DirectedGraph {
+  V : Sort;
+  E : Sort;
+
+  // Edge endpoints as a product codomain
+  endpoints : E -> [src: V, tgt: V];
+}
+
+instance TriangleGraph : DirectedGraph = {
+  // Vertices
+  v0 : V;
+  v1 : V;
+  v2 : V;
+
+  // Edges
+  e01 : E;
+  e12 : E;
+  e20 : E;
+
+  // Assign edge endpoints using record literals
+  e01 endpoints = [src: v0, tgt: v1];
+  e12 endpoints = [src: v1, tgt: v2];
+  e20 endpoints = [src: v2, tgt: v0];
+}

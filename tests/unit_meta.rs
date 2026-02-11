@@ -1,6 +1,6 @@
 //! Unit tests for GeologMeta theory and structure conversion
 
-use geolog::core::{DerivedSort, ElaboratedTheory, Signature, Theory};
+use geolog::core::{Context, DerivedSort, ElaboratedTheory, Formula, Sequent, Signature, Term, Theory};
 use geolog::meta::{geolog_meta, structure_to_theory, theory_to_structure};
 use geolog::naming::NamingIndex;
 use geolog::universe::Universe;
@@ -23,6 +23,7 @@ fn test_theory_to_structure() {
             name: "PetriNet".to_string(),
             signature: sig,
             axioms: vec![],
+            axiom_names: vec![],
         },
     };
 
@@ -102,6 +103,7 @@ fn test_theory_roundtrip() {
             name: "PetriNet".to_string(),
             signature: sig,
             axioms: vec![],
+            axiom_names: vec![],
         },
     };
 
@@ -135,5 +137,129 @@ fn test_theory_roundtrip() {
             .signature
             .lookup_rel("enabled")
             .is_some()
+    );
+}
+
+#[test]
+fn test_theory_roundtrip_with_axioms() {
+    // Create a preorder theory with reflexivity and transitivity axioms
+    let mut sig = Signature::new();
+    let x_id = sig.add_sort("X".to_string());
+    let x_sort = DerivedSort::Base(x_id);
+
+    // Add a binary relation: leq : [x: X, y: X] -> Prop
+    let rel_domain = DerivedSort::Product(vec![
+        ("x".to_string(), x_sort.clone()),
+        ("y".to_string(), x_sort.clone()),
+    ]);
+    let rel_id = sig.add_relation("leq".to_string(), rel_domain);
+
+    // Reflexivity axiom: forall x:X. |- leq(x, x)
+    // Context: [x: X]
+    // Premise: True
+    // Conclusion: leq({x: x, y: x})
+    let reflexivity = Sequent {
+        context: Context {
+            vars: vec![("x".to_string(), x_sort.clone())],
+        },
+        premise: Formula::True,
+        conclusion: Formula::Rel(
+            rel_id,
+            Term::Record(vec![
+                ("x".to_string(), Term::Var("x".to_string(), x_sort.clone())),
+                ("y".to_string(), Term::Var("x".to_string(), x_sort.clone())),
+            ]),
+        ),
+    };
+
+    // Transitivity axiom: forall x,y,z:X. leq(x,y), leq(y,z) |- leq(x,z)
+    // Context: [x: X, y: X, z: X]
+    // Premise: leq(x,y) ∧ leq(y,z)
+    // Conclusion: leq(x,z)
+    let transitivity = Sequent {
+        context: Context {
+            vars: vec![
+                ("x".to_string(), x_sort.clone()),
+                ("y".to_string(), x_sort.clone()),
+                ("z".to_string(), x_sort.clone()),
+            ],
+        },
+        premise: Formula::Conj(vec![
+            Formula::Rel(
+                rel_id,
+                Term::Record(vec![
+                    ("x".to_string(), Term::Var("x".to_string(), x_sort.clone())),
+                    ("y".to_string(), Term::Var("y".to_string(), x_sort.clone())),
+                ]),
+            ),
+            Formula::Rel(
+                rel_id,
+                Term::Record(vec![
+                    ("x".to_string(), Term::Var("y".to_string(), x_sort.clone())),
+                    ("y".to_string(), Term::Var("z".to_string(), x_sort.clone())),
+                ]),
+            ),
+        ]),
+        conclusion: Formula::Rel(
+            rel_id,
+            Term::Record(vec![
+                ("x".to_string(), Term::Var("x".to_string(), x_sort.clone())),
+                ("y".to_string(), Term::Var("z".to_string(), x_sort.clone())),
+            ]),
+        ),
+    };
+
+    let original = ElaboratedTheory {
+        params: vec![],
+        theory: Theory {
+            name: "Preorder".to_string(),
+            signature: sig,
+            axioms: vec![reflexivity, transitivity],
+            axiom_names: vec!["ax/refl".to_string(), "ax/trans".to_string()],
+        },
+    };
+
+    // Convert to structure
+    let mut universe = Universe::new();
+    let mut naming = NamingIndex::new();
+    let structure = theory_to_structure(&original, &mut universe, &mut naming);
+
+    // Convert back
+    let reconstructed =
+        structure_to_theory(&structure, &universe, &naming).expect("roundtrip should succeed");
+
+    // Verify basic properties match
+    assert_eq!(reconstructed.theory.name, "Preorder");
+    assert_eq!(reconstructed.theory.signature.sorts.len(), 1);
+    assert_eq!(reconstructed.theory.signature.relations.len(), 1);
+    assert_eq!(
+        reconstructed.theory.axioms.len(),
+        2,
+        "Expected 2 axioms, got {}",
+        reconstructed.theory.axioms.len()
+    );
+
+    // Verify sort name
+    assert!(reconstructed.theory.signature.lookup_sort("X").is_some());
+
+    // Verify relation name
+    assert!(reconstructed.theory.signature.lookup_rel("leq").is_some());
+
+    // Verify axiom names round-trip correctly
+    assert_eq!(
+        reconstructed.theory.axiom_names.len(),
+        2,
+        "Expected 2 axiom names, got {}",
+        reconstructed.theory.axiom_names.len()
+    );
+    assert!(
+        reconstructed.theory.axiom_names.contains(&"ax/refl".to_string()),
+        "Expected axiom names to contain 'ax/refl', got {:?}",
+        reconstructed.theory.axiom_names
+    );
+    assert!(
+        reconstructed.theory.axiom_names.contains(&"ax/trans".to_string()),
+        "Expected axiom names to contain 'ax/trans', got {:?}",
+        reconstructed.theory.axiom_names
     );
 }

@@ -1,0 +1,132 @@
+// Solver Demo: Theories demonstrating the geometric logic solver
+//
+// Use the :solve command to find instances of these theories:
+//   :source examples/geolog/solver_demo.geolog
+//   :solve EmptyModel
+//   :solve Inhabited
+//   :solve Inconsistent
+//
+// The solver uses forward chaining to automatically:
+// - Add witness elements for existentials
+// - Assert relation tuples
+// - Detect unsatisfiability (derivation of False)
+
+// ============================================================================
+// Theory 1: EmptyModel - Trivially satisfiable with empty carrier
+// ============================================================================
+//
+// A theory with no axioms is satisfied by the empty structure.
+// The solver should report SOLVED immediately with 0 elements.
+
+theory EmptyModel {
+  A : Sort;
+  B : Sort;
+  f : A -> B;
+  R : A -> Prop;
+}
+
+// ============================================================================
+// Theory 2: UnconditionalExistential - Requires witness creation
+// ============================================================================
+//
+// Axiom: forall x : P. |- exists y : P. y R
+//
+// SUBTLE: This axiom's premise (True) and conclusion (∃y.R(y)) don't mention x!
+// So even though there's a "forall x : P", the check happens once for an empty
+// assignment. The premise True holds, but ∃y.R(y) doesn't hold for empty P
+// (no witnesses). The solver correctly detects this and adds a witness.
+//
+// This is correct geometric logic semantics! The universal over x doesn't
+// protect against empty P because x isn't used in the formulas.
+
+theory UnconditionalExistential {
+  P : Sort;
+  R : P -> Prop;
+
+  // This effectively says "there must exist some y with R(y)"
+  // because x is unused - the check happens once regardless of |P|
+  ax : forall x : P. |- exists y : P. y R;
+}
+
+// ============================================================================
+// Theory 3: VacuouslyTrue - Axiom that IS vacuously true for empty carriers
+// ============================================================================
+//
+// Axiom: forall x : P. |- x R
+//
+// For every x, assert R(x). When P is empty, there are no x values to check,
+// so the axiom is vacuously satisfied. Compare with UnconditionalExistential!
+
+theory VacuouslyTrue {
+  P : Sort;
+  R : P -> Prop;
+
+  // This truly IS vacuously true for empty P because x IS used in the conclusion
+  ax : forall x : P. |- x R;
+}
+
+// ============================================================================
+// Theory 4: Inconsistent - UNSAT via derivation of False
+// ============================================================================
+//
+// Axiom: forall x. |- false
+//
+// For any element x, we derive False. This is immediately UNSAT.
+// The solver detects this and reports UNSAT.
+
+theory Inconsistent {
+  A : Sort;
+
+  // Contradiction: any element leads to False
+  ax : forall a : A. |- false;
+}
+
+// ============================================================================
+// Theory 5: ReflexiveRelation - Forward chaining asserts reflexive tuples
+// ============================================================================
+//
+// Axiom: forall x. |- R(x, x)
+//
+// For every element x, the pair (x, x) is in relation R.
+// The solver will assert R(x, x) for each element added.
+
+theory ReflexiveRelation {
+  X : Sort;
+  R : [a: X, b: X] -> Prop;
+
+  // Reflexivity: every element is related to itself
+  ax/refl : forall x : X. |- [a: x, b: x] R;
+}
+
+// ============================================================================
+// Theory 6: ChainedWitness - Nested existential body processing
+// ============================================================================
+//
+// Axiom: forall x. |- exists y. exists z. E(x, y), E(y, z)
+//
+// For every x, there exist y and z such that E(x,y) and E(y,z).
+// Forward chaining creates witnesses and asserts the relations.
+
+theory ChainedWitness {
+  N : Sort;
+  E : [src: N, tgt: N] -> Prop;
+
+  // Chain: every node has a two-step path out
+  ax/chain : forall x : N. |- exists y : N. exists z : N. [src: x, tgt: y] E, [src: y, tgt: z] E;
+}
+
+// ============================================================================
+// Theory 7: EqualityCollapse - Equation handling via congruence closure
+// ============================================================================
+//
+// Axiom: forall x, y. |- x = y
+//
+// All elements of sort X are equal. The solver adds equations to the
+// congruence closure and merges equivalence classes.
+
+theory EqualityCollapse {
+  X : Sort;
+
+  // All elements are equal
+  ax/all_equal : forall x : X, y : X. |- x = y;
+}

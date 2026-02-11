@@ -1,0 +1,44 @@
+// TodoList: A simple relational model for tracking tasks
+//
+// This demonstrates geolog as a persistent relational database.
+// Elements represent tasks, and relations track their status.
+
+theory TodoList {
+  // The sort of todo items
+  Item : Sort;
+
+  // Unary relations for item status (simple arrow syntax)
+  completed : Item -> Prop;
+  high_priority : Item -> Prop;
+  blocked : Item -> Prop;
+
+  // Binary relation for dependencies
+  depends : [item: Item, on: Item] -> Prop;
+
+  // Axiom: if an item depends on another, either it is blocked
+  // or the dependency is completed
+  ax/dep_blocked : forall x : Item, y : Item.
+    [item: x, on: y] depends |- x blocked \/ y completed;
+}
+
+// Example: An empty todo list ready for interactive use
+instance MyTodos : TodoList = {
+  // Start empty - add items interactively with :add
+}
+
+// Example: A pre-populated todo list
+instance SampleTodos : TodoList = {
+  // Items
+  buy_groceries : Item;
+  cook_dinner : Item;
+  do_laundry : Item;
+  clean_house : Item;
+
+  // Status: unary relations use simple syntax
+  buy_groceries completed;
+  cook_dinner high_priority;
+
+  // Dependencies: cook_dinner depends on buy_groceries
+  // Mixed syntax: first positional arg maps to 'item' field
+  [cook_dinner, on: buy_groceries] depends;
+}

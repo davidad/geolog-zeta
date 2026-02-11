@@ -1,0 +1,12 @@
+// Test: Record literals in axioms
+
+theory RecordAxiomTest {
+  A : Sort;
+  B : Sort;
+
+  R : Sort;
+  R/data : R -> [x: A, y: B];
+
+  // Test axiom with record literal RHS
+  ax1 : forall r : R, a : A, b : B. r R/data = [x: a, y: b] |- true;
+}

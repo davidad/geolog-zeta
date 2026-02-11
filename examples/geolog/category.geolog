@@ -1,0 +1,86 @@
+// Category theory in current geolog syntax
+//
+// This is the "desugared" version of the aspirational syntax in
+// loose_thoughts/2026-01-21_dependent_sorts_and_functional_relations.md
+
+theory Category {
+  ob : Sort;
+  mor : Sort;
+
+  // Morphism source and target
+  src : mor -> ob;
+  tgt : mor -> ob;
+
+  // Composition: comp(f, g, h) means "h = f ; g" (f then g)
+  // Domain constraint: f.tgt = g.src
+  comp : [f: mor, g: mor, h: mor] -> Prop;
+
+  // Identity: id(a, f) means "f is the identity on a"
+  id : [a: ob, f: mor] -> Prop;
+
+  // === Axioms ===
+
+  // Identity morphisms have matching source and target
+  ax/id_src : forall x : ob, i : mor. [a: x, f: i] id |- i src = x;
+  ax/id_tgt : forall x : ob, i : mor. [a: x, f: i] id |- i tgt = x;
+
+  // Composition domain constraint
+  ax/comp_dom : forall p : mor, q : mor, r : mor.
+    [f: p, g: q, h: r] comp |- p tgt = q src;
+
+  // Composition source/target
+  ax/comp_src : forall p : mor, q : mor, r : mor.
+    [f: p, g: q, h: r] comp |- r src = p src;
+  ax/comp_tgt : forall p : mor, q : mor, r : mor.
+    [f: p, g: q, h: r] comp |- r tgt = q tgt;
+
+  // Existence of identities (one per object)
+  ax/id_exists : forall x : ob. |- exists i : mor. [a: x, f: i] id;
+
+  // Existence of composites (when composable)
+  ax/comp_exists : forall p : mor, q : mor.
+    p tgt = q src |- exists r : mor. [f: p, g: q, h: r] comp;
+
+  // Left unit: id_a ; f = f
+  ax/unit_left : forall x : ob, i : mor, p : mor, r : mor.
+    [a: x, f: i] id, p src = x, [f: i, g: p, h: r] comp |- r = p;
+
+  // Right unit: f ; id_b = f
+  ax/unit_right : forall y : ob, i : mor, p : mor, r : mor.
+    [a: y, f: i] id, p tgt = y, [f: p, g: i, h: r] comp |- r = p;
+
+  // Associativity: (f ; g) ; h = f ; (g ; h)
+  ax/assoc : forall p : mor, q : mor, r : mor, pq : mor, qr : mor, pqr1 : mor, pqr2 : mor.
+    [f: p, g: q, h: pq] comp, [f: pq, g: r, h: pqr1] comp,
+    [f: q, g: r, h: qr] comp, [f: p, g: qr, h: pqr2] comp
+    |- pqr1 = pqr2;
+
+  // Uniqueness of composition (functional)
+  ax/comp_unique : forall p : mor, q : mor, r1 : mor, r2 : mor.
+    [f: p, g: q, h: r1] comp, [f: p, g: q, h: r2] comp |- r1 = r2;
+
+  // Uniqueness of identity (one per object)
+  ax/id_unique : forall x : ob, i1 : mor, i2 : mor.
+    [a: x, f: i1] id, [a: x, f: i2] id |- i1 = i2;
+}
+
+// The "walking arrow" category: A --f--> B
+//
+// Now we can declare just objects and non-identity morphisms!
+// The chase derives:
+// - Identity morphisms for each object (via ax/id_exists)
+// - Composition facts (via ax/comp_exists)
+// - Source/target for compositions (via ax/comp_src, ax/comp_tgt)
+//
+// The equality saturation (via congruence closure) collapses:
+// - id;id;id;... = id (via ax/unit_left and ax/unit_right)
+// - Duplicate compositions (via ax/comp_unique)
+// Without CC, the chase would loop forever creating id;id, id;id;id, ...
+instance Arrow : Category = chase {
+  // Objects
+  A : ob;
+  B : ob;
+
+  // Non-identity morphism
+  f : mor; f src = A; f tgt = B;
+}

@@ -2,10 +2,12 @@
 
 use geolog::ast;
 use geolog::core::DerivedSort;
-use geolog::elaborate::{ElabError, Env, elaborate_instance, elaborate_theory};
+use geolog::elaborate::{ElabError, ElaborationContext, Env, elaborate_instance_ctx, elaborate_theory};
 use geolog::id::{NumericId, Slid};
 use geolog::parse;
+use geolog::repl::InstanceEntry;
 use geolog::universe::Universe;
+use std::collections::HashMap;
 use std::rc::Rc;
 
 #[test]
@@ -206,8 +208,16 @@ instance ExampleNet : PetriNet = {
 
     // Then elaborate ExampleNet instance
     if let ast::Declaration::Instance(inst) = &file.declarations[1].node {
-        let structure =
-            elaborate_instance(&env, inst, &mut universe).expect("instance elaboration failed");
+        let instances: HashMap<String, InstanceEntry> = HashMap::new();
+        let mut ctx = ElaborationContext {
+            theories: &env.theories,
+            instances: &instances,
+            universe: &mut universe,
+            siblings: HashMap::new(),
+        };
+        let result =
+            elaborate_instance_ctx(&mut ctx, inst).expect("instance elaboration failed");
+        let structure = result.structure;
 
         // Elements are created in order: A(0), B(1), C(2), ab(3), ab_in(4), ab_out(5)
         assert_eq!(structure.len(), 6); // A, B, C, ab, ab_in, ab_out
@@ -269,7 +279,14 @@ instance PartialNet : PetriNet = {
 
     // Then try to elaborate the partial instance — should fail
     if let ast::Declaration::Instance(i) = &file.declarations[1].node {
-        let result = elaborate_instance(&env, i, &mut universe);
+        let instances: HashMap<String, InstanceEntry> = HashMap::new();
+        let mut ctx = ElaborationContext {
+            theories: &env.theories,
+            instances: &instances,
+            universe: &mut universe,
+            siblings: HashMap::new(),
+        };
+        let result = elaborate_instance_ctx(&mut ctx, i);
         assert!(result.is_err(), "expected error for partial function");
 
         let err = result.unwrap_err();
@@ -315,7 +332,14 @@ instance BadNet : PetriNet = {
     }
 
     if let ast::Declaration::Instance(i) = &file.declarations[1].node {
-        let result = elaborate_instance(&env, i, &mut universe);
+        let instances: HashMap<String, InstanceEntry> = HashMap::new();
+        let mut ctx = ElaborationContext {
+            theories: &env.theories,
+            instances: &instances,
+            universe: &mut universe,
+            siblings: HashMap::new(),
+        };
+        let result = elaborate_instance_ctx(&mut ctx, i);
         assert!(result.is_err(), "expected domain type error");
 
         let err = result.unwrap_err();
@@ -366,7 +390,14 @@ instance BadNet : PetriNet = {
     }
 
     if let ast::Declaration::Instance(i) = &file.declarations[1].node {
-        let result = elaborate_instance(&env, i, &mut universe);
+        let instances: HashMap<String, InstanceEntry> = HashMap::new();
+        let mut ctx = ElaborationContext {
+            theories: &env.theories,
+            instances: &instances,
+            universe: &mut universe,
+            siblings: HashMap::new(),
+        };
+        let result = elaborate_instance_ctx(&mut ctx, i);
         assert!(result.is_err(), "expected codomain type error");
 
         let err = result.unwrap_err();
@@ -386,5 +417,421 @@ instance BadNet : PetriNet = {
         }
     } else {
         panic!("expected instance");
+    }
+}
+
+#[test]
+fn test_elaborate_theory_extends() {
+    // Simple single-level extends
+    let input = r#"
+theory Base {
+    X : Sort;
+    f : X -> X;
+}
+
+theory Child extends Base {
+    Y : Sort;
+    g : Y -> Base/X;
+}
+"#;
+    let file = parse(input).expect("parse failed");
+    let mut env = Env::new();
+
+    // Elaborate Base
+    if let ast::Declaration::Theory(t) = &file.declarations[0].node {
+        let elab = elaborate_theory(&mut env, t).expect("Base elaboration failed");
+        env.theories.insert(elab.theory.name.clone(), Rc::new(elab));
+    }
+
+    // Elaborate Child (extends Base)
+    if let ast::Declaration::Theory(t) = &file.declarations[1].node {
+        let elab = elaborate_theory(&mut env, t).expect("Child elaboration failed");
+        assert_eq!(elab.theory.name, "Child");
+
+        // Child should have: Base/X (inherited), Y (own)
+        assert_eq!(elab.theory.signature.sorts.len(), 2);
+        assert!(
+            elab.theory.signature.lookup_sort("Base/X").is_some(),
+            "should have Base/X"
+        );
+        assert!(
+            elab.theory.signature.lookup_sort("Y").is_some(),
+            "should have Y"
+        );
+
+        // Functions: Base/f (inherited), g (own)
+        assert_eq!(elab.theory.signature.functions.len(), 2);
+        assert!(
+            elab.theory.signature.lookup_func("Base/f").is_some(),
+            "should have Base/f"
+        );
+        assert!(
+            elab.theory.signature.lookup_func("g").is_some(),
+            "should have g"
+        );
+
+        // Check g's domain/codomain are correct
+        let g_id = elab.theory.signature.lookup_func("g").unwrap();
+        let g_sym = &elab.theory.signature.functions[g_id];
+        let y_id = elab.theory.signature.lookup_sort("Y").unwrap();
+        let base_x_id = elab.theory.signature.lookup_sort("Base/X").unwrap();
+        assert_eq!(g_sym.domain, DerivedSort::Base(y_id));
+        assert_eq!(g_sym.codomain, DerivedSort::Base(base_x_id));
+    } else {
+        panic!("expected theory");
+    }
+}
+
+#[test]
+fn test_elaborate_transitive_extends() {
+    // Transitive extends with requalification:
+    // Grandchild extends Child extends Base
+    // Grandchild should have: Base/X (from grandparent, NOT Child/Base/X), Child/Y, Z
+    let input = r#"
+theory Base {
+    X : Sort;
+    f : X -> X;
+}
+
+theory Child extends Base {
+    Y : Sort;
+}
+
+theory Grandchild extends Child {
+    Z : Sort;
+    h : Z -> Base/X;
+}
+"#;
+    let file = parse(input).expect("parse failed");
+    let mut env = Env::new();
+
+    // Elaborate Base
+    if let ast::Declaration::Theory(t) = &file.declarations[0].node {
+        let elab = elaborate_theory(&mut env, t).expect("Base elaboration failed");
+        env.theories.insert(elab.theory.name.clone(), Rc::new(elab));
+    }
+
+    // Elaborate Child
+    if let ast::Declaration::Theory(t) = &file.declarations[1].node {
+        let elab = elaborate_theory(&mut env, t).expect("Child elaboration failed");
+        env.theories.insert(elab.theory.name.clone(), Rc::new(elab));
+    }
+
+    // Elaborate Grandchild
+    if let ast::Declaration::Theory(t) = &file.declarations[2].node {
+        let elab = elaborate_theory(&mut env, t).expect("Grandchild elaboration failed");
+        assert_eq!(elab.theory.name, "Grandchild");
+
+        // Grandchild should have: Base/X, Child/Y, Z
+        // NOT: Child/Base/X (that would be wrong requalification)
+        assert_eq!(elab.theory.signature.sorts.len(), 3);
+        assert!(
+            elab.theory.signature.lookup_sort("Base/X").is_some(),
+            "should have Base/X (preserved from grandparent)"
+        );
+        assert!(
+            elab.theory.signature.lookup_sort("Child/Y").is_some(),
+            "should have Child/Y"
+        );
+        assert!(
+            elab.theory.signature.lookup_sort("Z").is_some(),
+            "should have Z"
+        );
+
+        // Should NOT have these wrong names
+        assert!(
+            elab.theory.signature.lookup_sort("Child/Base/X").is_none(),
+            "should NOT have Child/Base/X"
+        );
+
+        // Functions: Base/f (preserved), h (own)
+        assert_eq!(elab.theory.signature.functions.len(), 2);
+        assert!(
+            elab.theory.signature.lookup_func("Base/f").is_some(),
+            "should have Base/f (preserved)"
+        );
+        assert!(
+            elab.theory.signature.lookup_func("h").is_some(),
+            "should have h"
+        );
+
+        // Check h's domain/codomain
+        let h_id = elab.theory.signature.lookup_func("h").unwrap();
+        let h_sym = &elab.theory.signature.functions[h_id];
+        let z_id = elab.theory.signature.lookup_sort("Z").unwrap();
+        let base_x_id = elab.theory.signature.lookup_sort("Base/X").unwrap();
+        assert_eq!(h_sym.domain, DerivedSort::Base(z_id));
+        assert_eq!(h_sym.codomain, DerivedSort::Base(base_x_id));
+    } else {
+        panic!("expected theory");
+    }
+}
+
+#[test]
+fn test_instance_of_extended_theory() {
+    // Test that instances of extended theories work correctly
+    let input = r#"
+theory Base {
+    X : Sort;
+}
+
+theory Child extends Base {
+    Y : Sort;
+    f : Y -> Base/X;
+}
+
+instance C : Child = {
+    a : Base/X;
+    b : Y;
+    b f = a;
+}
+"#;
+    let file = parse(input).expect("parse failed");
+    let mut env = Env::new();
+    let mut universe = Universe::new();
+
+    // Elaborate theories
+    for decl in &file.declarations[0..2] {
+        if let ast::Declaration::Theory(t) = &decl.node {
+            let elab = elaborate_theory(&mut env, t).expect("theory elaboration failed");
+            env.theories.insert(elab.theory.name.clone(), Rc::new(elab));
+        }
+    }
+
+    // Elaborate instance
+    if let ast::Declaration::Instance(inst) = &file.declarations[2].node {
+        let instances: HashMap<String, InstanceEntry> = HashMap::new();
+        let mut ctx = ElaborationContext {
+            theories: &env.theories,
+            instances: &instances,
+            universe: &mut universe,
+            siblings: HashMap::new(),
+        };
+        let result =
+            elaborate_instance_ctx(&mut ctx, inst).expect("instance elaboration failed");
+        let structure = result.structure;
+
+        // Should have 2 elements: a and b
+        assert_eq!(structure.len(), 2);
+        assert_eq!(structure.carrier_size(0), 1); // Base/X: a
+        assert_eq!(structure.carrier_size(1), 1); // Y: b
+
+        // Check name mappings
+        assert!(
+            result.name_to_slid.contains_key("a"),
+            "should have element 'a'"
+        );
+        assert!(
+            result.name_to_slid.contains_key("b"),
+            "should have element 'b'"
+        );
+    } else {
+        panic!("expected instance");
+    }
+}
+
+#[test]
+fn test_nested_parameterized_theories() {
+    // Test deep nesting: C depends on B which depends on A
+    // theory A { X : Sort; }
+    // theory (N : A instance) B { Y : Sort; f : Y -> N/X; }
+    // theory (M : B instance) C { Z : Sort; g : Z -> M/Y; h : Z -> M/N/X; }
+    //
+    // C should have sorts: M/N/X (from A via B), M/Y (from B), Z (own)
+    let input = r#"
+theory A { X : Sort; }
+
+theory (N : A instance) B {
+    Y : Sort;
+    f : Y -> N/X;
+}
+
+theory (M : B instance) C {
+    Z : Sort;
+    g : Z -> M/Y;
+    h : Z -> M/N/X;
+}
+"#;
+    let file = parse(input).expect("parse failed");
+    let mut env = Env::new();
+
+    // Elaborate A
+    if let ast::Declaration::Theory(t) = &file.declarations[0].node {
+        let elab = elaborate_theory(&mut env, t).expect("A elaboration failed");
+        env.theories.insert(elab.theory.name.clone(), Rc::new(elab));
+    }
+
+    // Elaborate B
+    if let ast::Declaration::Theory(t) = &file.declarations[1].node {
+        let elab = elaborate_theory(&mut env, t).expect("B elaboration failed");
+        assert_eq!(elab.theory.signature.sorts.len(), 2);
+        assert!(elab.theory.signature.lookup_sort("N/X").is_some());
+        assert!(elab.theory.signature.lookup_sort("Y").is_some());
+        env.theories.insert(elab.theory.name.clone(), Rc::new(elab));
+    }
+
+    // Elaborate C
+    if let ast::Declaration::Theory(t) = &file.declarations[2].node {
+        let elab = elaborate_theory(&mut env, t).expect("C elaboration failed");
+        assert_eq!(elab.theory.name, "C");
+
+        // C should have: M/N/X, M/Y, Z
+        assert_eq!(elab.theory.signature.sorts.len(), 3);
+        assert!(
+            elab.theory.signature.lookup_sort("M/N/X").is_some(),
+            "should have M/N/X (from A via B)"
+        );
+        assert!(
+            elab.theory.signature.lookup_sort("M/Y").is_some(),
+            "should have M/Y (from B)"
+        );
+        assert!(
+            elab.theory.signature.lookup_sort("Z").is_some(),
+            "should have Z (own sort)"
+        );
+
+        // Functions: M/f (from B), g, h (own)
+        assert_eq!(elab.theory.signature.functions.len(), 3);
+        assert!(
+            elab.theory.signature.lookup_func("M/f").is_some(),
+            "should have M/f"
+        );
+        assert!(
+            elab.theory.signature.lookup_func("g").is_some(),
+            "should have g"
+        );
+        assert!(
+            elab.theory.signature.lookup_func("h").is_some(),
+            "should have h"
+        );
+
+        // Check h's domain/codomain are correct
+        let h_id = elab.theory.signature.lookup_func("h").unwrap();
+        let h_sym = &elab.theory.signature.functions[h_id];
+        let z_id = elab.theory.signature.lookup_sort("Z").unwrap();
+        let mnx_id = elab.theory.signature.lookup_sort("M/N/X").unwrap();
+        assert_eq!(h_sym.domain, DerivedSort::Base(z_id));
+        assert_eq!(h_sym.codomain, DerivedSort::Base(mnx_id));
+    } else {
+        panic!("expected theory");
+    }
+}
+
+#[test]
+fn test_extends_with_naming_convention_slashes() {
+    // This test verifies the fix for the naming convention bug where
+    // function names like "Func/dom" (using "/" as DomainSort/descriptor)
+    // were incorrectly treated as grandparent-qualified names.
+    //
+    // The fix checks if the prefix before "/" is a sort in the parent theory.
+    // If so, it's a naming convention, not a grandparent qualifier.
+    let input = r#"
+theory Base {
+    Func : Sort;
+    Rel : Sort;
+    Func/dom : Func -> Rel;
+    Func/cod : Func -> Rel;
+    Rel/type : Rel -> Func;
+}
+
+theory Child extends Base {
+    Op : Sort;
+    Op/func : Op -> Base/Func;
+}
+"#;
+    let file = parse(input).expect("parse failed");
+    let mut env = Env::new();
+
+    // Elaborate Base
+    if let ast::Declaration::Theory(t) = &file.declarations[0].node {
+        let elab = elaborate_theory(&mut env, t).expect("Base elaboration failed");
+        // Base has 2 sorts (Func, Rel) and 3 functions (Func/dom, Func/cod, Rel/type)
+        assert_eq!(elab.theory.signature.sorts.len(), 2);
+        assert_eq!(elab.theory.signature.functions.len(), 3);
+        env.theories.insert(elab.theory.name.clone(), Rc::new(elab));
+    }
+
+    // Elaborate Child
+    if let ast::Declaration::Theory(t) = &file.declarations[1].node {
+        let elab = elaborate_theory(&mut env, t).expect("Child elaboration failed");
+        assert_eq!(elab.theory.name, "Child");
+
+        // Child should have: Base/Func, Base/Rel, Op
+        assert_eq!(elab.theory.signature.sorts.len(), 3);
+        assert!(
+            elab.theory.signature.lookup_sort("Base/Func").is_some(),
+            "should have Base/Func"
+        );
+        assert!(
+            elab.theory.signature.lookup_sort("Base/Rel").is_some(),
+            "should have Base/Rel"
+        );
+        assert!(
+            elab.theory.signature.lookup_sort("Op").is_some(),
+            "should have Op"
+        );
+
+        // Functions should be: Base/Func/dom, Base/Func/cod, Base/Rel/type, Op/func
+        // NOT: Func/dom (which would be wrong - missing Base/ prefix)
+        assert_eq!(elab.theory.signature.functions.len(), 4);
+        assert!(
+            elab.theory.signature.lookup_func("Base/Func/dom").is_some(),
+            "should have Base/Func/dom (naming convention slash preserved)"
+        );
+        assert!(
+            elab.theory.signature.lookup_func("Base/Func/cod").is_some(),
+            "should have Base/Func/cod"
+        );
+        assert!(
+            elab.theory.signature.lookup_func("Base/Rel/type").is_some(),
+            "should have Base/Rel/type"
+        );
+        assert!(
+            elab.theory.signature.lookup_func("Op/func").is_some(),
+            "should have Op/func"
+        );
+
+        // Should NOT have these wrong names (without Base/ prefix)
+        assert!(
+            elab.theory.signature.lookup_func("Func/dom").is_none(),
+            "should NOT have Func/dom (missing prefix)"
+        );
+        assert!(
+            elab.theory.signature.lookup_func("Rel/type").is_none(),
+            "should NOT have Rel/type (missing prefix)"
+        );
+
+        // Verify Base/Func/dom has correct domain/codomain
+        let func_dom_id = elab.theory.signature.lookup_func("Base/Func/dom").unwrap();
+        let func_dom_sym = &elab.theory.signature.functions[func_dom_id];
+        let base_func_id = elab.theory.signature.lookup_sort("Base/Func").unwrap();
+        let base_rel_id = elab.theory.signature.lookup_sort("Base/Rel").unwrap();
+        assert_eq!(
+            func_dom_sym.domain,
+            DerivedSort::Base(base_func_id),
+            "Base/Func/dom domain should be Base/Func"
+        );
+        assert_eq!(
+            func_dom_sym.codomain,
+            DerivedSort::Base(base_rel_id),
+            "Base/Func/dom codomain should be Base/Rel"
+        );
+
+        // Verify Op/func has correct domain/codomain
+        let op_func_id = elab.theory.signature.lookup_func("Op/func").unwrap();
+        let op_func_sym = &elab.theory.signature.functions[op_func_id];
+        let op_id = elab.theory.signature.lookup_sort("Op").unwrap();
+        assert_eq!(
+            op_func_sym.domain,
+            DerivedSort::Base(op_id),
+            "Op/func domain should be Op"
+        );
+        assert_eq!(
+            op_func_sym.codomain,
+            DerivedSort::Base(base_func_id),
+            "Op/func codomain should be Base/Func"
+        );
+    } else {
+        panic!("expected theory");
     }
 }
