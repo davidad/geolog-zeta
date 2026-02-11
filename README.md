@@ -1305,10 +1305,4 @@ Geolog is built with several key components:
 
 ## License
 
-MIT License - see LICENSE file for details.
-
----
-
-## Contributing
-
-Contributions welcome! See CLAUDE.md for development guidelines and the `loose_thoughts/` directory for design discussions.
+MIT + Apache2 License
