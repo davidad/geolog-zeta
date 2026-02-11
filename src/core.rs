@@ -496,9 +496,14 @@ pub struct Structure {
     pub relations: Vec<VecRelation>,
 
     /// Parent instances for parameterized theories (virtual import).
-    /// Maps param name → UUID of immutable parent instance.
-    /// E.g., for `problem0 : ExampleNet ReachabilityProblem`, this contains {"N": uuid_of_ExampleNet}
-    pub parents: HashMap<String, Uuid>,
+    /// Maps param name → instance name of immutable parent.
+    /// E.g., for `problem0 : ExampleNet ReachabilityProblem`, this contains {"N": "ExampleNet"}
+    pub parents: HashMap<String, String>,
+
+    /// Imported sorts: local sort_id → (parent_instance_name, parent_sort_id).
+    /// These sorts don't have local carriers; queries delegate to the parent.
+    /// E.g., for `problem0 : ExampleNet ReachabilityProblem`, sort "N/P" maps to ("ExampleNet", 0).
+    pub imported_sorts: HashMap<SortId, (String, SortId)>,
 
     /// Nested structures (for instance-valued fields)
     pub nested: HashMap<Luid, Structure>,
@@ -525,6 +530,7 @@ impl Structure {
             functions: Vec::new(), // Initialized later via init_functions()
             relations: Vec::new(), // Initialized later via init_relations()
             parents: HashMap::new(),
+            imported_sorts: HashMap::new(),
             nested: HashMap::new(),
         }
     }
@@ -776,6 +782,36 @@ impl Structure {
     /// Get the number of functions in this structure
     pub fn num_functions(&self) -> usize {
         self.functions.len()
+    }
+
+    /// Mark a sort as imported from a parent instance.
+    /// Imported sorts have no local carrier - queries delegate to the parent.
+    pub fn mark_sort_imported(
+        &mut self,
+        local_sort_id: SortId,
+        parent_instance: String,
+        parent_sort_id: SortId,
+    ) {
+        self.imported_sorts
+            .insert(local_sort_id, (parent_instance, parent_sort_id));
+    }
+
+    /// Check if a sort is imported from a parent instance.
+    pub fn is_sort_imported(&self, sort_id: SortId) -> bool {
+        self.imported_sorts.contains_key(&sort_id)
+    }
+
+    /// Get the parent info for an imported sort.
+    /// Returns (parent_instance_name, parent_sort_id) or None if local.
+    pub fn get_imported_sort_info(&self, sort_id: SortId) -> Option<(&str, SortId)> {
+        self.imported_sorts
+            .get(&sort_id)
+            .map(|(name, id)| (name.as_str(), *id))
+    }
+
+    /// Register a parent instance binding.
+    pub fn add_parent(&mut self, param_name: String, instance_name: String) {
+        self.parents.insert(param_name, instance_name);
     }
 }
 

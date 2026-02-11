@@ -581,54 +581,56 @@ pub fn elaborate_instance_ws(
     // 2. Initialize structure (functions will be initialized after first pass)
     let mut structure = Structure::new(theory.theory.signature.sorts.len());
 
-    // Track name → Slid for resolving references within this instance
-    // Also track Slid → name for error messages
+    // Track LOCAL name → Slid (elements declared in THIS instance)
     let mut name_to_slid: HashMap<String, Slid> = HashMap::new();
     let mut slid_to_name: HashMap<Slid, String> = HashMap::new();
 
-    // 2b. Import elements from param instances
-    // For each param binding (N, ExampleNet), import all elements from ExampleNet
-    // with their sorts mapped to the local signature (N/P, N/T, etc.)
-    //
-    // Also build a mapping from (param_slid -> local_slid) for each param instance
-    // so we can later import function values.
-    let mut param_slid_to_local: HashMap<(String, Slid), Slid> = HashMap::new();
+    // Track IMPORTED name → (instance_name, slid_in_that_instance, luid)
+    // These are elements from parent instances - same Luid, Uuid, and names
+    let mut imported_names: HashMap<String, (String, Slid, Luid)> = HashMap::new();
 
+    // 2b. Set up imported sorts from param instances (ZERO-COPY approach)
+    // Instead of copying elements, we mark sorts as imported and delegate to parent.
+    // Elements keep their same Luid, Uuid, and names - accessed via workspace.
     for (param_name, instance_name) in &resolved.arguments {
         if let Some(param_entry) = workspace.instances.get(instance_name) {
-            // Get the param theory to know sort mappings
             let param_theory_name = &param_entry.theory_name;
             if let Some(param_theory) = workspace.theories.get(param_theory_name) {
-                // For each element in the param instance, import it
-                for (&slid, elem_name) in &param_entry.slid_to_name {
-                    // Get the element's sort in the param instance
-                    let param_sort_id = param_entry.structure.sorts[slid.index()];
-                    let param_sort_name = &param_theory.theory.signature.sorts[param_sort_id];
+                // Register parent relationship
+                structure.add_parent(param_name.clone(), instance_name.clone());
 
-                    // Map to local sort: N/P where N is param_name
+                // Mark each param sort as imported
+                for (param_sort_id, param_sort_name) in
+                    param_theory.theory.signature.sorts.iter().enumerate()
+                {
                     let local_sort_name = format!("{}/{}", param_name, param_sort_name);
-                    let local_sort_id = theory
-                        .theory
-                        .signature
-                        .lookup_sort(&local_sort_name)
-                        .ok_or_else(|| ElabError::UnknownSort(local_sort_name.clone()))?;
+                    if let Some(local_sort_id) =
+                        theory.theory.signature.lookup_sort(&local_sort_name)
+                    {
+                        structure.mark_sort_imported(
+                            local_sort_id,
+                            instance_name.clone(),
+                            param_sort_id,
+                        );
+                    }
+                }
 
-                    // Get the Luid for this element
+                // Register imported element names for lookup during elaboration
+                for (elem_name, &slid) in &param_entry.element_names {
                     let luid = param_entry.structure.get_luid(slid);
 
-                    // Add to local structure with the SAME Luid
-                    let local_slid = structure.add_element_with_luid(luid, local_sort_id);
-
-                    // Register names: both "N/elemname" and "InstanceName/elemname"
+                    // Allow lookup via "N/elemname" or "InstanceName/elemname"
                     let qualified_param = format!("{}/{}", param_name, elem_name);
                     let qualified_instance = format!("{}/{}", instance_name, elem_name);
 
-                    name_to_slid.insert(qualified_param.clone(), local_slid);
-                    name_to_slid.insert(qualified_instance.clone(), local_slid);
-                    slid_to_name.insert(local_slid, qualified_instance);
-
-                    // Record mapping for function value import
-                    param_slid_to_local.insert((instance_name.clone(), slid), local_slid);
+                    imported_names.insert(
+                        qualified_param,
+                        (instance_name.clone(), slid, luid),
+                    );
+                    imported_names.insert(
+                        qualified_instance,
+                        (instance_name.clone(), slid, luid),
+                    );
                 }
             }
         }
@@ -647,70 +649,54 @@ pub fn elaborate_instance_ws(
         }
     }
 
-    // 3b. Initialize function storage now that carrier sizes are known
-    // Extract domain sort IDs for each function (None for product domains)
+    // 3b. Initialize function storage for LOCAL functions only
+    // Imported functions (those with imported domains) delegate to parent - no local storage
+    // Track which functions are imported for later reference
+    let mut imported_functions: HashMap<FuncId, (String, FuncId)> = HashMap::new();
+
     let domain_sort_ids: Vec<Option<SortId>> = theory
         .theory
         .signature
         .functions
         .iter()
-        .map(|func| match &func.domain {
-            DerivedSort::Base(id) => Some(*id),
+        .enumerate()
+        .map(|(func_id, func)| match &func.domain {
+            DerivedSort::Base(sort_id) => {
+                if structure.is_sort_imported(*sort_id) {
+                    // This function's domain is imported - mark it and skip local storage
+                    // Find the parent function info
+                    if let Some((parent_instance, parent_sort_id)) =
+                        structure.get_imported_sort_info(*sort_id)
+                    {
+                        // Find the param name for this parent instance
+                        for (param_name, inst_name) in &structure.parents {
+                            if inst_name == parent_instance {
+                                // The function name is "param/func" - extract original func name
+                                if let Some(orig_func_name) = func.name.strip_prefix(&format!("{}/", param_name)) {
+                                    if let Some(param_entry) = workspace.instances.get(parent_instance) {
+                                        if let Some(param_theory) = workspace.theories.get(&param_entry.theory_name) {
+                                            if let Some(parent_func_id) = param_theory.theory.signature.lookup_func(orig_func_name) {
+                                                imported_functions.insert(func_id, (parent_instance.to_string(), parent_func_id));
+                                            }
+                                        }
+                                    }
+                                }
+                                break;
+                            }
+                        }
+                    }
+                    None // No local storage for imported functions
+                } else {
+                    Some(*sort_id) // Local function
+                }
+            }
             DerivedSort::Product(_) => None, // Defer product domains
         })
         .collect();
     structure.init_functions(&domain_sort_ids);
 
-    // 3c. Import function values from param instances
-    // For each param (N, ExampleNet), for each function in param theory (src, tgt),
-    // import the function values using the local func name (N/src, N/tgt).
-    for (param_name, instance_name) in &resolved.arguments {
-        if let Some(param_entry) = workspace.instances.get(instance_name) {
-            let param_theory_name = &param_entry.theory_name;
-            if let Some(param_theory) = workspace.theories.get(param_theory_name) {
-                // For each function in the param theory
-                for (param_func_id, param_func) in
-                    param_theory.theory.signature.functions.iter().enumerate()
-                {
-                    // Find the corresponding local function: N/func_name
-                    let local_func_name = format!("{}/{}", param_name, param_func.name);
-                    let local_func_id = theory
-                        .theory
-                        .signature
-                        .lookup_func(&local_func_name)
-                        .ok_or_else(|| ElabError::UnknownFunction(local_func_name.clone()))?;
-
-                    // For each element in the domain, copy the function value
-                    if let DerivedSort::Base(param_domain_sort) = &param_func.domain {
-                        for param_domain_slid in param_entry.structure.carriers[*param_domain_sort].iter()
-                        {
-                            let param_domain_slid = Slid::from_usize(param_domain_slid as usize);
-
-                            // Get the function value in the param instance
-                            let param_sort_local_id =
-                                param_entry.structure.sort_local_id(param_domain_slid);
-                            if let Some(param_value_slid) =
-                                param_entry.structure.get_function(param_func_id, param_sort_local_id)
-                            {
-                                // Map both domain and codomain slids to local
-                                if let (Some(&local_domain_slid), Some(&local_value_slid)) = (
-                                    param_slid_to_local.get(&(instance_name.clone(), param_domain_slid)),
-                                    param_slid_to_local.get(&(instance_name.clone(), param_value_slid)),
-                                ) {
-                                    // Define the function value in the local structure
-                                    let _ = structure.define_function(
-                                        local_func_id,
-                                        local_domain_slid,
-                                        local_value_slid,
-                                    );
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
+    // Note: Imported functions don't need value copying - they delegate to parent.
+    // When querying f(x) where f is imported, we look up the parent instance directly.
 
     // 4. Second pass: process equations (define function values) with type checking
     for item in &instance.body {
