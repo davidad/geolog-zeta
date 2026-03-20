@@ -7,7 +7,7 @@
 //   Layer 2: gate ports -> boundary + wire rank + uniqueness
 //   Layer 3: rewrite + ports -> wire identifications
 
-theory BoolCircuits {
+theory BooleanStringDiagrams {
   Cell : Sort;
 
   // Rank predicates

@@ -168,7 +168,7 @@ def emit_theory():
     L("//   Layer 2: gate ports -> boundary + wire rank + uniqueness")
     L("//   Layer 3: rewrite + ports -> wire identifications")
     L("")
-    L("theory BoolCircuits {")
+    L("theory BooleanStringDiagrams {")
     L("  Cell : Sort;")
     L("")
     L("  // Rank predicates")
